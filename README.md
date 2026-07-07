@@ -195,13 +195,3 @@ DCA ("buy $50 of BTC every Monday") and epoch auto-convert ("at each epoch end, 
 4. BTC-as-gas handling in the chosen AA SDK (paymaster in BTC, gas estimation).
 
 ---
-
-## 13. How this maps to the evaluation criteria
-
-- **Security & Custody** → §4 tiered non-custodial model + §11 threat map.
-- **Functionality** → §5 pipeline + §6 per-surface builders covering all required flows.
-- **Intent Accuracy** → §1 + §5: schema-validated intents, disambiguation, no invented addresses/amounts.
-- **UX** → §3 gateway + §5 step 5 pre-confirmation summaries with position health.
-- **Optimization Quality** → §7: water-filling vote allocation + self-vs-cross pairing, transparent and labeled as estimates.
-- **Code Quality / Documentation** → framework-independent core, single-source schemas, documented trust model.
-- **Long-term Viability** → registry-driven addresses + ABI-change surfacing (eases the 6-month maintenance commitment); monetization can sit as a transparent fee in the tx builder's plan step.
