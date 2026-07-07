@@ -34,7 +34,7 @@ Grounding the design in Mezo's real mechanics, because several of them have dire
   - **veBTC**: lock BTC (short locks, ~1–28/30 days, linear decay) → base voting power + a claim on protocol fees, paid largely **in BTC**.
   - **veMEZO**: lock MEZO (up to 4 years) → boosts a paired veBTC position's weight/earnings **up to 5×**; has no standalone voting power but is independently productive via the matching market.
   - Fees/bribes are paid in a **mix of tokens** (BTC for chain/interest/bridging fees; arbitrary ERC-20 for DEX fees and bribes), which the claim-all and auto-convert flows must handle generically.
-- **Matchbox is a third-party, community-built, explicitly-unaudited tool** ("not officially built, maintained, or endorsed by Mezo"). This is a security-relevant fact: any session-key scope that includes Matchbox contracts must be treated as higher-risk than the core protocol — tighter caps, separate opt-in, and a clear in-bot warning. Do not bundle Matchbox permissions into the same blanket scope as core Mezo contracts.
+
 
 ---
 
@@ -129,32 +129,10 @@ The end-to-end path for any fund-moving message:
 
 **Mezo Market.** Browse and purchase items. Same confirm-before-spend rules.
 
----
-
-## 7. The "optimal" voting + Matchbox pairing optimizer
-
-This is a separately-scored criterion ("Optimization Quality: soundness and transparency"). Two related problems:
-
-**Optimal gauge voting (allocating veBTC voting power).** Each epoch, a voter's reward from a gauge is roughly:
-
-```
-reward_g  ≈  ( your_votes_g / (existing_votes_g + your_votes_g) ) × incentives_g
-```
-
-where `incentives_g` = projected fees + posted bribes for gauge _g_. Because adding your votes to a gauge dilutes the per-vote yield, the optimum is **not** "dump everything on the highest-bribe gauge." It is a concave allocation problem solved by **marginal-value equalization (water-filling)**: spread votes so the marginal $/vote is equal across the gauges you fund, subject to your total voting power. The optimizer:
-
-1. pulls current incentives and current votes per gauge (indexer),
-2. projects the post-your-vote distribution,
-3. solves the allocation that maximizes expected return per unit of voting power,
-4. and **shows its work** — the assumptions, the per-gauge expected yield, and a clear "these are estimates" disclaimer.
-
-**Optimal veBTC/veMEZO pairing (Matchbox).** veMEZO boosts a paired veBTC position up to 5×, where the boost depends on your _share_ of total veMEZO relative to your _share_ of total veBTC. Matchbox is a two-sided market: veBTC holders post incentives to rent boost; veMEZO holders vote boost gauges to earn those incentives. So "optimal pairing" means choosing, per position, between **self-pairing** (lock your own MEZO) and **cross-pairing** (post a small incentive to rent boost, often more capital-efficient), and — for veMEZO holders — allocating votes to the boost gauges paying the best incentive yield. The optimizer evaluates expected fees+bribes per unit of voting power across both options and recommends the higher-efficiency one, again transparently and as an estimate.
-
-Transparency is the scored quality here: the optimizer is read-only and explainable, and its recommendation still passes through the normal confirm-before-sign pipeline. Because Matchbox is unaudited third-party code, pairing actions carry a distinct, tighter session-key scope and an explicit warning.
 
 ---
 
-## 8. Automation & the keeper
+## 7. Automation & the keeper
 
 DCA ("buy $50 of BTC every Monday") and epoch auto-convert ("at each epoch end, claim everything and swap into token X") run on a cloud cron + worker. Requirements baked into the design:
 
@@ -165,7 +143,7 @@ DCA ("buy $50 of BTC every Monday") and epoch auto-convert ("at each epoch end, 
 
 ---
 
-## 9. Observability & error handling
+## 8. Observability & error handling
 
 - Structured, queryable action logs and per-user transaction history.
 - A revert decoder that turns failures into plain language: insufficient collateral ratio, expired lock, zero voting weight, slippage exceeded, stale hint, below-minimum-debt, recovery-mode restriction.
@@ -173,7 +151,7 @@ DCA ("buy $50 of BTC every Monday") and epoch auto-convert ("at each epoch end, 
 
 ---
 
-## 10. Data model (sketch)
+## 9. Data model (sketch)
 
 - `users` — telegram id, account address(es), mode (active / watch-only), preferences.
 - `accounts` — public address, account type (smart account / 7702-delegated / contained-custodial), encrypted _reference_ to the session-key policy (not the key).
@@ -185,7 +163,7 @@ DCA ("buy $50 of BTC every Monday") and epoch auto-convert ("at each epoch end, 
 
 ---
 
-## 11. Threat model → mapped to the security rubric
+## 10. Threat model → mapped to the security rubric
 
 | Review focus                 | How the architecture addresses it                                                                                                    |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -196,7 +174,7 @@ DCA ("buy $50 of BTC every Monday") and epoch auto-convert ("at each epoch end, 
 
 ---
 
-## 12. Tech stack recommendation
+## 11. Tech stack recommendation
 
 - **Language:** TypeScript end-to-end. Zod schemas double as the LLM tool schema _and_ the deterministic validator — one definition, two enforcement points.
 - **Chain libs:** `viem` (+ a 4337/session-key SDK such as permissionless.js / ZeroDev / Kernel if AA is available on Mezo). Mezo Passport (`@mezo-org/passport`, built on OrangeKit/RainbowKit) for BTC wallet flows (Unisat / OKX / Xverse) as a bonus.
@@ -209,17 +187,16 @@ DCA ("buy $50 of BTC every Monday") and epoch auto-convert ("at each epoch end, 
 
 ---
 
-## 13. Open questions to resolve before building (week-one probe)
+## 12. Open questions to resolve before building (week-one probe)
 
 1. Does Mezo have a deployed ERC-4337 `EntryPoint` + public bundler? Does it accept EIP-7702 authorizations? (Determines which custody tier is primary.)
 2. Exact canonical addresses/ABIs for the voter, gauges, `VotingEscrow` (veBTC and veMEZO), and Market contracts — from the contracts reference, on both Testnet and Mainnet.
-3. Matchbox contract interfaces and their audit status — confirm the tighter-scope handling.
-4. Whether a subgraph/indexer exists for portfolio + claimable-rewards reads, or whether the indexer must be built.
-5. BTC-as-gas handling in the chosen AA SDK (paymaster in BTC, gas estimation).
+3. Whether a subgraph/indexer exists for portfolio + claimable-rewards reads, or whether the indexer must be built.
+4. BTC-as-gas handling in the chosen AA SDK (paymaster in BTC, gas estimation).
 
 ---
 
-## 14. How this maps to the evaluation criteria
+## 13. How this maps to the evaluation criteria
 
 - **Security & Custody** → §4 tiered non-custodial model + §11 threat map.
 - **Functionality** → §5 pipeline + §6 per-surface builders covering all required flows.
