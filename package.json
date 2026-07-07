@@ -1,0 +1,28 @@
+{
+  "name": "mezo-conversational-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram-delivered natural-language agent for the Mezo Bitcoin-DeFi stack. LLM proposes a typed intent; deterministic code validates, simulates, and signs within policy.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "demo": "tsx src/demo.ts"
+  },
+  "dependencies": {
+    "dotenv": "16.4.5",
+    "grammy": "1.30.0",
+    "viem": "2.21.19",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "4.19.1",
+    "typescript": "5.6.2"
+  }
+}
