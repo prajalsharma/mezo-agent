@@ -19,6 +19,25 @@ import { clearPending } from "./session.js";
 export function buildBot(): Bot {
   const bot = new Bot(env.telegramBotToken);
 
+  // ── Error boundary ──────────────────────────────────────────────────────────
+  // Registered FIRST so it wraps every downstream handler. Any thrown error is
+  // surfaced to the user in-chat (never silent) and logged without secrets.
+  // This is what turns "I tapped Create and nothing happened" into a real,
+  // actionable message.
+  bot.use(async (ctx, next) => {
+    try {
+      await next();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[handler error]", message);
+      await ctx
+        .reply(`⚠️ Something went wrong: ${message}`)
+        .catch(() => {
+          /* if even the error reply fails, we've already logged it */
+        });
+    }
+  });
+
   // ── Commands ───────────────────────────────────────────────────────────────
   bot.command("start", handleStart);
   bot.command("help", async (ctx) => {

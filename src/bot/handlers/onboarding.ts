@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { createWallet, getUser, importWallet, InvalidPrivateKeyError } from "../../wallet/walletService.js";
 import { explorerAddressUrl } from "../../chain/networks.js";
 import { setPending, getPending, clearPending } from "../session.js";
+import { b, i, code, link, esc } from "../format.js";
 
 const netLabel = env.network === "mainnet" ? "🟢 MAINNET" : "🧪 TESTNET";
 
@@ -14,9 +15,9 @@ export async function handleStart(ctx: Context): Promise<void> {
   if (existing) {
     await ctx.reply(
       `Welcome back. You're on ${netLabel}.\n\n` +
-        `Your account:\n\`${existing.address}\`\n\n` +
-        `Try:\n• /portfolio — balances\n• /deposit — fund with a QR code\n• “swap 100 MUSD to mUSDC”`,
-      { parse_mode: "Markdown" },
+        `Your account:\n${code(existing.address)}\n\n` +
+        `Try:\n• /portfolio — balances\n• /deposit — fund with a QR code\n• "swap 100 MUSD to mUSDC"`,
+      { parse_mode: "HTML" },
     );
     return;
   }
@@ -27,18 +28,22 @@ export async function handleStart(ctx: Context): Promise<void> {
     .text("📥 Import existing (advanced)", "wallet:import");
 
   await ctx.reply(
-    `👋 *Mezo Agent* — operate the Mezo Bitcoin-DeFi stack in plain language.\n\n` +
+    `👋 ${b("Mezo Agent")} — operate the Mezo Bitcoin-DeFi stack in plain language.\n\n` +
       `Network: ${netLabel}\n\n` +
       `To begin, create a fresh in-bot wallet, or import an existing account.\n\n` +
-      `_Note: this Phase-1 build uses a contained-custodial account (key encrypted at rest). ` +
-      `The production trust model is non-custodial, scoped session keys — see the README._`,
-    { parse_mode: "Markdown", reply_markup: kb },
+      i(
+        "Note: this Phase-1 build uses a contained-custodial account (key encrypted at rest). " +
+          "The production trust model is non-custodial, scoped session keys — see the README.",
+      ),
+    { parse_mode: "HTML", reply_markup: kb },
   );
 }
 
 export async function handleCreate(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
+  // Acknowledge the tap immediately so Telegram stops the button "loading" spinner,
+  // even if wallet creation below is slow.
   await ctx.answerCallbackQuery().catch(() => {});
 
   if (getUser(telegramId)) {
@@ -46,13 +51,16 @@ export async function handleCreate(ctx: Context): Promise<void> {
     return;
   }
 
+  // If creation fails, the error boundary surfaces it in-chat — never silent.
   const user = await createWallet(telegramId);
+
   await ctx.reply(
-    `✅ *Wallet created.*\n\nYour address:\n\`${user.address}\`\n\n` +
-      `[View on explorer](${explorerAddressUrl(env.network, user.address)})\n\n` +
+    `✅ ${b("Wallet created.")}\n\n` +
+      `Your address:\n${code(user.address)}\n\n` +
+      `${link("View on explorer", explorerAddressUrl(env.network, user.address))}\n\n` +
       `Fund it with /deposit, then check /portfolio.\n\n` +
       `🔒 Your key is encrypted at rest and never logged or shared with any AI model.`,
-    { parse_mode: "Markdown", link_preview_options: { is_disabled: true } },
+    { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }
 
@@ -63,11 +71,11 @@ export async function handleImportPrompt(ctx: Context): Promise<void> {
 
   setPending(telegramId, { kind: "import-await" });
   await ctx.reply(
-    `⚠️ *Importing a raw private key is the advanced, higher-risk path.*\n\n` +
+    `⚠️ ${b("Importing a raw private key is the advanced, higher-risk path.")}\n\n` +
       `Only do this with a throwaway/testnet key. Paste your 0x private key in the next message.\n` +
-      `It will be *encrypted immediately* and never logged or sent to any AI model.\n\n` +
+      `It will be ${b("encrypted immediately")} and never logged or sent to any AI model.\n\n` +
       `Send /cancel to abort.`,
-    { parse_mode: "Markdown" },
+    { parse_mode: "HTML" },
   );
 }
 
@@ -86,13 +94,13 @@ export async function maybeHandleImportKey(ctx: Context): Promise<boolean> {
   try {
     const user = await importWallet(telegramId, text.trim());
     await ctx.reply(
-      `✅ *Account imported* (your key message was deleted).\n\n\`${user.address}\`\n\n` +
-        `Use /portfolio or /deposit.`,
-      { parse_mode: "Markdown" },
+      `✅ ${b("Account imported")} (your key message was deleted).\n\n` +
+        `${code(user.address)}\n\nUse /portfolio or /deposit.`,
+      { parse_mode: "HTML" },
     );
   } catch (err) {
     if (err instanceof InvalidPrivateKeyError) {
-      await ctx.reply(`❌ ${err.message} Import aborted. Nothing was stored.`);
+      await ctx.reply(`❌ ${esc(err.message)} Import aborted. Nothing was stored.`);
     } else {
       await ctx.reply("❌ Import failed. Nothing was stored.");
     }

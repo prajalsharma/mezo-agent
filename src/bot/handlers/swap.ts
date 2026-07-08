@@ -9,6 +9,7 @@ import { explorerTxUrl } from "../../chain/networks.js";
 import { setPending, getPending, clearPending } from "../session.js";
 import type { SwapIntent } from "../../llm/intent.js";
 import { prettyAmount } from "../../portfolio/portfolioService.js";
+import { b, i, link, esc } from "../format.js";
 
 const DEFAULT_SLIPPAGE_PCT = 0.5;
 
@@ -71,15 +72,15 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
     .text("✖️ Cancel", "swap:cancel");
 
   await ctx.reply(
-    `*Confirm swap* — ${env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet"}\n\n` +
-      `Sell: *${plan.amountInFormatted} ${plan.tokenIn.symbol}*\n` +
-      `Receive (est.): *~${prettyAmount(plan.expectedOutFormatted)} ${plan.tokenOut.symbol}*\n` +
-      `Min received: *${prettyAmount(plan.minOutFormatted)} ${plan.tokenOut.symbol}* (slippage ${plan.slippagePct}%)\n` +
+    `${b(`Confirm swap — ${env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet"}`)}\n\n` +
+      `Sell: ${b(`${plan.amountInFormatted} ${plan.tokenIn.symbol}`)}\n` +
+      `Receive (est.): ${b(`~${prettyAmount(plan.expectedOutFormatted)} ${plan.tokenOut.symbol}`)}\n` +
+      `Min received: ${b(`${prettyAmount(plan.minOutFormatted)} ${plan.tokenOut.symbol}`)} (slippage ${plan.slippagePct}%)\n` +
       `Route: ${plan.route.stable ? "stable" : "volatile"} pool\n` +
       (needsApproval ? `Steps: approve → swap\n` : `Steps: swap\n`) +
-      `\n${simLine}\n\n` +
-      `_This preview expires in 3 minutes._`,
-    { parse_mode: "Markdown", reply_markup: kb },
+      `\n${esc(simLine)}\n\n` +
+      i("This preview expires in 3 minutes."),
+    { parse_mode: "HTML", reply_markup: kb },
   );
 }
 
@@ -112,8 +113,8 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
 
   const hash = result.finalHash!;
   await ctx.reply(
-    `✅ *Swap submitted.*\n[View on explorer](${explorerTxUrl(env.network, hash)})`,
-    { parse_mode: "Markdown", link_preview_options: { is_disabled: true } },
+    `✅ ${b("Swap submitted.")}\n${link("View on explorer", explorerTxUrl(env.network, hash))}`,
+    { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }
 

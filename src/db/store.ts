@@ -42,7 +42,15 @@ class Store {
   private readonly path: string;
 
   constructor() {
-    mkdirSync(env.dataDir, { recursive: true });
+    try {
+      mkdirSync(env.dataDir, { recursive: true });
+    } catch (err) {
+      throw new Error(
+        `DATA_DIR "${env.dataDir}" is not creatable/writable. On serverless or ` +
+          `read-only hosts (e.g. Vercel), point DATA_DIR at a writable path or ` +
+          `move to Postgres. Cause: ${(err as Error).message}`,
+      );
+    }
     this.path = join(env.dataDir, `mezo-agent.${env.network}.json`);
     if (existsSync(this.path)) {
       this.db = JSON.parse(readFileSync(this.path, "utf8")) as Db;
@@ -52,8 +60,16 @@ class Store {
   }
 
   private flush(): void {
-    // Written with 0600-equivalent intent; on POSIX the file inherits umask.
-    writeFileSync(this.path, JSON.stringify(this.db, null, 2), { mode: 0o600 });
+    try {
+      // Written with 0600-equivalent intent; on POSIX the file inherits umask.
+      writeFileSync(this.path, JSON.stringify(this.db, null, 2), { mode: 0o600 });
+    } catch (err) {
+      throw new Error(
+        `Failed to persist wallet data to ${this.path}. The filesystem may be ` +
+          `read-only. Set DATA_DIR to a writable path or use Postgres. ` +
+          `Cause: ${(err as Error).message}`,
+      );
+    }
   }
 
   getUser(telegramId: number): UserRecord | undefined {
