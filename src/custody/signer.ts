@@ -8,8 +8,9 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { env } from "../config/env.js";
 import { chainFor } from "../chain/networks.js";
-import type { UserRecord } from "../db/store.js";
+import { store, type UserRecord } from "../db/store.js";
 import { LocalKeyStore } from "./localKeystore.js";
+import { limitsOf, fmtBtc } from "./policy.js";
 
 /**
  * Signer — the isolated write path. Its only job is: "sign & submit this
@@ -52,13 +53,36 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
       `Target ${plan.to} is not in the allowlist for this action; refusing to sign.`,
     );
   }
+
+  // Spending caps on NATIVE BTC value moved. A compromised session cannot exceed
+  // these even if it bypasses the app-level confirmation. (ERC-20 value caps
+  // arrive with the price feed in a later phase.)
+  const value = plan.value ?? 0n;
+  if (value > 0n) {
+    const limits = limitsOf(user.limits);
+    const perTx = BigInt(limits.perTxNativeWei);
+    if (value > perTx) {
+      throw new PolicyViolationError(
+        `Blocked: ${fmtBtc(value)} exceeds the per-transaction limit of ${fmtBtc(perTx)}. ` +
+          `Raise it with /limits.`,
+      );
+    }
+    const daily = BigInt(limits.dailyNativeWei);
+    const spent = store.spentLast24hWei(user.telegramId);
+    if (spent + value > daily) {
+      throw new PolicyViolationError(
+        `Blocked: this would put 24h spend at ${fmtBtc(spent + value)}, over the daily ` +
+          `limit of ${fmtBtc(daily)} (already spent ${fmtBtc(spent)}). Raise it with /limits.`,
+      );
+    }
+  }
 }
 
 export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promise<Hex> {
   assertPolicy(user, plan);
   const chain = chainFor(env.network);
 
-  return keystore().use(user.sealedKey, async (privateKey) => {
+  const hash = await keystore().use(user.sealedKey, async (privateKey) => {
     const account = privateKeyToAccount(privateKey);
     if (account.address.toLowerCase() !== user.address.toLowerCase()) {
       throw new PolicyViolationError("Sealed key does not match the account address.");
@@ -76,4 +100,8 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
     // viem estimates gas / fees; native BTC is the gas asset on Mezo.
     return wallet.sendTransaction(request as never);
   });
+
+  // Record the native value against the daily cap only after a successful submit.
+  store.addSpend(user.telegramId, plan.value ?? 0n, new Date().toISOString());
+  return hash;
 }

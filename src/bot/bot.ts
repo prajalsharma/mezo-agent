@@ -9,6 +9,7 @@ import {
   maybeHandleImportKey,
 } from "./handlers/onboarding.js";
 import { handlePortfolio, handleDeposit } from "./handlers/portfolio.js";
+import { handleLimits, handleWatch } from "./handlers/limits.js";
 import {
   handleSwapIntent,
   handleSwapConfirm,
@@ -48,6 +49,8 @@ export function buildBot(): Bot {
         "/start — onboarding\n" +
         "/portfolio — your balances\n" +
         "/deposit — deposit address + QR\n" +
+        "/limits — view/adjust spending caps\n" +
+        "/watch — toggle watch-only (read-only) mode\n" +
         "/cancel — cancel a pending action\n" +
         "/diag — run a health self-test\n\n" +
         'Natural language: "swap 100 MUSD to mUSDC"',
@@ -55,6 +58,8 @@ export function buildBot(): Bot {
   });
   bot.command("portfolio", handlePortfolio);
   bot.command("deposit", handleDeposit);
+  bot.command("limits", handleLimits);
+  bot.command("watch", handleWatch);
   bot.command("cancel", async (ctx) => {
     if (ctx.from?.id) clearPending(ctx.from.id);
     await ctx.reply("Cancelled.");

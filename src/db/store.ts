@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Address } from "viem";
 import { env } from "../config/env.js";
 import type { EncryptedKey } from "../custody/keystore.js";
+import type { SpendingLimits } from "../custody/policy.js";
 
 /**
  * Phase 1 datastore. Production target is Postgres + Redis (architecture §9);
@@ -20,6 +21,8 @@ export type UserRecord = {
   /** Sealed (AES-GCM) key material. Never a plaintext key. */
   sealedKey: EncryptedKey;
   mode: "active" | "watch-only";
+  /** Per-user spending caps. Undefined ⇒ DEFAULT_LIMITS applied at read. */
+  limits?: SpendingLimits;
   createdAt: string;
 };
 
@@ -32,13 +35,21 @@ export type TxRecord = {
   at: string;
 };
 
+/** Ledger of native value actually signed & submitted — backs the daily cap. */
+export type SpendRecord = {
+  telegramId: number;
+  valueWei: string;
+  at: string; // ISO timestamp
+};
+
 type Db = {
   users: Record<string, UserRecord>;
   txHistory: TxRecord[];
+  spendLedger: SpendRecord[];
 };
 
 class Store {
-  private db: Db = { users: {}, txHistory: [] };
+  private db: Db = { users: {}, txHistory: [], spendLedger: [] };
   private readonly path: string;
 
   constructor() {
@@ -53,7 +64,13 @@ class Store {
     }
     this.path = join(env.dataDir, `mezo-agent.${env.network}.json`);
     if (existsSync(this.path)) {
-      this.db = JSON.parse(readFileSync(this.path, "utf8")) as Db;
+      const loaded = JSON.parse(readFileSync(this.path, "utf8")) as Partial<Db>;
+      // Backfill fields added in later versions so old stores load cleanly.
+      this.db = {
+        users: loaded.users ?? {},
+        txHistory: loaded.txHistory ?? [],
+        spendLedger: loaded.spendLedger ?? [],
+      };
     } else {
       this.flush();
     }
@@ -99,6 +116,21 @@ class Store {
       .filter((t) => t.telegramId === telegramId)
       .slice(-limit)
       .reverse();
+  }
+
+  /** Record native value actually submitted, for the rolling daily cap. */
+  addSpend(telegramId: number, valueWei: bigint, at: string): void {
+    if (valueWei <= 0n) return;
+    this.db.spendLedger.push({ telegramId, valueWei: valueWei.toString(), at });
+    this.flush();
+  }
+
+  /** Sum of native value spent by a user within the last 24h. */
+  spentLast24hWei(telegramId: number, now = Date.now()): bigint {
+    const cutoff = now - 24 * 60 * 60 * 1000;
+    return this.db.spendLedger
+      .filter((s) => s.telegramId === telegramId && Date.parse(s.at) >= cutoff)
+      .reduce((sum, s) => sum + BigInt(s.valueWei), 0n);
   }
 }
 

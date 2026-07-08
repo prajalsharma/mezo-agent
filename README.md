@@ -11,11 +11,13 @@ This repository is being built in phases. **This is Phase 1.**
 | Feature | Status |
 | --- | --- |
 | Wallet creation (in-bot) | ✅ |
-| Import existing account (opt-in, warned) | ✅ |
+| Import existing account — private key **or** BIP-39 seed phrase (opt-in, warned) | ✅ |
 | Deposit address + scannable QR | ✅ |
 | Live portfolio view (BTC + tokens) | ✅ |
 | Telegram conversational UI | ✅ |
 | DEX swap (quote → simulate → confirm → sign) | ✅ (token↔token; native-BTC route pending registry confirmation) |
+| Spending limits (per-tx + rolling 24h cap) & watch-only mode | ✅ enforced in the signer (`/limits`, `/watch`) |
+| Health self-test | ✅ `/diag` |
 
 Later phases add Borrow/Troves, zap-to-enter + LP staking, claim-all, locking &
 voting, Matchbox pairing, Mezo Market, and the DCA / auto-convert keeper.
@@ -55,8 +57,15 @@ the tiered custody design:
   and auth tag.
 - The plaintext key exists only transiently inside a `keystore.use(...)` callback
   during signing, and the buffer is scrubbed afterward.
-- Raw private-key **import is opt-in and warned**; the message containing the key
-  is deleted immediately after it is sealed.
+- Raw **import is opt-in and warned** and accepts either a private key or a BIP-39
+  seed phrase (12–24 words); the message containing the secret is deleted
+  immediately after it is sealed, and the plaintext never leaves the import
+  function.
+- **Spending limits are enforced in the signer**, not just the UI: a per-transaction
+  native-BTC cap and a rolling 24h cap (defaults 0.05 / 0.2 BTC, tunable via
+  `/limits`), plus a **watch-only** mode (`/watch on`) that blocks all signing. So
+  even a compromised session cannot exceed these caps. (Per-token USD caps arrive
+  with the price-feed integration in a later phase — documented, not hidden.)
 
 **What the operator can/cannot do, and host-compromise blast radius:** with the
 Tier 3 model, a compromised host that also has `MASTER_ENCRYPTION_KEY` could sign
@@ -142,4 +151,11 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
   an address.
 - Datastore is a local JSON file (encrypted key material only). Production is
   Postgres + Redis.
-- Custody is Tier 3 (see trust model). Non-custodial session keys are the target.
+- Custody is Tier 3 (see trust model). **Custody roadmap:** Tier 3 (app-level
+  AES) is a deliberate Phase-1 stopgap; the committed mainnet target is Tier 1 —
+  a smart account with an on-chain session-key module (ERC-7579/4337) or EIP-7702
+  delegation, where the user keeps custody and the agent holds only a scoped,
+  revocable permission. The `KeyStore` interface is built for that swap.
+- Spending caps currently bound **native BTC** value; per-token (ERC-20) USD caps
+  come with the price feed. Seed-phrase import uses the standard EVM path
+  `m/44'/60'/0'/0/0` (account 0).

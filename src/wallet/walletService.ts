@@ -1,13 +1,14 @@
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { isHex, type Hex } from "viem";
+import { generatePrivateKey, privateKeyToAccount, mnemonicToAccount } from "viem/accounts";
+import { bytesToHex, isHex, type Hex } from "viem";
 import { LocalKeyStore } from "../custody/localKeystore.js";
 import { store, type UserRecord } from "../db/store.js";
 import { log, errMsg } from "../core/log.js";
+import { DEFAULT_LIMITS } from "../custody/policy.js";
 
 /**
  * WalletService — onboarding. Creates or imports an account and hands the raw
- * key straight to the KeyStore for sealing. The plaintext key exists only inside
- * these functions and is never returned, logged, or persisted in the clear.
+ * key straight to the KeyStore for sealing. The plaintext key/seed exists only
+ * inside these functions and is never returned, logged, or persisted in clear.
  */
 // Lazy so a misconfigured MASTER_ENCRYPTION_KEY is reported by preflight/diag
 // rather than crashing at module import with an opaque stack trace.
@@ -15,6 +16,8 @@ let _keystore: LocalKeyStore | undefined;
 function keystore(): LocalKeyStore {
   return (_keystore ??= new LocalKeyStore());
 }
+
+const VALID_MNEMONIC_LENGTHS = new Set([12, 15, 18, 21, 24]);
 
 export async function createWallet(telegramId: number): Promise<UserRecord> {
   const flow = "wallet:create";
@@ -32,6 +35,7 @@ export async function createWallet(telegramId: number): Promise<UserRecord> {
       accountType: "contained-custodial",
       sealedKey,
       mode: "active",
+      limits: DEFAULT_LIMITS,
       createdAt: new Date().toISOString(),
     };
 
@@ -48,40 +52,88 @@ export async function createWallet(telegramId: number): Promise<UserRecord> {
   }
 }
 
-export class InvalidPrivateKeyError extends Error {}
+export class WalletImportError extends Error {}
+/** @deprecated kept for compatibility; use WalletImportError. */
+export class InvalidPrivateKeyError extends WalletImportError {}
 
 /**
- * Import an existing account from a raw private key. This is the explicitly
- * opt-in, warned path (never the default). The key is sealed immediately and
- * the plaintext is discarded.
+ * Import an existing account from either a raw private key (0x + 64 hex) OR a
+ * BIP-39 seed phrase (12–24 words). This is the explicitly opt-in, warned path
+ * (never the default). The secret is converted to a private key, sealed
+ * immediately, and the plaintext is discarded.
  */
 export async function importWallet(
   telegramId: number,
-  rawKey: string,
+  secret: string,
 ): Promise<UserRecord> {
-  const normalized = (rawKey.startsWith("0x") ? rawKey : `0x${rawKey}`) as Hex;
-  if (!isHex(normalized) || normalized.length !== 66) {
-    throw new InvalidPrivateKeyError("That does not look like a 32-byte private key.");
-  }
-  let account;
+  const { privateKey, source } = deriveFromSecret(secret);
+
+  let address;
   try {
-    account = privateKeyToAccount(normalized);
+    address = privateKeyToAccount(privateKey).address;
   } catch {
-    throw new InvalidPrivateKeyError("Could not derive an account from that key.");
+    throw new WalletImportError("Could not derive an account from that secret.");
   }
-  const sealedKey = await keystore().seal(normalized);
+
+  log.step("wallet:import", "seal", { user: telegramId, source, address });
+  const sealedKey = await keystore().seal(privateKey);
   const user: UserRecord = {
     telegramId,
-    address: account.address,
+    address,
     accountType: "contained-custodial",
     sealedKey,
     mode: "active",
+    limits: DEFAULT_LIMITS,
     createdAt: new Date().toISOString(),
   };
   store.saveUser(user);
   return user;
 }
 
+/** Detect and derive a private key from a hex key or a BIP-39 mnemonic. */
+function deriveFromSecret(secret: string): { privateKey: Hex; source: "key" | "seed" } {
+  const trimmed = secret.trim();
+
+  // Private key: optional 0x prefix + 64 hex chars.
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(trimmed)) {
+    const normalized = (trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`) as Hex;
+    if (!isHex(normalized) || normalized.length !== 66) {
+      throw new WalletImportError("That does not look like a 32-byte private key.");
+    }
+    return { privateKey: normalized, source: "key" };
+  }
+
+  // Seed phrase: 12–24 space-separated words.
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (VALID_MNEMONIC_LENGTHS.has(words.length)) {
+    const mnemonic = words.join(" ");
+    let hdKey;
+    try {
+      // Default derivation path m/44'/60'/0'/0/0 (standard EVM account 0).
+      hdKey = mnemonicToAccount(mnemonic).getHdKey();
+    } catch {
+      throw new WalletImportError("That seed phrase is invalid (bad word or checksum).");
+    }
+    if (!hdKey.privateKey) {
+      throw new WalletImportError("Could not derive a key from that seed phrase.");
+    }
+    return { privateKey: bytesToHex(hdKey.privateKey), source: "seed" };
+  }
+
+  throw new WalletImportError(
+    "That is neither a private key (0x + 64 hex) nor a seed phrase (12–24 words).",
+  );
+}
+
 export function getUser(telegramId: number): UserRecord | undefined {
   return store.getUser(telegramId);
+}
+
+/** Set watch-only vs active mode. Watch-only blocks all signing. */
+export function setMode(telegramId: number, mode: "active" | "watch-only"): UserRecord | undefined {
+  const user = store.getUser(telegramId);
+  if (!user) return undefined;
+  user.mode = mode;
+  store.saveUser(user);
+  return user;
 }

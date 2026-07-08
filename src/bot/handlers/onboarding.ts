@@ -1,6 +1,6 @@
 import { InlineKeyboard, type Context } from "grammy";
 import { env } from "../../config/env.js";
-import { createWallet, getUser, importWallet, InvalidPrivateKeyError } from "../../wallet/walletService.js";
+import { createWallet, getUser, importWallet, WalletImportError } from "../../wallet/walletService.js";
 import { explorerAddressUrl } from "../../chain/networks.js";
 import { setPending, getPending, clearPending } from "../session.js";
 import { b, i, code, link, esc } from "../format.js";
@@ -71,9 +71,11 @@ export async function handleImportPrompt(ctx: Context): Promise<void> {
 
   setPending(telegramId, { kind: "import-await" });
   await ctx.reply(
-    `⚠️ ${b("Importing a raw private key is the advanced, higher-risk path.")}\n\n` +
-      `Only do this with a throwaway/testnet key. Paste your 0x private key in the next message.\n` +
-      `It will be ${b("encrypted immediately")} and never logged or sent to any AI model.\n\n` +
+    `⚠️ ${b("Importing a raw secret is the advanced, higher-risk path.")}\n\n` +
+      `Only do this with a throwaway/testnet account. In the next message paste either:\n` +
+      `• a ${b("private key")} (0x + 64 hex), or\n` +
+      `• a ${b("seed phrase")} (12–24 words).\n\n` +
+      `It will be ${b("encrypted immediately")}, and never logged or sent to any AI model.\n\n` +
       `Send /cancel to abort.`,
     { parse_mode: "HTML" },
   );
@@ -99,7 +101,7 @@ export async function maybeHandleImportKey(ctx: Context): Promise<boolean> {
       { parse_mode: "HTML" },
     );
   } catch (err) {
-    if (err instanceof InvalidPrivateKeyError) {
+    if (err instanceof WalletImportError) {
       await ctx.reply(`❌ ${esc(err.message)} Import aborted. Nothing was stored.`);
     } else {
       await ctx.reply("❌ Import failed. Nothing was stored.");
