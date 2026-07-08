@@ -1,0 +1,32 @@
+{
+  "name": "mezo-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mezo conversational agent — Telegram bot for the Mezo Bitcoin-DeFi stack (Phase 1: wallet, deposit QR, portfolio, swap)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "genkey": "tsx scripts/genkey.ts",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.30.0",
+    "qrcode": "^1.5.4",
+    "viem": "^2.21.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
