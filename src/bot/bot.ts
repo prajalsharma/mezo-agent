@@ -15,6 +15,8 @@ import {
   handleSwapCancel,
 } from "./handlers/swap.js";
 import { clearPending } from "./session.js";
+import { runPreflight, formatPreflightText } from "../core/preflight.js";
+import { getUser } from "../wallet/walletService.js";
 
 export function buildBot(): Bot {
   const bot = new Bot(env.telegramBotToken);
@@ -46,7 +48,8 @@ export function buildBot(): Bot {
         "/start — onboarding\n" +
         "/portfolio — your balances\n" +
         "/deposit — deposit address + QR\n" +
-        "/cancel — cancel a pending action\n\n" +
+        "/cancel — cancel a pending action\n" +
+        "/diag — run a health self-test\n\n" +
         'Natural language: "swap 100 MUSD to mUSDC"',
     );
   });
@@ -55,6 +58,18 @@ export function buildBot(): Bot {
   bot.command("cancel", async (ctx) => {
     if (ctx.from?.id) clearPending(ctx.from.id);
     await ctx.reply("Cancelled.");
+  });
+
+  // Self-test — pinpoints which subsystem is broken (config/keystore/store/rpc)
+  // and whether the caller already has an account. Safe, read-only for the user.
+  bot.command("diag", async (ctx) => {
+    await ctx.reply("🩺 Running diagnostics…");
+    const results = await runPreflight();
+    const account = ctx.from?.id ? getUser(ctx.from.id) : undefined;
+    const accountLine = account
+      ? `\n\n👤 Your account exists: ${account.address}`
+      : "\n\n👤 You have no account yet (tap Create on /start).";
+    await ctx.reply(formatPreflightText(results) + accountLine);
   });
 
   // ── Inline buttons ──────────────────────────────────────────────────────────

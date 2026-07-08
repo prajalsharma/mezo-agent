@@ -35,7 +35,12 @@ export type SignablePlan = {
 
 export class PolicyViolationError extends Error {}
 
-const keystore = new LocalKeyStore();
+// Lazy: a misconfigured master key surfaces via preflight/diag, not an
+// import-time crash.
+let _keystore: LocalKeyStore | undefined;
+function keystore(): LocalKeyStore {
+  return (_keystore ??= new LocalKeyStore());
+}
 
 function assertPolicy(user: UserRecord, plan: SignablePlan): void {
   if (user.mode === "watch-only") {
@@ -53,7 +58,7 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
   assertPolicy(user, plan);
   const chain = chainFor(env.network);
 
-  return keystore.use(user.sealedKey, async (privateKey) => {
+  return keystore().use(user.sealedKey, async (privateKey) => {
     const account = privateKeyToAccount(privateKey);
     if (account.address.toLowerCase() !== user.address.toLowerCase()) {
       throw new PolicyViolationError("Sealed key does not match the account address.");
