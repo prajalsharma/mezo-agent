@@ -10,3 +10,4 @@ data/
 
 # test-run data dirs
 data-*/
+package-lock.json
