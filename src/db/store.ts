@@ -14,6 +14,27 @@ import type { SpendingLimits } from "../custody/policy.js";
 
 export type AccountType = "contained-custodial" | "smart-account" | "eip7702-delegated";
 
+/**
+ * A scoped EIP-7702 session key (Option A: semi-custodial). Its own sealed key
+ * material and address. Day-to-day ops are signed by this key and executed via
+ * the delegate `execute`, so the root key stays cold except for setup/rotation.
+ */
+export type SessionKey = {
+  address: Address;
+  sealedKey: EncryptedKey;
+  /** unix seconds; the on-chain session shares this expiry. */
+  expiresAt: number;
+};
+
+/** On-chain delegation state once the account has been upgraded via a type-0x04 tx. */
+export type Delegation = {
+  /** The SessionKeyDelegate address the root EOA points at. */
+  target: Address;
+  installedAt: string;
+  /** Tx hash of the set-code transaction that installed the delegation. */
+  txHash?: string;
+};
+
 export type UserRecord = {
   telegramId: number;
   address: Address;
@@ -23,6 +44,9 @@ export type UserRecord = {
   mode: "active" | "watch-only";
   /** Per-user spending caps. Undefined ⇒ DEFAULT_LIMITS applied at read. */
   limits?: SpendingLimits;
+  /** Present once the account is upgraded to an EIP-7702 smart account. */
+  session?: SessionKey;
+  delegation?: Delegation;
   createdAt: string;
 };
 

@@ -37,7 +37,16 @@ export type ContractKey =
   | "TroveManager"
   | "Voter"
   | "VotingEscrowBTC"
-  | "VotingEscrowMEZO";
+  | "VotingEscrowMEZO"
+  /**
+   * EIP-7702 session-key delegate. This is the contract an account's EOA points
+   * its delegation designator at (`0xef0100 || Delegate7702`). It holds the
+   * on-chain session-key state and validates that each op is within scope
+   * (allowlisted target, per-tx / daily caps, expiry). Deployed per-network and
+   * MUST be verified on-chain before use — and MUST NOT sit in the precompile
+   * range (Mezo rejects authorizations whose target is a precompile).
+   */
+  | "Delegate7702";
 
 /** Sentinel for the native gas asset (BTC on Mezo, 18 decimals). */
 export const NATIVE_TOKEN_ADDRESS =
@@ -75,7 +84,7 @@ const MAINNET: NetworkRegistry = {
     PoolFactory: "0x83FE469C636C4081b87bA5b3Ae9991c6Ed104248",
     // Router address to be confirmed on-chain — see needsConfirmation.
   },
-  needsConfirmation: ["Router", "BorrowerOperations", "TroveManager", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO"],
+  needsConfirmation: ["Router", "BorrowerOperations", "TroveManager", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "Delegate7702"],
 };
 
 const TESTNET: NetworkRegistry = {
@@ -98,7 +107,7 @@ const TESTNET: NetworkRegistry = {
     // Testnet DEX / pool addresses are resolved at runtime from the canonical
     // reference or the explorer; seeded here as they are confirmed on Matsnet.
   },
-  needsConfirmation: ["PoolFactory", "Router", "BorrowerOperations", "TroveManager", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO"],
+  needsConfirmation: ["PoolFactory", "Router", "BorrowerOperations", "TroveManager", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "Delegate7702"],
 };
 
 export const SEED_REGISTRY: Record<NetworkName, NetworkRegistry> = {

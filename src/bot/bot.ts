@@ -10,6 +10,7 @@ import {
 } from "./handlers/onboarding.js";
 import { handlePortfolio, handleDeposit } from "./handlers/portfolio.js";
 import { handleLimits, handleWatch } from "./handlers/limits.js";
+import { handleUpgrade } from "./handlers/delegate.js";
 import {
   handleSwapIntent,
   handleSwapConfirm,
@@ -50,6 +51,7 @@ export function buildBot(): Bot {
         "/portfolio — your balances\n" +
         "/deposit — deposit address + QR\n" +
         "/limits — view/adjust spending caps\n" +
+        "/upgrade — enable EIP-7702 smart account (scoped session key)\n" +
         "/watch — toggle watch-only (read-only) mode\n" +
         "/cancel — cancel a pending action\n" +
         "/diag — run a health self-test\n\n" +
@@ -59,6 +61,7 @@ export function buildBot(): Bot {
   bot.command("portfolio", handlePortfolio);
   bot.command("deposit", handleDeposit);
   bot.command("limits", handleLimits);
+  bot.command("upgrade", handleUpgrade);
   bot.command("watch", handleWatch);
   bot.command("cancel", async (ctx) => {
     if (ctx.from?.id) clearPending(ctx.from.id);

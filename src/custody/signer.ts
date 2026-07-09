@@ -1,5 +1,6 @@
 import {
   createWalletClient,
+  encodeFunctionData,
   http,
   type Address,
   type Hex,
@@ -8,7 +9,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { env } from "../config/env.js";
 import { chainFor } from "../chain/networks.js";
-import { store, type UserRecord } from "../db/store.js";
+import { store, type UserRecord, type SessionKey } from "../db/store.js";
+import { sessionKeyDelegateAbi } from "../abis/delegate.js";
 import { LocalKeyStore } from "./localKeystore.js";
 import { limitsOf, fmtBtc } from "./policy.js";
 
@@ -78,11 +80,33 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
   }
 }
 
-export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promise<Hex> {
-  assertPolicy(user, plan);
-  const chain = chainFor(env.network);
+/** True when the account is an EIP-7702 smart account with a live session key. */
+function usableSession(user: UserRecord): SessionKey | undefined {
+  if (!user.delegation || !user.session) return undefined;
+  if (user.session.expiresAt <= Math.floor(Date.now() / 1000)) return undefined;
+  return user.session;
+}
 
-  const hash = await keystore().use(user.sealedKey, async (privateKey) => {
+export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promise<Hex> {
+  // App-layer policy re-check (defense in depth) runs regardless of path. For a
+  // delegated account the delegate contract ALSO enforces caps/allowlist/expiry
+  // on-chain, so a bypass of this layer still cannot exceed scope.
+  assertPolicy(user, plan);
+
+  const session = usableSession(user);
+  const hash = session
+    ? await submitViaSession(user, session, plan)
+    : await submitDirect(user, plan);
+
+  // Record the native value against the daily cap only after a successful submit.
+  store.addSpend(user.telegramId, plan.value ?? 0n, new Date().toISOString());
+  return hash;
+}
+
+/** Legacy path: the root EOA signs and submits the transaction directly. */
+async function submitDirect(user: UserRecord, plan: SignablePlan): Promise<Hex> {
+  const chain = chainFor(env.network);
+  return keystore().use(user.sealedKey, async (privateKey) => {
     const account = privateKeyToAccount(privateKey);
     if (account.address.toLowerCase() !== user.address.toLowerCase()) {
       throw new PolicyViolationError("Sealed key does not match the account address.");
@@ -100,8 +124,36 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
     // viem estimates gas / fees; native BTC is the gas asset on Mezo.
     return wallet.sendTransaction(request as never);
   });
+}
 
-  // Record the native value against the daily cap only after a successful submit.
-  store.addSpend(user.telegramId, plan.value ?? 0n, new Date().toISOString());
-  return hash;
+/**
+ * EIP-7702 path: the SESSION key sends `execute(to, value, data)` to the
+ * delegated root account. The op runs in the account's context and is bounded
+ * on-chain by the delegate. The root key is never touched here.
+ */
+async function submitViaSession(
+  user: UserRecord,
+  session: SessionKey,
+  plan: SignablePlan,
+): Promise<Hex> {
+  const chain = chainFor(env.network);
+  const data = encodeFunctionData({
+    abi: sessionKeyDelegateAbi,
+    functionName: "execute",
+    args: [plan.to, plan.value ?? 0n, plan.data ?? "0x"],
+  });
+  return keystore().use(session.sealedKey, async (privateKey) => {
+    const account = privateKeyToAccount(privateKey);
+    if (account.address.toLowerCase() !== session.address.toLowerCase()) {
+      throw new PolicyViolationError("Sealed session key does not match its address.");
+    }
+    const wallet = createWalletClient({
+      account,
+      chain,
+      transport: http(chain.rpcUrls.default.http[0]),
+    });
+    // Target the account (root EOA); the delegate forwards to plan.to.
+    const request: TransactionRequest = { to: user.address, data };
+    return wallet.sendTransaction(request as never);
+  });
 }

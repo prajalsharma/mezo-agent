@@ -11,3 +11,8 @@ data/
 # test-run data dirs
 data-*/
 package-lock.json
+
+# Foundry (contracts/) build output and vendored deps
+contracts/out/
+contracts/cache/
+contracts/lib/

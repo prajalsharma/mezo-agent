@@ -4,6 +4,8 @@ import { chainFor } from "../chain/networks.js";
 import { publicClient } from "../chain/client.js";
 import { LocalKeyStore } from "../custody/localKeystore.js";
 import { store } from "../db/store.js";
+import { probe7702Support } from "../chain/eip7702.js";
+import { registry } from "../registry/registry.js";
 import { errMsg } from "./log.js";
 
 /**
@@ -78,6 +80,20 @@ export async function runPreflight(): Promise<CheckResult[]> {
       if (actual !== expected) throw new Error(`RPC chainId ${actual} != expected ${expected}`);
       const block = await publicClient().getBlockNumber();
       return `${chainFor(env.network).rpcUrls.default.http[0]} chainId=${actual} block=${block}`;
+    }),
+  );
+
+  // 5. EIP-7702 — non-fatal. Confirms the endpoint accepts set-code (type-0x04)
+  //    transactions and reports whether the session-key delegate is configured.
+  //    This is the "week-one capability probe" that gates the non-custodial path.
+  results.push(
+    await check("eip7702", async () => {
+      const probe = await probe7702Support();
+      const delegate = registry.hasContract("Delegate7702")
+        ? `delegate=${registry.contract("Delegate7702")}`
+        : "delegate=unset (session-key contract not yet deployed/registered)";
+      if (!probe.supported) throw new Error(`${probe.detail}; ${delegate}`);
+      return `${probe.detail}; ${delegate}`;
     }),
   );
 

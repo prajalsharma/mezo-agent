@@ -156,6 +156,17 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
   a smart account with an on-chain session-key module (ERC-7579/4337) or EIP-7702
   delegation, where the user keeps custody and the agent holds only a scoped,
   revocable permission. The `KeyStore` interface is built for that swap.
+  **Status:** the EIP-7702 path is now implemented as a first step (semi-custodial
+  "Option A"). Mezo mainnet accepts type-`0x04` set-code transactions (Prague is
+  active). `contracts/SessionKeyDelegate.sol` is the on-chain session-key delegate
+  (allowlist + per-tx / rolling-24h caps + expiry, enforced on-chain and root-only
+  to manage); `/upgrade` has the root self-sign the authorization and register a
+  scoped session key, after which routine ops are signed by the session key via
+  `signer.ts`. The root key still lives in the app-level store in this step (hence
+  *semi*-custodial); moving root custody to the user (fully non-custodial "Option
+  B") reuses the same delegate and signer seams. The delegate is unaudited and
+  must be deployed + registered per network before `/upgrade` is available —
+  see `contracts/README.md`.
 - Spending caps currently bound **native BTC** value; per-token (ERC-20) USD caps
   come with the price feed. Seed-phrase import uses the standard EVM path
   `m/44'/60'/0'/0/0` (account 0).
