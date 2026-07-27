@@ -155,4 +155,78 @@ contract SessionKeyDelegateTest is Test {
         vm.expectRevert(SessionKeyDelegate.UnknownSession.selector);
         delegate.execute(address(target), 0.1 ether, abi.encodeCall(Target.ping, ()));
     }
+
+    // ─── Audit regression: F1 self-call confused-deputy escalation ─────────────
+
+    function test_cannotRegisterSelfAsTarget() public {
+        // Allowlisting the account's own address for a session is forbidden — this
+        // is the precondition for the self-call escalation, so it can't be created.
+        address[] memory t = new address[](1);
+        t[0] = address(delegate);
+        vm.prank(address(delegate));
+        vm.expectRevert(SessionKeyDelegate.SelfTargetForbidden.selector);
+        delegate.registerSession(sessionKey, expiry, PER_TX, DAILY, t);
+    }
+
+    function test_sessionCannotCallDelegateItself() public {
+        _register(sessionKey, _targets());
+        // Even attempting to route a call back into the delegate is rejected
+        // before any allowlist/cap check — closing the onlySelf bypass.
+        vm.prank(sessionKey);
+        vm.expectRevert(SessionKeyDelegate.SelfTargetForbidden.selector);
+        delegate.execute(
+            address(delegate),
+            0,
+            abi.encodeCall(
+                SessionKeyDelegate.registerSession,
+                (sessionKey, type(uint48).max, type(uint128).max, type(uint128).max, new address[](0))
+            )
+        );
+    }
+
+    function test_setTargetRejectsSelfAndRequiresSession() public {
+        vm.prank(address(delegate));
+        vm.expectRevert(SessionKeyDelegate.UnknownSession.selector);
+        delegate.setTarget(sessionKey, address(target), true); // no session yet
+
+        _register(sessionKey, _targets());
+        vm.prank(address(delegate));
+        vm.expectRevert(SessionKeyDelegate.SelfTargetForbidden.selector);
+        delegate.setTarget(sessionKey, address(delegate), true);
+    }
+
+    // ─── Audit regression: F2 scope is replaced, not unioned ───────────────────
+
+    function test_reRegisterReplacesTargets() public {
+        Target other = new Target();
+        _register(sessionKey, _targets()); // allow `target`
+        assertTrue(delegate.isAllowed(sessionKey, address(target)));
+
+        address[] memory t2 = new address[](1);
+        t2[0] = address(other);
+        vm.prank(address(delegate));
+        delegate.registerSession(sessionKey, expiry, PER_TX, DAILY, t2); // now only `other`
+
+        assertFalse(delegate.isAllowed(sessionKey, address(target)), "old target must be cleared");
+        assertTrue(delegate.isAllowed(sessionKey, address(other)));
+        vm.prank(sessionKey);
+        vm.expectRevert(
+            abi.encodeWithSelector(SessionKeyDelegate.TargetNotAllowed.selector, address(target))
+        );
+        delegate.execute(address(target), 0, abi.encodeCall(Target.ping, ()));
+    }
+
+    function test_revokeClearsAllowlistAcrossReuse() public {
+        _register(sessionKey, _targets());
+        vm.prank(address(delegate));
+        delegate.revokeSession(sessionKey);
+        // Reusing the same key address with a different scope must not inherit
+        // the old allowlist entry.
+        Target other = new Target();
+        address[] memory t2 = new address[](1);
+        t2[0] = address(other);
+        vm.prank(address(delegate));
+        delegate.registerSession(sessionKey, expiry, PER_TX, DAILY, t2);
+        assertFalse(delegate.isAllowed(sessionKey, address(target)), "stale target survived revoke");
+    }
 }

@@ -220,6 +220,10 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
   true USD-denominated caps come with the price feed. Seed-phrase import uses the
   standard EVM path `m/44'/60'/0'/0/0` (account 0).
 - The `SessionKeyDelegate` contract now has a passing Foundry test suite
-  (`npm run contracts:test`, 11 tests). Deploy it with
+  (`npm run contracts:test`, 16 tests, 5 of them audit regressions). It went
+  through a 12-agent adversarial audit (Pashov `solidity-auditor`) — the critical
+  self-call escalation and the high stale-allowlist bug are **fixed and tested**;
+  the native-value-only cap scope and fixed-window bound are documented, not
+  hidden. See **[AUDIT.md](AUDIT.md)**. Deploy it with
   `contracts/script/Deploy.s.sol` and set `DELEGATE7702_ADDRESS` to enable
-  `/upgrade`. It remains unaudited pending the security review.
+  `/upgrade`. It remains unaudited by a third party pending the security review.
