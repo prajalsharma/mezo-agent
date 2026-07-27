@@ -51,6 +51,9 @@ export const env = {
   },
 
   dataDir: optional("DATA_DIR", "./data"),
+
+  /** Keeper (DCA / auto-compound) global kill-switch. Off unless explicitly on. */
+  keeperEnabled: optional("KEEPER_ENABLED", "false").toLowerCase() === "true",
 } as const;
 
 /** True when the LLM parser is usable; otherwise the deterministic parser is used. */

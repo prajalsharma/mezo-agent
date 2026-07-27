@@ -129,6 +129,23 @@ export function getUser(telegramId: number): UserRecord | undefined {
   return store.getUser(telegramId);
 }
 
+/** Multi-account: create an ADDITIONAL account and make it active. */
+export async function createAccount(telegramId: number): Promise<UserRecord> {
+  return createWallet(telegramId); // saveUser appends a new address + activates it
+}
+
+export function listAccounts(telegramId: number): UserRecord[] {
+  return store.listAccounts(telegramId);
+}
+
+export function activeIndex(telegramId: number): number {
+  return store.activeIndex(telegramId);
+}
+
+export function switchAccount(telegramId: number, index: number): UserRecord | undefined {
+  return store.switchAccount(telegramId, index);
+}
+
 /** Set watch-only vs active mode. Watch-only blocks all signing. */
 export function setMode(telegramId: number, mode: "active" | "watch-only"): UserRecord | undefined {
   const user = store.getUser(telegramId);

@@ -68,14 +68,43 @@ export type SpendRecord = {
   at: string; // ISO timestamp
 };
 
-type Db = {
-  users: Record<string, UserRecord>;
-  txHistory: TxRecord[];
-  spendLedger: SpendRecord[];
+/** A pre-authorized, revocable DCA schedule (Phase 5 automation). */
+export type DcaSchedule = {
+  id: string;
+  telegramId: number;
+  accountAddress: Address;
+  fromToken: string;
+  toToken: string;
+  amount: string; // human amount per interval
+  everyHours: number;
+  remaining: number; // occurrences left (Infinity-safe: -1 = unbounded)
+  nextRunAt: string; // ISO
+  createdAt: string;
+  active: boolean;
 };
 
+/** Per-account epoch auto-compound preference (Phase 5 automation). */
+export type AutoCompound = {
+  telegramId: number;
+  accountAddress: Address;
+  enabled: boolean;
+  intoToken?: string;
+};
+
+type Db = {
+  /** Multi-account: each Telegram user can hold several accounts. */
+  accounts: Record<string, UserRecord[]>;
+  active: Record<string, number>;
+  txHistory: TxRecord[];
+  spendLedger: SpendRecord[];
+  schedules: DcaSchedule[];
+  autoCompound: AutoCompound[];
+};
+
+type LegacyDb = Db & { users?: Record<string, UserRecord> };
+
 class Store {
-  private db: Db = { users: {}, txHistory: [], spendLedger: [] };
+  private db: Db = { accounts: {}, active: {}, txHistory: [], spendLedger: [], schedules: [], autoCompound: [] };
   private readonly path: string;
 
   constructor() {
@@ -90,12 +119,19 @@ class Store {
     }
     this.path = join(env.dataDir, `mezo-agent.${env.network}.json`);
     if (existsSync(this.path)) {
-      const loaded = JSON.parse(readFileSync(this.path, "utf8")) as Partial<Db>;
-      // Backfill fields added in later versions so old stores load cleanly.
+      const loaded = JSON.parse(readFileSync(this.path, "utf8")) as Partial<LegacyDb>;
+      const accounts = loaded.accounts ?? {};
+      // Migrate a legacy single-account store ({users}) into the multi-account shape.
+      if (loaded.users && Object.keys(accounts).length === 0) {
+        for (const [id, user] of Object.entries(loaded.users)) accounts[id] = [user];
+      }
       this.db = {
-        users: loaded.users ?? {},
+        accounts,
+        active: loaded.active ?? {},
         txHistory: loaded.txHistory ?? [],
         spendLedger: loaded.spendLedger ?? [],
+        schedules: loaded.schedules ?? [],
+        autoCompound: loaded.autoCompound ?? [],
       };
     } else {
       this.flush();
@@ -115,12 +151,47 @@ class Store {
     }
   }
 
+  /** The user's ACTIVE account (multi-account aware). */
   getUser(telegramId: number): UserRecord | undefined {
-    return this.db.users[String(telegramId)];
+    const list = this.db.accounts[String(telegramId)];
+    if (!list || list.length === 0) return undefined;
+    const idx = this.db.active[String(telegramId)] ?? 0;
+    return list[Math.min(idx, list.length - 1)];
   }
 
+  /** All accounts for a user, in creation order. */
+  listAccounts(telegramId: number): UserRecord[] {
+    return this.db.accounts[String(telegramId)] ?? [];
+  }
+
+  activeIndex(telegramId: number): number {
+    return this.db.active[String(telegramId)] ?? 0;
+  }
+
+  /** Switch the active account. Returns the newly-active record, or undefined. */
+  switchAccount(telegramId: number, index: number): UserRecord | undefined {
+    const list = this.db.accounts[String(telegramId)];
+    if (!list || index < 0 || index >= list.length) return undefined;
+    this.db.active[String(telegramId)] = index;
+    this.flush();
+    return list[index];
+  }
+
+  /**
+   * Upsert by (telegramId, address): replaces the matching account in place, or
+   * appends a NEW account and makes it active. This keeps every existing
+   * `saveUser` caller working while enabling multi-account onboarding.
+   */
   saveUser(user: UserRecord): void {
-    this.db.users[String(user.telegramId)] = user;
+    const id = String(user.telegramId);
+    const list = (this.db.accounts[id] ??= []);
+    const at = list.findIndex((u) => u.address.toLowerCase() === user.address.toLowerCase());
+    if (at >= 0) {
+      list[at] = user;
+    } else {
+      list.push(user);
+      this.db.active[id] = list.length - 1; // new account becomes active
+    }
     this.flush();
   }
 
@@ -171,6 +242,46 @@ class Store {
     return this.db.spendLedger
       .filter((s) => s.telegramId === telegramId && Date.parse(s.at) >= cutoff)
       .reduce((sum, s) => sum + BigInt(s.valueWei), 0n);
+  }
+
+  // ── Automation: DCA schedules ──────────────────────────────────────────────
+  addSchedule(s: DcaSchedule): void {
+    this.db.schedules.push(s);
+    this.flush();
+  }
+  listSchedules(telegramId: number): DcaSchedule[] {
+    return this.db.schedules.filter((s) => s.telegramId === telegramId);
+  }
+  /** All schedules due to run at/after `nowIso` (for the keeper). */
+  dueSchedules(nowIso: string): DcaSchedule[] {
+    return this.db.schedules.filter((s) => s.active && s.nextRunAt <= nowIso);
+  }
+  updateSchedule(id: string, patch: Partial<DcaSchedule>): void {
+    const s = this.db.schedules.find((x) => x.id === id);
+    if (s) { Object.assign(s, patch); this.flush(); }
+  }
+  cancelSchedule(id: string): boolean {
+    const s = this.db.schedules.find((x) => x.id === id);
+    if (!s) return false;
+    s.active = false;
+    this.flush();
+    return true;
+  }
+  newId(): string { return randomUUID(); }
+
+  // ── Automation: auto-compound preference ───────────────────────────────────
+  setAutoCompound(pref: AutoCompound): void {
+    const i = this.db.autoCompound.findIndex(
+      (a) => a.telegramId === pref.telegramId && a.accountAddress.toLowerCase() === pref.accountAddress.toLowerCase(),
+    );
+    if (i >= 0) this.db.autoCompound[i] = pref;
+    else this.db.autoCompound.push(pref);
+    this.flush();
+  }
+  getAutoCompound(telegramId: number, accountAddress: Address): AutoCompound | undefined {
+    return this.db.autoCompound.find(
+      (a) => a.telegramId === telegramId && a.accountAddress.toLowerCase() === accountAddress.toLowerCase(),
+    );
   }
 }
 

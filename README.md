@@ -4,9 +4,19 @@ A conversational agent that lets a user operate the Mezo ecosystem (Borrow, Swap
 Earn, veBTC/veMEZO locking + voting, Matchbox, Market) in plain language, with
 **every fund-moving action gated behind a simulated, human-readable confirmation.**
 
-This repository is being built in phases. **This is Phase 1.**
+This repository is built in phases. **Phases 1–5 are implemented.**
 
-## Phase 1 scope (this build)
+> **How to read "status" below.** Mezo has published addresses only for tokens,
+> the PoolFactory, and the DEX pools. Borrow, VotingEscrow, Voter, Matchbox and
+> Market addresses are **not** in the canonical reference yet. Per the security
+> rule *never invent an address*, every surface that needs an unpublished address
+> is built end-to-end (typed intent → validate → **build real calldata** →
+> simulate → confirm → sign) but **execution-gated** until the address is set in
+> the registry (via env). Pure-logic features (optimal voting, DCA scheduling,
+> multi-account) are fully live and unit-tested. "✅ live" = works today; "✅
+> gated" = code-complete + tested, activates when the address lands.
+
+## Phase 1 scope
 
 | Feature | Status |
 | --- | --- |
@@ -19,8 +29,38 @@ This repository is being built in phases. **This is Phase 1.**
 | Spending limits (per-tx + rolling 24h cap) & watch-only mode | ✅ enforced in the signer (`/limits`, `/watch`) |
 | Health self-test | ✅ `/diag` |
 
-Later phases add Borrow/Troves, zap-to-enter + LP staking, claim-all, locking &
-voting, Matchbox pairing, Mezo Market, and the DCA / auto-convert keeper.
+## Phases 2–5 scope
+
+| Phase | Feature | Status |
+| --- | --- | --- |
+| **2** | Borrow (open Trove) — min-net-debt + MCR guardrails, borrowing-fee preview | ✅ gated (Liquity ABI) |
+| 2 | Repay / Adjust / Close Trove | ✅ gated |
+| 2 | Vault deposit · Stake / Unstake LP · Claim rewards | ✅ gated |
+| **3** | Lock veBTC (1–28d) / veMEZO (≤4y), Extend | ✅ gated (VotingEscrow ABI) |
+| 3 | Vote — **optimal** (water-filling) + manual | ✅ optimizer live & tested; on-chain vote gated |
+| 3 | Mezo Market — browse / buy | ✅ gated |
+| **4** | Zap-to-enter (single asset → LP, optional stake) | ✅ split quoted live; execution gated |
+| 4 | Matchbox pairing · veNFT transfer / merge | ✅ gated |
+| **5** | DCA schedules (pre-authorized, scoped, revocable) | ✅ **live** (scheduler + keeper, unit-tested) |
+| 5 | Auto-compound preference · Multi-account | ✅ **live** |
+| 5 | Optimal-voting algorithm (transparent, documented) | ✅ **live** (`src/core/optimalVoting.ts`) |
+
+**Throughout (not deferred):** session-key custody (EIP-7702), simulate-before-sign
+on every step, explicit confirmation + step-up, the three-layer security model, and
+tests (`smoke`, `policycheck`, `phasecheck`, `swapcheck`, `contracts:test`).
+
+The natural-language parser understands all of the above (LLM path + a
+deterministic fallback that needs no model vendor). Every fund-moving action —
+manual or scheduled — passes through the same signer caps/allowlist, so a
+schedule can never exceed what a manual action could.
+
+### Enabling gated surfaces
+
+Each gated surface activates by adding its confirmed address to the registry
+(`src/registry/addresses.ts`) or via env — no code change. For example, set
+`MEZO_ROUTER_ADDRESS` for swap/zap execution, or add `BorrowerOperations`,
+`HintHelpers`, `SortedTroves`, `PriceFeed` for live Borrow. The bot refuses to
+act against an unconfirmed address rather than invent one.
 
 ## The core invariant
 

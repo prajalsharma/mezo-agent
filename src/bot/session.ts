@@ -1,4 +1,5 @@
 import type { SwapPlan } from "../surfaces/swap/swapBuilder.js";
+import type { ActionPlan } from "../surfaces/plan.js";
 
 /**
  * Short-lived, in-memory pending-confirmation state. A built+simulated plan is
@@ -10,6 +11,7 @@ import type { SwapPlan } from "../surfaces/swap/swapBuilder.js";
 
 type PendingInput =
   | { kind: "swap"; plan: SwapPlan; stepUpPending?: boolean }
+  | { kind: "action"; plan: ActionPlan; stepUpPending?: boolean }
   | { kind: "import-await" };
 
 type Pending = PendingInput & { expiresAt: number };

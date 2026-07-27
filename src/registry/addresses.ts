@@ -55,11 +55,20 @@ export const WRAPPED_NATIVE_ADDRESS =
 export type ContractKey =
   | "PoolFactory"
   | "Router"
+  // Borrow / MUSD (Liquity-style CDP)
   | "BorrowerOperations"
   | "TroveManager"
+  | "SortedTroves"
+  | "HintHelpers"
+  | "PriceFeed"
+  // Earn / ve(3,3)
   | "Voter"
   | "VotingEscrowBTC"
   | "VotingEscrowMEZO"
+  | "RewardsDistributor"
+  // Other surfaces
+  | "Matchbox"
+  | "Market"
   /**
    * EIP-7702 session-key delegate. This is the contract an account's EOA points
    * its delegation designator at (`0xef0100 || Delegate7702`). It holds the

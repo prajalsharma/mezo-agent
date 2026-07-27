@@ -50,27 +50,70 @@ export async function parseIntent(
   return parsed.data;
 }
 
-/** Deterministic fallback: "swap <amount> <TOKEN> to|for|-> <TOKEN>". */
+/**
+ * Deterministic fallback parser — covers the headline commands of every phase so
+ * the bot is fully usable with no model vendor. The LLM path handles the long
+ * tail; this never guesses tokens (it resolves against knownSymbols) or amounts.
+ */
 export function fallbackParse(message: string, knownSymbols: string[]): IntentT {
-  const m = message
-    .trim()
-    .match(/(?:swap|trade|convert)\s+(\d+(?:\.\d+)?)\s+([a-z0-9]+)\s+(?:to|for|into|->)\s+([a-z0-9]+)/i);
-  if (!m) {
-    return {
-      action: "clarify",
-      question: `I understand swaps like: "swap 100 MUSD to mUSDC". Known tokens: ${knownSymbols.join(", ")}.`,
-    };
+  const t = message.trim();
+  const lower = t.toLowerCase();
+  const resolve = (s: string) => knownSymbols.find((k) => k.toLowerCase() === s.toLowerCase());
+  const num = "(\\d+(?:\\.\\d+)?)";
+
+  // Read-only / meta
+  if (/\b(portfolio|balances?|holdings?|positions?)\b/.test(lower)) return { action: "portfolio" };
+  if (/\bnew account\b|\bcreate account\b/.test(lower)) return { action: "account", op: "new" };
+  if (/\blist accounts?\b|\bmy accounts?\b/.test(lower)) return { action: "account", op: "list" };
+  { const m = lower.match(/switch.*account\s+(\d+)/); if (m) return { action: "account", op: "switch", index: Number(m[1]) }; }
+
+  // Swap
+  { const m = t.match(new RegExp(`(?:swap|trade|convert)\\s+${num}\\s+([a-z0-9]+)\\s+(?:to|for|into|->)\\s+([a-z0-9]+)`, "i"));
+    if (m) { const f = resolve(m[2]!), to = resolve(m[3]!); if (f && to) return { action: "swap", amount: m[1]!, fromToken: f, toToken: to }; } }
+
+  // DCA: "dca 50 MUSD to BTC every 24h [x5]"
+  { const m = t.match(new RegExp(`dca\\s+${num}\\s+([a-z0-9]+)\\s+(?:to|into)\\s+([a-z0-9]+)\\s+every\\s+${num}\\s*(h|hour|hours|d|day|days)`, "i"));
+    if (m) { const f = resolve(m[2]!), to = resolve(m[3]!); const unit = m[5]!.toLowerCase();
+      const hours = unit.startsWith("d") ? Number(m[4]) * 24 : Number(m[4]);
+      if (f && to) return { action: "dcaCreate", fromToken: f, toToken: to, amount: m[1]!, everyHours: hours }; } }
+  if (/\bcancel dca\b|\bstop dca\b/.test(lower)) { const m = t.match(/dca\s+([0-9a-f]{4,})/i); return { action: "dcaCancel", ...(m ? { scheduleId: m[1] } : {}) }; }
+  if (/\bauto.?compound\b/.test(lower)) return { action: "autoCompound", enabled: !/\boff|disable|stop\b/.test(lower) };
+
+  // Borrow: "borrow 5000 MUSD against 0.1 BTC"
+  { const m = t.match(new RegExp(`borrow\\s+${num}\\s+musd\\s+(?:against|with|using)\\s+${num}\\s+btc`, "i"));
+    if (m) return { action: "borrow", mintMUSD: m[1]!, collateralBTC: m[2]! }; }
+  { const m = t.match(new RegExp(`repay\\s+${num}\\s+musd`, "i")); if (m) return { action: "repay", repayMUSD: m[1]! }; }
+  if (/\bclose\s+trove\b/.test(lower)) return { action: "closeTrove" };
+
+  // Lock: "lock 0.2 BTC for 28 days" / "lock 1000 MEZO for 2 years"
+  { const m = t.match(new RegExp(`lock\\s+${num}\\s+(btc|mezo)\\s+for\\s+${num}\\s*(day|days|week|weeks|year|years)`, "i"));
+    if (m) { const unit = m[4]!.toLowerCase(); const n = Number(m[3]);
+      const days = unit.startsWith("year") ? Math.round(n * 365) : unit.startsWith("week") ? n * 7 : n;
+      return { action: "lock", asset: m[2]!.toUpperCase() as "BTC" | "MEZO", amount: m[1]!, lockDays: days }; } }
+
+  // Vote / claim
+  if (/\bvote\b/.test(lower)) return { action: "vote", mode: /\bmanual\b/.test(lower) ? "manual" : "optimal" };
+  if (/\bclaim\b|\bharvest\b/.test(lower)) {
+    const scope = /\brebase/.test(lower) ? "rebase" : /\bbribe/.test(lower) ? "bribe" : /\bgauge/.test(lower) ? "gauge" : "all";
+    return { action: "claim", scope };
   }
-  const [, amount, from, to] = m;
-  const resolve = (s: string) =>
-    knownSymbols.find((k) => k.toLowerCase() === s!.toLowerCase());
-  const fromToken = resolve(from!);
-  const toToken = resolve(to!);
-  if (!fromToken || !toToken) {
-    return {
-      action: "clarify",
-      question: `I only know these tokens: ${knownSymbols.join(", ")}. Which did you mean?`,
-    };
-  }
-  return { action: "swap", amount: amount!, fromToken, toToken };
+
+  // Zap: "zap 0.01 BTC into MUSD/mUSDC"
+  { const m = t.match(new RegExp(`zap\\s+${num}\\s+([a-z0-9]+)\\s+(?:into|to)\\s+([a-z0-9]+/[a-z0-9]+)`, "i"));
+    if (m) { const f = resolve(m[2]!); if (f) return { action: "zap", inputToken: f, inputAmount: m[1]!, pool: m[3]!.toUpperCase(), stake: true }; } }
+
+  // Stake / unstake LP: "stake LP MUSD/mUSDC"
+  { const m = t.match(/(stake|unstake)\s+(?:lp\s+)?([a-z0-9]+\/[a-z0-9]+)/i);
+    if (m) return m[1]!.toLowerCase() === "stake" ? { action: "stakeLp", pool: m[2]!.toUpperCase() } : { action: "unstakeLp", pool: m[2]!.toUpperCase() }; }
+
+  // Market
+  if (/\bbrowse market\b|\bmarket\b/.test(lower) && !/buy/.test(lower)) return { action: "marketBrowse" };
+  { const m = t.match(/buy\s+(?:listing\s+)?([a-z0-9]+)/i); if (m) return { action: "marketBuy", listingId: m[1]! }; }
+
+  return {
+    action: "clarify",
+    question:
+      `I didn't catch that. Try: "swap 100 MUSD to mUSDC", "borrow 5000 MUSD against 0.1 BTC", ` +
+      `"lock 0.2 BTC for 28 days", "vote optimally", or /help. Known tokens: ${knownSymbols.join(", ")}.`,
+  };
 }

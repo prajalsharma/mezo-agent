@@ -1,6 +1,8 @@
 import { buildBot, startupBanner } from "./bot/bot.js";
 import { runPreflight, formatPreflightText } from "./core/preflight.js";
 import { log, errMsg } from "./core/log.js";
+import { env } from "./config/env.js";
+import { startKeeper } from "./keeper/scheduler.js";
 
 /**
  * Entry point. Phase 1 runs the bot in long-polling mode for local development.
@@ -33,6 +35,13 @@ async function main() {
   }
 
   const bot = buildBot();
+
+  // Keeper for pre-authorized automation (DCA / auto-compound). Off by default;
+  // a global kill-switch (KEEPER_ENABLED) gates all scheduled execution.
+  if (env.keeperEnabled) {
+    startKeeper();
+    console.log("⏱️  Keeper enabled (DCA / auto-compound).");
+  }
 
   process.once("SIGINT", () => bot.stop());
   process.once("SIGTERM", () => bot.stop());

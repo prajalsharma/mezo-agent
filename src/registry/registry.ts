@@ -100,6 +100,12 @@ class ContractRegistry {
     return token.native ? WRAPPED_NATIVE_ADDRESS : token.address;
   }
 
+  /** ERC-20 address for a symbol (native BTC maps to its precompile). Undefined if unknown. */
+  erc20Of(symbol: string): Address | undefined {
+    const t = this.tryToken(symbol);
+    return t ? this.routingAddress(t) : undefined;
+  }
+
   /** Whether an address is provisional and must be confirmed on-chain. */
   needsConfirmation(key: ContractKey): boolean {
     return this.data.needsConfirmation.includes(key);
