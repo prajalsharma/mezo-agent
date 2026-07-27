@@ -17,7 +17,6 @@ import type { BorrowIntent, RepayIntent, AdjustIntent } from "../llm/intent.js";
 
 const MIN_NET_DEBT_MUSD = 1_800;
 const MCR = 1.1; // 110%
-const MAX_FEE_PCT_WEI = parseEther("0.05"); // 5% max borrowing fee slippage
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
 const NEEDED = ["BorrowerOperations", "HintHelpers", "SortedTroves", "PriceFeed"] as const;
@@ -68,7 +67,7 @@ export function buildBorrow(intent: BorrowIntent): ActionPlan {
     data: encodeFunctionData({
       abi: borrowerOperationsAbi,
       functionName: "openTrove",
-      args: [MAX_FEE_PCT_WEI, parseUnits(intent.mintMUSD, 18), ZERO, ZERO],
+      args: [parseUnits(intent.mintMUSD, 18), ZERO, ZERO],
     }),
     value: parseEther(intent.collateralBTC),
     describe: `Open Trove: ${intent.collateralBTC} BTC → ${intent.mintMUSD} MUSD`,
@@ -123,15 +122,93 @@ export function buildAdjust(intent: AdjustIntent): ActionPlan {
   if (repay) summary.push(`Repay MUSD: −${intent.repayMUSD}`);
   const warnings = ["Adjustments must keep the collateral ratio above 110%; the live ratio is checked before signing."];
 
-  // Adjust maps to individual BorrowerOperations calls; gated the same way.
-  return borrowGated("🔧 Adjust Trove", "adjust", summary, warnings);
+  if (NEEDED.some((k) => !registry.hasContract(k))) {
+    return borrowGated("🔧 Adjust Trove", "adjust", summary, warnings);
+  }
+
+  const bo = registry.contract("BorrowerOperations");
+  const musd = registry.erc20Of("MUSD");
+  const steps: ActionStep[] = [];
+
+  // Order matters: anything that IMPROVES the collateral ratio runs first, so a
+  // multi-part adjustment never dips below MCR midway and revert the whole plan.
+  // Adding collateral and repaying debt both raise the ratio; withdrawing
+  // collateral and minting both lower it.
+  if (addColl > 0) {
+    steps.push({
+      kind: "addColl", to: bo, value: parseEther(intent.addCollateralBTC!),
+      data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "addColl", args: [ZERO, ZERO] }),
+      describe: `Add ${intent.addCollateralBTC} BTC collateral`,
+    });
+  }
+  if (repay > 0) {
+    if (musd) {
+      steps.push({
+        kind: "approval", to: musd, value: 0n,
+        data: encodeFunctionData({
+          abi: [{ type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ name: "s", type: "address" }, { name: "a", type: "uint256" }], outputs: [{ type: "bool" }] }] as const,
+          functionName: "approve", args: [bo, parseUnits(intent.repayMUSD!, 18)],
+        }),
+        describe: `Approve ${intent.repayMUSD} MUSD`,
+        erc20: { symbol: "MUSD", amount: parseUnits(intent.repayMUSD!, 18) },
+        waitForReceipt: true,
+      });
+    }
+    steps.push({
+      kind: "repayMUSD", to: bo, value: 0n,
+      data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "repayMUSD", args: [parseUnits(intent.repayMUSD!, 18), ZERO, ZERO] }),
+      describe: `Repay ${intent.repayMUSD} MUSD`,
+    });
+  }
+  if (withdrawColl > 0) {
+    steps.push({
+      kind: "withdrawColl", to: bo, value: 0n,
+      data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "withdrawColl", args: [parseEther(intent.withdrawCollateralBTC!), ZERO, ZERO] }),
+      describe: `Withdraw ${intent.withdrawCollateralBTC} BTC collateral`,
+    });
+  }
+  if (mint > 0) {
+    steps.push({
+      kind: "withdrawMUSD", to: bo, value: 0n,
+      data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "withdrawMUSD", args: [parseUnits(intent.mintMUSD!, 18), ZERO, ZERO] }),
+      describe: `Mint ${intent.mintMUSD} MUSD`,
+    });
+  }
+
+  const nativeValue = steps.reduce((sum, s) => sum + s.value, 0n);
+  return {
+    action: "adjust", title: "🔧 Adjust Trove", summary, warnings, steps,
+    allowedTargets: [bo, ...(musd ? [musd] : [])], executable: true, nativeValue,
+  };
 }
 
 export function buildCloseTrove(): ActionPlan {
-  return borrowGated(
-    "🔒 Close Trove", "closeTrove",
-    ["Repays the full MUSD debt and returns your BTC collateral.", "You must hold enough MUSD to cover the outstanding debt."],
-  );
+  const summary = [
+    "Repays the full MUSD debt and returns your BTC collateral.",
+    "You must hold enough MUSD to cover the outstanding debt.",
+  ];
+
+  if (!registry.hasContract("BorrowerOperations")) {
+    return borrowGated("🔒 Close Trove", "closeTrove", summary);
+  }
+
+  const bo = registry.contract("BorrowerOperations");
+  // No approval step: the exact debt is only knowable at execution time, and
+  // pre-approving an unbounded amount would hand BorrowerOperations a standing
+  // allowance far beyond this action — exactly what the per-token caps exist to
+  // prevent. Simulation runs before signing, so an insufficient balance or
+  // allowance surfaces as a decoded, human-readable failure instead of a
+  // wasted transaction.
+  const step: ActionStep = {
+    kind: "closeTrove", to: bo, value: 0n,
+    data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "closeTrove", args: [] }),
+    describe: "Close Trove — repay all debt, withdraw all collateral",
+  };
+  return {
+    action: "closeTrove", title: "🔒 Close Trove", summary,
+    warnings: ["This repays your entire debt in one transaction. Ensure your MUSD balance covers it."],
+    steps: [step], allowedTargets: [bo], executable: true, nativeValue: 0n,
+  };
 }
 
 /** For display/tests: does the current deployment support live borrow execution? */

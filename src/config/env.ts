@@ -41,6 +41,24 @@ export const env = {
     delegate7702: optional("DELEGATE7702_ADDRESS"),
   },
 
+  /**
+   * Generic per-contract overrides: MEZO_ADDR_<ContractKey>, e.g.
+   *   MEZO_ADDR_BORROWEROPERATIONS=0x...
+   *   MEZO_ADDR_VOTER=0x...
+   *
+   * Previously only Router and Delegate7702 had an override path, so every other
+   * surface needed a code edit to activate — which made "confirm the address and
+   * it turns on" true for two contracts and false for the other nine. Keys are
+   * matched case-insensitively against ContractKey by the registry. Malformed
+   * values are dropped here rather than reaching a signer.
+   */
+  contractOverrides: Object.entries(process.env)
+    .filter(([k, v]) => k.startsWith("MEZO_ADDR_") && /^0x[0-9a-fA-F]{40}$/.test((v ?? "").trim()))
+    .reduce<Record<string, string>>((acc, [k, v]) => {
+      acc[k.slice("MEZO_ADDR_".length).toLowerCase()] = v!.trim();
+      return acc;
+    }, {}),
+
   /** AES-256-GCM master key (hex). Validated to 32 bytes in the keystore. */
   masterEncryptionKey: required("MASTER_ENCRYPTION_KEY"),
 

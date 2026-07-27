@@ -2,7 +2,7 @@
   "name": "mezo-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Mezo conversational agent — Telegram bot for the Mezo Bitcoin-DeFi stack (Phase 1: wallet, deposit QR, portfolio, swap)",
+  "description": "Mezo conversational agent \u2014 Telegram bot for the Mezo Bitcoin-DeFi stack (Phase 1: wallet, deposit QR, portfolio, swap)",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -18,7 +18,11 @@
     "accesscheck": "TELEGRAM_ALLOWED_USER_IDS=555 tsx scripts/accesscheck.ts",
     "swapcheck": "MEZO_NETWORK=mainnet tsx scripts/swapcheck.ts",
     "phasecheck": "KEEPER_ENABLED=true tsx scripts/phasecheck.ts",
-    "contracts:test": "cd contracts && forge test"
+    "contracts:test": "cd contracts && forge test",
+    "verifyaddrs": "tsx scripts/verifyaddrs.ts",
+    "discover": "tsx scripts/discover.ts",
+    "phaseaudit": "tsx scripts/phaseaudit.ts",
+    "simcheck": "tsx scripts/simcheck.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",

@@ -1,6 +1,7 @@
 import type { Address } from "viem";
 import { env } from "../config/env.js";
 import {
+  ALL_CONTRACT_KEYS,
   SEED_REGISTRY,
   WRAPPED_NATIVE_ADDRESS,
   type ContractKey,
@@ -26,9 +27,26 @@ class ContractRegistry {
     // this is how the canonical Router / delegate get wired without editing code
     // or inventing an address. Anything unset stays gated.
     const contracts = { ...seed.contracts };
+
+    // Generic MEZO_ADDR_<KEY> overrides for every ContractKey, matched
+    // case-insensitively so MEZO_ADDR_BORROWEROPERATIONS finds
+    // "BorrowerOperations". An unknown key is ignored rather than silently
+    // creating a bogus entry.
+    for (const [lowerKey, addr] of Object.entries(env.contractOverrides)) {
+      const match = ALL_CONTRACT_KEYS.find((k) => k.toLowerCase() === lowerKey);
+      if (match) contracts[match] = addr as Address;
+    }
+
+    // Legacy named vars still work and take precedence, so existing
+    // deployments and docs do not break.
     if (env.contracts.router) contracts.Router = env.contracts.router as Address;
     if (env.contracts.delegate7702) contracts.Delegate7702 = env.contracts.delegate7702 as Address;
-    this.data = { ...seed, contracts };
+
+    // A key that now has an address is, by definition, no longer awaiting
+    // confirmation — otherwise `needsConfirmation` would keep reporting a
+    // wired contract as pending.
+    const needsConfirmation = seed.needsConfirmation.filter((k) => !contracts[k]);
+    this.data = { ...seed, contracts, needsConfirmation };
   }
 
   /** Resolve a token by symbol (case-insensitive). Throws if unknown. */

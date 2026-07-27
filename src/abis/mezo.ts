@@ -11,8 +11,14 @@
 
 // ── Borrow (Liquity fork) ────────────────────────────────────────────────────
 export const borrowerOperationsAbi = [
+  // NOTE: Mezo's MUSD fork drops Liquity's leading `_maxFeePercentage` argument
+  // from openTrove and withdrawMUSD. Using the upstream Liquity 4-arg form
+  // produces a selector no function matches, so the call reverts with NO reason
+  // string — which is easy to misread as a balance or collateral-ratio problem.
+  // Signatures verified against mezo-org/musd IBorrowerOperations.sol and
+  // confirmed by simulation (a correct selector yields a decoded protocol
+  // revert such as "BorrowerOps: Trove does not exist or is closed").
   { type: "function", name: "openTrove", stateMutability: "payable", inputs: [
-    { name: "_maxFeePercentage", type: "uint256" },
     { name: "_debtAmount", type: "uint256" },
     { name: "_upperHint", type: "address" },
     { name: "_lowerHint", type: "address" },
@@ -24,7 +30,7 @@ export const borrowerOperationsAbi = [
     { name: "_amount", type: "uint256" }, { name: "_upperHint", type: "address" }, { name: "_lowerHint", type: "address" },
   ], outputs: [] },
   { type: "function", name: "withdrawMUSD", stateMutability: "nonpayable", inputs: [
-    { name: "_maxFeePercentage", type: "uint256" }, { name: "_amount", type: "uint256" },
+    { name: "_amount", type: "uint256" },
     { name: "_upperHint", type: "address" }, { name: "_lowerHint", type: "address" },
   ], outputs: [] },
   { type: "function", name: "repayMUSD", stateMutability: "nonpayable", inputs: [

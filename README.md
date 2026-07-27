@@ -31,10 +31,16 @@ This repository is built in phases. **Phases 1–5 are implemented.**
 
 ## Phases 2–5 scope
 
+"Status" below means **executability**, not "code written". Run
+`npm run phaseaudit` to reproduce this table against the live registry — it
+builds every surface and reports whether it can sign or is preview-only and why.
+A surface is preview-only when its contract address is not published in the
+canonical reference; nothing here is gated by missing code.
+
 | Phase | Feature | Status |
 | --- | --- | --- |
-| **2** | Borrow (open Trove) — min-net-debt + MCR guardrails, borrowing-fee preview | ✅ gated (Liquity ABI) |
-| 2 | Repay / Adjust / Close Trove | ✅ gated |
+| **2** | Borrow (open Trove) — min-net-debt + MCR guardrails, borrowing-fee preview | ✅ **executable** (simulated on testnet + mainnet) |
+| 2 | Repay / Adjust / Close Trove | ✅ **executable** |
 | 2 | Vault deposit · Stake / Unstake LP · Claim rewards | ✅ gated |
 | **3** | Lock veBTC (1–28d) / veMEZO (≤4y), Extend | ✅ gated (VotingEscrow ABI) |
 | 3 | Vote — **optimal** (water-filling) + manual | ✅ optimizer live & tested; on-chain vote gated |
@@ -53,6 +59,33 @@ The natural-language parser understands all of the above (LLM path + a
 deterministic fallback that needs no model vendor). Every fund-moving action —
 manual or scheduled — passes through the same signer caps/allowlist, so a
 schedule can never exceed what a manual action could.
+
+### Address provenance and verification
+
+Addresses are read from the canonical reference, never hardcoded from memory:
+
+- **Borrow** (`BorrowerOperations`, `TroveManager`, `HintHelpers`, `SortedTroves`,
+  `PriceFeed`) — from the MUSD developer reference, then **verified on-chain** by
+  `npm run verifyaddrs`: each has deployed code, answers its own interface, and
+  all five cross-references agree (`BorrowerOperations.troveManager ==
+  TroveManager`, `TroveManager.borrowerOperations == BorrowerOperations`, and so
+  on). `BorrowerOperations.musd()` also matches the MUSD token in the registry.
+  Cross-referencing is the part that distinguishes "code exists here" from "this
+  is the live, linked deployment".
+- **DEX pools / PoolFactory** — from the contracts reference, verified live
+  (`getAmountOut` returns non-zero, `factory()` matches).
+- **Voter, VotingEscrowBTC/MEZO, RewardsDistributor, Matchbox, Market, Router** —
+  **not published** in the canonical reference at time of writing, and not
+  derivable on-chain: `npm run discover` follows accessors from PoolFactory, and
+  `PoolFactory.voter()` resolves to a Gnosis Safe 1.3.0 (5-of-N admin multisig),
+  not a ve(3,3) Voter. These surfaces stay preview-only rather than guessing.
+
+> A signature mismatch found this way: Mezo's MUSD fork drops Liquity's leading
+> `_maxFeePercentage` argument from `openTrove` and `withdrawMUSD`. The upstream
+> 4-argument form encodes a selector no function matches, so it reverts with **no
+> reason string** — indistinguishable at a glance from a collateral or balance
+> problem. Simulation caught it: a correct selector produces a decoded protocol
+> revert. `npm run simcheck` is the regression guard.
 
 ### Enabling gated surfaces
 

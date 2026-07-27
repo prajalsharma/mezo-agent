@@ -79,6 +79,19 @@ export type ContractKey =
    */
   | "Delegate7702";
 
+/**
+ * Every ContractKey, for the generic MEZO_ADDR_<KEY> env override. Declared as a
+ * value (not just a type) so the registry can match an operator-supplied key
+ * name at runtime; `satisfies` keeps it in lockstep with the union above — drop
+ * a key here and this file stops compiling.
+ */
+export const ALL_CONTRACT_KEYS = [
+  "PoolFactory", "Router",
+  "BorrowerOperations", "TroveManager", "SortedTroves", "HintHelpers", "PriceFeed",
+  "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "RewardsDistributor",
+  "Matchbox", "Market", "Delegate7702",
+] as const satisfies readonly ContractKey[];
+
 /** Sentinel for the native gas asset (BTC on Mezo, 18 decimals). */
 export const NATIVE_TOKEN_ADDRESS =
   "0x0000000000000000000000000000000000000000" as Address;
@@ -121,6 +134,21 @@ const MAINNET: NetworkRegistry = {
     PoolFactory: "0x83FE469C636C4081b87bA5b3Ae9991c6Ed104248",
     // Router address to be confirmed on-chain — see needsConfirmation. Quoting
     // does not need it (pools expose getAmountOut); execution does.
+
+    // Mezo Borrow (Liquity-style CDP). Source: the canonical MUSD developer
+    // reference, https://mezo.org/docs/developers/musd/musd-redemptions.
+    // Verified on-chain by `npm run verifyaddrs` — each has code, answers its
+    // own interface, and all five cross-references agree
+    // (BorrowerOperations.troveManager == TroveManager, .sortedTroves ==
+    // SortedTroves, .priceFeed == PriceFeed, TroveManager.borrowerOperations ==
+    // BorrowerOperations, HintHelpers.sortedTroves == SortedTroves), which is
+    // what proves this is the linked deployment and not merely live code.
+    // BorrowerOperations.musd() also matches the MUSD token below.
+    BorrowerOperations: "0x44b1bac67dDA612a41a58AAf779143B181dEe031",
+    TroveManager: "0x94AfB503dBca74aC3E4929BACEeDfCe19B93c193",
+    HintHelpers: "0xD267b3bE2514375A075fd03C3D9CBa6b95317DC3",
+    SortedTroves: "0x8C5DB4C62BF29c1C4564390d10c20a47E0b2749f",
+    PriceFeed: "0xc5aC5A8892230E0A3e1c473881A2de7353fFcA88",
   },
   // Canonical pools from the contracts reference; verified live on-chain
   // (getAmountOut returns non-zero, factory matches PoolFactory).
@@ -129,7 +157,7 @@ const MAINNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDC"], address: "0xEd812AEc0Fecc8fD882Ac3eccC43f3aA80A6c356", stable: true },
     { pair: ["MUSD", "mUSDT"], address: "0x10906a9E9215939561597b4C8e4b98F93c02031A", stable: true },
   ],
-  needsConfirmation: ["Router", "BorrowerOperations", "TroveManager", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "Delegate7702"],
+  needsConfirmation: ["Router", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "RewardsDistributor", "Matchbox", "Market", "Delegate7702"],
 };
 
 const TESTNET: NetworkRegistry = {
@@ -151,11 +179,22 @@ const TESTNET: NetworkRegistry = {
   contracts: {
     // Testnet DEX / pool addresses are resolved at runtime from the canonical
     // reference or the explorer; seeded here as they are confirmed on Matsnet.
+
+    // Mezo Borrow on Matsnet. Same source and same verification as mainnet:
+    // `MEZO_NETWORK=testnet npm run verifyaddrs` reports 5/5 cross-references
+    // and BorrowerOperations.musd() == the MUSD token below. 228 live Troves at
+    // time of wiring, so this is the exercisable deployment the bounty asks us
+    // to test against before mainnet.
+    BorrowerOperations: "0xCdF7028ceAB81fA0C6971208e83fa7872994beE5",
+    TroveManager: "0xE47c80e8c23f6B4A1aE41c34837a0599D5D16bb0",
+    HintHelpers: "0x4e4cBA3779d56386ED43631b4dCD6d8EacEcBCF6",
+    SortedTroves: "0x722E4D24FD6Ff8b0AC679450F3D91294607268fA",
+    PriceFeed: "0x86bCF0841622a5dAC14A313a15f96A95421b9366",
   },
   // No DEX pools are published for Matsnet testnet yet — only MUSD. Swaps quote
   // and execute on mainnet, where the pools live.
   pools: [],
-  needsConfirmation: ["PoolFactory", "Router", "BorrowerOperations", "TroveManager", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "Delegate7702"],
+  needsConfirmation: ["PoolFactory", "Router", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "RewardsDistributor", "Matchbox", "Market", "Delegate7702"],
 };
 
 export const SEED_REGISTRY: Record<NetworkName, NetworkRegistry> = {
