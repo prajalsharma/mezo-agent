@@ -3,6 +3,7 @@ import {
   encodeFunctionData,
   http,
   parseEther,
+  toFunctionSelector,
   type Address,
   type Hex,
 } from "viem";
@@ -43,14 +44,73 @@ function keystore(): LocalKeyStore {
 
 export class DelegationError extends Error {}
 
-/** Targets a session key is allowed to touch: the DEX router + all ERC-20s. */
-function sessionTargets(): Address[] {
-  const targets: Address[] = [];
-  if (registry.hasContract("Router")) targets.push(registry.contract("Router"));
-  for (const t of registry.allTokens()) {
-    if (!t.native) targets.push(t.address);
+/**
+ * Least-privilege on-chain scope for a session key.
+ *
+ * Each target carries ONLY the selectors the agent actually needs, plus caps on
+ * any ERC-20 amount decoded from calldata — so the on-chain policy bounds token
+ * value, not just native value (audit finding F3). Token caps are derived from
+ * the user's own native limits scaled by a conservative BTC price bound; they
+ * are intentionally coarse because they are a BACKSTOP: the off-chain signer
+ * enforces the precise per-action amount, and this stops a compromised key from
+ * exceeding it by more than the cap.
+ */
+type TargetPolicy = {
+  target: Address;
+  selectors: Hex[];
+  tokenPerTxCap: bigint;
+  tokenDailyCap: bigint;
+};
+
+// Selectors the agent needs. Anything not listed reverts on-chain.
+const SEL_APPROVE = toFunctionSelector("approve(address,uint256)");
+const SEL_TRANSFER = toFunctionSelector("transfer(address,uint256)");
+const SEL_SWAP_TOKENS = toFunctionSelector(
+  "swapExactTokensForTokens(uint256,uint256,(address,address,bool,address)[],address,uint256)",
+);
+const SEL_SWAP_ETH = toFunctionSelector(
+  "swapExactETHForTokens(uint256,(address,address,bool,address)[],address,uint256)",
+);
+const SEL_SWAP_FOR_ETH = toFunctionSelector(
+  "swapExactTokensForETH(uint256,uint256,(address,address,bool,address)[],address,uint256)",
+);
+
+/**
+ * Coarse USD-ish ceiling used to convert a native BTC cap into a token cap.
+ * Deliberately generous (a backstop, not the primary limit) but finite, so an
+ * ERC-20 drain is bounded even if every off-chain check is bypassed.
+ */
+const BTC_UPPER_BOUND_USD = 250_000n;
+
+function tokenCapsFor(limits: ReturnType<typeof limitsOf>, decimals: number): { perTx: bigint; daily: bigint } {
+  const unit = 10n ** BigInt(decimals);
+  const perTx = (BigInt(limits.perTxNativeWei) * BTC_UPPER_BOUND_USD * unit) / 10n ** 18n;
+  const daily = (BigInt(limits.dailyNativeWei) * BTC_UPPER_BOUND_USD * unit) / 10n ** 18n;
+  return { perTx, daily };
+}
+
+function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
+  const policies: TargetPolicy[] = [];
+  if (registry.hasContract("Router")) {
+    policies.push({
+      target: registry.contract("Router"),
+      selectors: [SEL_SWAP_TOKENS, SEL_SWAP_ETH, SEL_SWAP_FOR_ETH],
+      tokenPerTxCap: 0n, // the router is not an ERC-20; no decoded transfers
+      tokenDailyCap: 0n,
+    });
   }
-  return targets;
+  for (const t of registry.allTokens()) {
+    if (t.native) continue;
+    const caps = tokenCapsFor(limits, t.decimals);
+    policies.push({
+      // approve is needed for swaps; transfer for fee payment / moves.
+      target: t.address,
+      selectors: [SEL_APPROVE, SEL_TRANSFER],
+      tokenPerTxCap: caps.perTx,
+      tokenDailyCap: caps.daily,
+    });
+  }
+  return policies;
 }
 
 export async function isSmartAccount(user: UserRecord): Promise<boolean> {
@@ -94,7 +154,7 @@ export async function enableSmartAccount(user: UserRecord): Promise<UserRecord> 
       expiresAt,
       BigInt(limits.perTxNativeWei),
       BigInt(limits.dailyNativeWei),
-      sessionTargets(),
+      sessionPolicies(limits),
     ],
   });
 

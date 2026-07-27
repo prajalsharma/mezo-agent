@@ -76,6 +76,21 @@ async function main() {
   check("schedule created, due now", sched.active && sched.nextRunAt <= new Date(now).toISOString());
   let ran = 0;
   const mockExec = async () => { ran++; return { ok: true, detail: "mock" }; };
+
+  const { store: st } = await import("../src/db/store.js");
+
+  // Operator kill-switch: halts ALL scheduled execution immediately.
+  st.setKeeperPaused(true);
+  const halted = await runDueSchedules(now, mockExec);
+  check("kill-switch halts all scheduled execution", halted.length === 0 && ran === 0);
+  st.setKeeperPaused(false);
+
+  // Per-user pause freezes runs without cancelling the schedule.
+  st.setUserPaused(user.telegramId, true);
+  const pausedRep = await runDueSchedules(now, mockExec);
+  check("per-user pause blocks the run but keeps the schedule", ran === 0 && pausedRep[0]?.ok === false);
+  st.setUserPaused(user.telegramId, false);
+
   const rep1 = await runDueSchedules(now, mockExec);
   check("keeper ran the due schedule once", ran === 1 && rep1.length === 1);
   const rep2 = await runDueSchedules(now, mockExec);
@@ -103,6 +118,21 @@ async function main() {
     ["auto-compound on", "autoCompound"],
   ];
   for (const [msg, expected] of cases) check(`"${msg}" → ${expected}`, fallbackParse(msg, syms).action === expected);
+
+  // ── Monetization: fee math + disclosure ────────────────────────────────────
+  console.log("Agent fee (monetization):");
+  {
+    const { env, feesEnabled } = await import("../src/config/env.js");
+    const bps = env.fees.swapBps;
+    check("fee bps is hard-capped at 100 (1%)", bps <= 100);
+    if (feesEnabled) {
+      const gross = 1_000_000n;
+      const fee = (gross * BigInt(bps)) / 10_000n;
+      check("fee is deducted from the input and leaves a positive net", fee > 0n && gross - fee > 0n);
+    } else {
+      check("no fee configured => no fee charged (opt-in monetization)", bps === 0 || !env.fees.recipient);
+    }
+  }
 
   console.log("\n" + (failures === 0 ? "All Phase 2–5 checks passed. ✅" : `${failures} FAILURE(S) ✗`));
   if (failures > 0) process.exit(1);

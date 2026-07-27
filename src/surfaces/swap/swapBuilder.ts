@@ -10,6 +10,7 @@ import { registry } from "../../registry/registry.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { routerAbi } from "../../abis/router.js";
 import { poolAbi } from "../../abis/pool.js";
+import { env, feesEnabled } from "../../config/env.js";
 import type { PoolInfo, TokenInfo } from "../../registry/addresses.js";
 
 /**
@@ -32,18 +33,30 @@ export type Route = {
 };
 
 export type PlanStep = {
-  kind: "approval" | "swap";
+  kind: "approval" | "swap" | "fee";
   to: Address;
   data: Hex;
   value: bigint;
   describe: string;
 };
 
+export type SwapFee = {
+  bps: number;
+  amount: bigint;
+  amountFormatted: string;
+  recipient: Address;
+};
+
 export type SwapPlan = {
   tokenIn: TokenInfo;
   tokenOut: TokenInfo;
+  /** Gross amount the user asked to swap (fee inclusive). */
   amountIn: bigint;
   amountInFormatted: string;
+  /** Agent fee taken from the input token, or undefined when no fee applies. */
+  fee?: SwapFee;
+  /** Amount actually routed to the DEX after the fee. */
+  amountInNet: bigint;
   expectedOut: bigint;
   expectedOutFormatted: string;
   minOut: bigint;
@@ -89,8 +102,23 @@ export async function buildSwap(params: {
   const amountIn = parseUnits(humanAmountIn, tokenIn.decimals);
   if (amountIn <= 0n) throw new SwapUnavailableError("Amount must be greater than zero.");
 
-  // 1. Live quote straight from the pool reserves (no Router needed).
-  const expectedOut = await quoteFromPool(pool, amountIn, tokenIn);
+  // Agent fee (monetization) — taken from the INPUT token so the user always
+  // sees exactly what is deducted before confirming. Disabled unless configured.
+  const feeAmount = feesEnabled ? (amountIn * BigInt(env.fees.swapBps)) / 10_000n : 0n;
+  const amountInNet = amountIn - feeAmount;
+  if (amountInNet <= 0n) throw new SwapUnavailableError("Amount is too small to cover the agent fee.");
+  const fee: SwapFee | undefined = feeAmount > 0n
+    ? {
+        bps: env.fees.swapBps,
+        amount: feeAmount,
+        amountFormatted: formatUnits(feeAmount, tokenIn.decimals),
+        recipient: env.fees.recipient as Address,
+      }
+    : undefined;
+
+  // 1. Live quote straight from the pool reserves (no Router needed), on the
+  //    NET amount so the displayed output is what the user actually receives.
+  const expectedOut = await quoteFromPool(pool, amountInNet, tokenIn);
   if (expectedOut <= 0n) {
     throw new SwapUnavailableError(
       `The pool returned a zero quote for ${tokenIn.symbol} → ${tokenOut.symbol} (amount too small or no liquidity).`,
@@ -103,6 +131,8 @@ export async function buildSwap(params: {
     tokenOut,
     amountIn,
     amountInFormatted: humanAmountIn,
+    amountInNet,
+    fee,
     expectedOut,
     expectedOutFormatted: formatUnits(expectedOut, tokenOut.decimals),
     minOut,
@@ -136,20 +166,32 @@ export async function buildSwap(params: {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
   const steps: PlanStep[] = [];
 
-  // Approval — top up allowance to the router if short.
+  // Agent fee: an explicit, visible transfer of the input token. It is its own
+  // step so it appears in the confirmation and in transaction history.
+  if (fee) {
+    steps.push({
+      kind: "fee",
+      to: tokenIn.address,
+      data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [fee.recipient, fee.amount] }),
+      value: 0n,
+      describe: `Agent fee ${fee.amountFormatted} ${tokenIn.symbol} (${fee.bps / 100}%)`,
+    });
+  }
+
+  // Approval — top up allowance to the router if short (net amount only).
   const allowance = (await publicClient().readContract({
     address: tokenIn.address,
     abi: erc20Abi,
     functionName: "allowance",
     args: [owner, router],
   })) as bigint;
-  if (allowance < amountIn) {
+  if (allowance < amountInNet) {
     steps.push({
       kind: "approval",
       to: tokenIn.address,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, amountIn] }),
+      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, amountInNet] }),
       value: 0n,
-      describe: `Approve ${humanAmountIn} ${tokenIn.symbol} for the DEX router`,
+      describe: `Approve ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} for the DEX router`,
     });
   }
 
@@ -159,10 +201,10 @@ export async function buildSwap(params: {
     data: encodeFunctionData({
       abi: routerAbi,
       functionName: "swapExactTokensForTokens",
-      args: [amountIn, minOut, [route], owner, deadline],
+      args: [amountInNet, minOut, [route], owner, deadline],
     }),
     value: 0n,
-    describe: `Swap ${humanAmountIn} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol}`,
+    describe: `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol}`,
   });
 
   return { ...base, steps, executable: true, router };

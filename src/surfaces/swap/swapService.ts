@@ -62,9 +62,15 @@ export async function executeSwap(
         value: step.value,
         policy: {
           allowedTargets,
-          // The swap step moves amountIn of the input token — cap-checked in the signer.
-          ...(step.kind === "swap" && !plan.tokenIn.native
-            ? { erc20: { symbol: plan.tokenIn.symbol, amount: plan.amountIn } }
+          // Steps that move the input token are cap-checked in the signer: the
+          // swap moves the net amount, the fee step moves the fee amount.
+          ...(!plan.tokenIn.native && (step.kind === "swap" || step.kind === "fee")
+            ? {
+                erc20: {
+                  symbol: plan.tokenIn.symbol,
+                  amount: step.kind === "swap" ? plan.amountInNet : (plan.fee?.amount ?? 0n),
+                },
+              }
             : {}),
         },
       });
@@ -88,12 +94,13 @@ export async function executeSwap(
     });
     await onProgress?.(`Submitted ${step.kind}: ${hash}`);
 
-    // 3. Wait for the approval to mine before the swap depends on it.
-    if (step.kind === "approval") {
+    // 3. Wait for steps the swap depends on (fee reduces the balance, approval
+    //    grants the allowance) before continuing.
+    if (step.kind === "approval" || step.kind === "fee") {
       const receipt = await publicClient().waitForTransactionReceipt({ hash });
       store.updateTxByHash(hash, receipt.status === "success" ? "confirmed" : "failed");
       if (receipt.status !== "success") {
-        outcomes.push({ kind: "approval", ok: false, reason: "approval transaction failed" });
+        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} transaction failed` });
         return { outcomes, aborted: true };
       }
     } else {

@@ -1,4 +1,5 @@
 import { store, type DcaSchedule, type UserRecord } from "../db/store.js";
+import { env } from "../config/env.js";
 import { registry } from "../registry/registry.js";
 import { buildSwap } from "../surfaces/swap/swapBuilder.js";
 import { executeSwap } from "../surfaces/swap/swapService.js";
@@ -71,11 +72,24 @@ export async function runDueSchedules(
   now = Date.now(),
   executor: SwapExecutor = liveExecutor,
 ): Promise<RunReport[]> {
+  // Emergency kill-switch, re-checked on EVERY tick (not just at startup) so
+  // flipping it halts all scheduled execution immediately, and a stray direct
+  // call can't bypass it. Global env switch OR the runtime pause.
+  if (!env.keeperEnabled || store.isKeeperPaused()) {
+    log.warn("keeper.halted", { envEnabled: env.keeperEnabled, paused: store.isKeeperPaused() });
+    return [];
+  }
+
   const nowIso = new Date(now).toISOString();
   const due = store.dueSchedules(nowIso);
   const reports: RunReport[] = [];
 
   for (const s of due) {
+    // Per-user pause: a user can freeze their own automation without cancelling.
+    if (store.isUserPaused(s.telegramId)) {
+      reports.push({ id: s.id, ok: false, detail: "paused by user" });
+      continue;
+    }
     const user = store.listAccounts(s.telegramId).find((u) => u.address.toLowerCase() === s.accountAddress.toLowerCase());
     let detail = "no matching account";
     let ok = false;

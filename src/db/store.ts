@@ -99,6 +99,10 @@ type Db = {
   spendLedger: SpendRecord[];
   schedules: DcaSchedule[];
   autoCompound: AutoCompound[];
+  /** Emergency stop for ALL scheduled automation (operator-level). */
+  keeperPaused?: boolean;
+  /** Telegram ids that have paused their own automation. */
+  pausedUsers?: number[];
 };
 
 type LegacyDb = Db & { users?: Record<string, UserRecord> };
@@ -132,6 +136,8 @@ class Store {
         spendLedger: loaded.spendLedger ?? [],
         schedules: loaded.schedules ?? [],
         autoCompound: loaded.autoCompound ?? [],
+        keeperPaused: loaded.keeperPaused ?? false,
+        pausedUsers: loaded.pausedUsers ?? [],
       };
     } else {
       this.flush();
@@ -268,6 +274,27 @@ class Store {
     return true;
   }
   newId(): string { return randomUUID(); }
+
+  // ── Automation: emergency pause / kill-switch ──────────────────────────────
+  /** Operator-level emergency stop for ALL scheduled automation. */
+  isKeeperPaused(): boolean {
+    return this.db.keeperPaused === true;
+  }
+  setKeeperPaused(paused: boolean): void {
+    this.db.keeperPaused = paused;
+    this.flush();
+  }
+  /** Per-user pause: freezes that user's schedules without cancelling them. */
+  isUserPaused(telegramId: number): boolean {
+    return (this.db.pausedUsers ?? []).includes(telegramId);
+  }
+  setUserPaused(telegramId: number, paused: boolean): void {
+    const list = new Set(this.db.pausedUsers ?? []);
+    if (paused) list.add(telegramId);
+    else list.delete(telegramId);
+    this.db.pausedUsers = [...list];
+    this.flush();
+  }
 
   // ── Automation: auto-compound preference ───────────────────────────────────
   setAutoCompound(pref: AutoCompound): void {

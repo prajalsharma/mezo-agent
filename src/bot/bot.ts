@@ -1,5 +1,5 @@
 import { Bot } from "grammy";
-import { env, llmEnabled } from "../config/env.js";
+import { env, llmEnabled, feesEnabled } from "../config/env.js";
 import { registry } from "../registry/registry.js";
 import { parseIntent } from "../llm/adapter.js";
 import {
@@ -19,6 +19,7 @@ import {
 import { handleActionIntent, handleActionConfirm, handleActionCancel } from "./handlers/actions.js";
 import { handleAccount, handleDcaCreate, handleDcaCancel, handleAutoCompound } from "./handlers/automation.js";
 import { clearPending } from "./session.js";
+import { store } from "../db/store.js";
 import { runPreflight, formatPreflightText } from "../core/preflight.js";
 import { getUser } from "../wallet/walletService.js";
 
@@ -52,7 +53,8 @@ export function buildBot(): Bot {
         "/start — onboarding · /portfolio · /deposit\n" +
         "/limits — spending caps · /watch — read-only mode\n" +
         "/upgrade — EIP-7702 smart account (scoped session key)\n" +
-        "/accounts — multi-account · /dca — DCA schedules\n" +
+        "/accounts — multi-account · /dca — DCA schedules · /fees\n" +
+        "/pause · /resume — emergency stop for automation\n" +
         "/cancel · /diag — health self-test\n\n" +
         "Natural language — I understand:\n" +
         "• swap 100 MUSD to mUSDC · zap 0.01 BTC into MUSD/mUSDC\n" +
@@ -71,6 +73,39 @@ export function buildBot(): Bot {
   bot.command("watch", handleWatch);
   bot.command("accounts", (ctx) => handleAccount(ctx, { action: "account", op: "list" }));
   bot.command("dca", (ctx) => handleDcaCancel(ctx, { action: "dcaCancel" }));
+
+  // Emergency stop for scheduled automation (bounty: access controls / kill-switch).
+  bot.command("pause", async (ctx) => {
+    if (!ctx.from?.id) return;
+    store.setUserPaused(ctx.from.id, true);
+    await ctx.reply(
+      "🛑 <b>Automation paused.</b>\nAll your DCA / auto-compound runs are frozen. " +
+        "Your schedules are kept — send /resume to re-enable. Manual actions still work.",
+      { parse_mode: "HTML" },
+    );
+  });
+  bot.command("resume", async (ctx) => {
+    if (!ctx.from?.id) return;
+    store.setUserPaused(ctx.from.id, false);
+    await ctx.reply("▶️ <b>Automation resumed.</b>", { parse_mode: "HTML" });
+  });
+
+  // Transparent fee disclosure — the bounty requires fees be disclosed in-bot.
+  bot.command("fees", async (ctx) => {
+    const lines = ["<b>💸 Fees</b>", ""];
+    if (feesEnabled) {
+      lines.push(
+        `• Swap / zap: <b>${env.fees.swapBps / 100}%</b> of the input amount, taken in the input token.`,
+        `• Shown on every confirmation before you approve — you always see the exact amount.`,
+        `• Fee recipient: <code>${env.fees.recipient}</code>`,
+      );
+    } else {
+      lines.push("• No agent fee is currently charged on this deployment.");
+    }
+    if (env.fees.automationNote) lines.push(`• Automation (DCA / auto-compound): ${env.fees.automationNote}`);
+    lines.push("", "<i>Network gas (BTC) is paid by you and is separate from any agent fee.</i>");
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
   bot.command("cancel", async (ctx) => {
     if (ctx.from?.id) clearPending(ctx.from.id);
     await ctx.reply("Cancelled.");

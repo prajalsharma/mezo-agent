@@ -54,7 +54,24 @@ export const env = {
 
   /** Keeper (DCA / auto-compound) global kill-switch. Off unless explicitly on. */
   keeperEnabled: optional("KEEPER_ENABLED", "false").toLowerCase() === "true",
+
+  /**
+   * Monetization. A small, transparently-disclosed fee on swaps/zaps executed
+   * through the agent. Shown in EVERY pre-confirmation summary and via /fees —
+   * never silent. Zero (or no recipient) => no fee is charged or displayed.
+   * Capped at 100 bps (1%) in code so a misconfiguration can't overcharge users.
+   */
+  fees: {
+    swapBps: Math.min(Number(optional("AGENT_FEE_BPS", "0")) || 0, 100),
+    recipient: optional("AGENT_FEE_RECIPIENT"),
+    /** Monthly price for automation (DCA / auto-compound), display-only. */
+    automationNote: optional("AGENT_AUTOMATION_NOTE"),
+  },
 } as const;
+
+/** True when a non-zero fee AND a recipient are configured. */
+export const feesEnabled =
+  env.fees.swapBps > 0 && /^0x[0-9a-fA-F]{40}$/.test(env.fees.recipient);
 
 /** True when the LLM parser is usable; otherwise the deterministic parser is used. */
 export const llmEnabled = env.llm.provider === "anthropic" && env.llm.anthropicApiKey !== "";

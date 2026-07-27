@@ -1,4 +1,5 @@
 import { InlineKeyboard, type Context } from "grammy";
+import { formatUnits } from "viem";
 import { env } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { registry } from "../../registry/registry.js";
@@ -59,6 +60,10 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
   const netTag = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
   const quoteBody =
     `Sell: ${b(`${plan.amountInFormatted} ${plan.tokenIn.symbol}`)}\n` +
+    (plan.fee
+      ? `Agent fee: ${b(`${prettyAmount(plan.fee.amountFormatted)} ${plan.tokenIn.symbol}`)} (${plan.fee.bps / 100}%)\n` +
+        `Swapped: ${b(`${prettyAmount(formatUnits(plan.amountInNet, plan.tokenIn.decimals))} ${plan.tokenIn.symbol}`)}\n`
+      : "") +
     `Receive (est.): ${b(`~${prettyAmount(plan.expectedOutFormatted)} ${plan.tokenOut.symbol}`)}\n` +
     `Min received: ${b(`${prettyAmount(plan.minOutFormatted)} ${plan.tokenOut.symbol}`)} (slippage ${plan.slippagePct}%)\n` +
     `Route: ${plan.stable ? "stable" : "volatile"} pool ${esc(short(plan.poolAddress))}`;

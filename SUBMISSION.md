@@ -123,13 +123,13 @@ the same seams. Documented in README §"Trust model".
 | `npm run policycheck` | per-tx/daily caps, allowlist, watch-only, ERC-20 cap, TOCTOU reserve/release |
 | `npm run phasecheck` | optimal-voting properties, DCA idempotency, borrow/lock guardrails, multi-account, parser routing |
 | `npm run swapcheck` | live mainnet quotes from real pools |
-| `npm run contracts:test` | SessionKeyDelegate (caps, expiry, allowlist, access control, + audit regressions) — 16 tests |
+| `npm run contracts:test` | SessionKeyDelegate (caps, expiry, allowlist, selector policy, token caps, sliding window, access control) — **25 tests** |
 
-**Security audit:** the on-chain delegate went through a 12-agent adversarial
-audit (Pashov `solidity-auditor`). A critical self-call privilege-escalation and a
-high stale-allowlist bug were found, **fixed, and regression-tested**; two
-design-level items (native-value-only caps, fixed-window bound) are documented.
-See **[AUDIT.md](AUDIT.md)**.
+**Security audit:** the on-chain delegate went through **two rounds** of
+adversarial audit (Pashov `solidity-auditor` — 12 agents on the original, 6 on the
+hardened rewrite). Findings across both rounds: 1 critical, 5 high, 1 medium, 1
+low — **all fixed and regression-tested** (14 of the 25 contract tests are audit
+regressions). See **[AUDIT.md](AUDIT.md)** for each finding, its proof, and its fix.
 
 **Edge cases documented/handled:** min-net-debt, lock-duration caps, unknown
 token/pool, over-cap spend, watch-only, expired session, DCA occurrence limits,
@@ -147,8 +147,22 @@ gated-address refusal, RPC fallback.
 
 ---
 
-## 6. Monetization (disclosed in-bot)
+## 6. Monetization (implemented, disclosed in-bot)
 
-A small, transparently-shown fee on swaps/zaps; automation (DCA, auto-compound) as
-an opt-in subscription. Users see the fee before confirming. (Fee hook is a
-one-line addition in `swapBuilder.ts` once a fee recipient is set.)
+**Implemented**, not just planned — `src/surfaces/swap/swapBuilder.ts` +
+`src/config/env.ts`:
+
+- **Swap/zap fee:** `AGENT_FEE_BPS` basis points of the input amount, taken in the
+  **input token**, paid to `AGENT_FEE_RECIPIENT`. **Hard-capped at 100 bps (1%) in
+  code**, so a misconfiguration cannot overcharge users.
+- **Always disclosed:** the fee is its own visible step in the plan and appears in
+  **every** pre-confirmation summary (`Agent fee: X TOKEN (0.25%)`) alongside the
+  net amount actually swapped — plus a `/fees` command showing the full schedule
+  and the recipient. Never silent.
+- **Honest quoting:** the output quote is computed on the **net** amount, so the
+  user sees what they actually receive, not an inflated pre-fee number. Verified:
+  100 MUSD → 99.0846 mUSDC with no fee vs **98.8373** with 25 bps.
+- **Opt-in:** zero bps or no recipient ⇒ no fee is charged or displayed.
+- **Automation subscription:** `AGENT_AUTOMATION_NOTE` surfaces DCA / auto-compound
+  pricing under `/fees`.
+- Network gas (BTC) is always the user's and is stated separately from any agent fee.

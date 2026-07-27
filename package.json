@@ -16,7 +16,7 @@
     "smoke": "tsx scripts/smoke.ts",
     "policycheck": "tsx scripts/policycheck.ts",
     "swapcheck": "MEZO_NETWORK=mainnet tsx scripts/swapcheck.ts",
-    "phasecheck": "tsx scripts/phasecheck.ts",
+    "phasecheck": "KEEPER_ENABLED=true tsx scripts/phasecheck.ts",
     "contracts:test": "cd contracts && forge test"
   },
   "dependencies": {

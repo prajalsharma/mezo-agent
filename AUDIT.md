@@ -3,123 +3,163 @@
 On-chain component: `contracts/src/SessionKeyDelegate.sol` (the EIP-7702 delegate
 that enforces session-key scope for the non-custodial custody path).
 
-**Method:** parallelized 12-agent adversarial audit (Pashov Audit Group
-`solidity-auditor` skill) — twelve specialty lenses (access-control,
+**Method:** parallelized adversarial audit using the Pashov Audit Group
+`solidity-auditor` skill — independent specialty lenses (access-control,
 economic-security, execution-trace, invariant, math-precision, boundary,
-periphery, first-principles, asymmetry, numerical-gap, trust-gap, flow-gap) run
-independently, then deduplicated and gate-verified. Plus a manual review of the
-TypeScript custody path (keystore, signer, delegation, store).
+periphery, first-principles, asymmetry, numerical-gap, trust-gap, flow-gap), then
+deduplicated and gate-verified. **Two rounds:** round 1 on the original contract
+(12 agents), round 2 on the hardened rewrite (6 agents targeting the new
+mechanisms). Plus a manual review of the TypeScript custody path.
 
-Findings below are ranked by verified severity with the number of independent
-agents that converged on each.
+**Status: every finding from both rounds is FIXED and regression-tested.**
+`forge test` — 25 tests, all passing.
 
 ---
 
-## F1 — CRITICAL · Self-call confused-deputy privilege escalation · FIXED
+## Round 1
 
-**Agents:** 10/12 · **`execute`**
+### F1 — CRITICAL · Self-call confused-deputy privilege escalation · FIXED
+**10/12 agents · `execute`**
 
-The session path did not reject `to == address(this)`. A session key whose
-allowlist included the account's own address could call
-`execute(address(this), 0, <registerSession/execute calldata>)`; the delegate's
-own `_call` then performed `address(this).call(data)`, and the **nested frame's
+The session path did not reject `to == address(this)`. A session key allowlisted
+for the account's own address could call `execute(address(this), 0, <mgmt calldata>)`;
+`_call` then performed `address(this).call(data)`, and the **nested frame's
 `msg.sender` is `address(this)`** — satisfying `onlySelf` / the uncapped root
-branch. A capped, revocable session key could thus re-register itself with
-unlimited caps or drain the entire native balance in one transaction, defeating
-the whole custody model.
+branch. A capped key could re-register itself with unlimited caps or drain the
+balance in one transaction.
 
-**Fix (`SessionKeyDelegate.sol`):**
-- `execute` session branch reverts `SelfTargetForbidden` when `to == address(this)`, before any allowlist/cap check.
-- `registerSession` and `setTarget` reject `address(this)` as a target (defense in depth — the precondition can never be created).
+**Fix:** `execute` reverts `SelfTargetForbidden` when `to == address(this)` before
+any other check; `registerSession`/`setTargetPolicy` reject `address(this)` as a
+target (so the precondition can never be created).
+**Tests:** `test_cannotRegisterSelfAsTarget`, `test_sessionCannotCallDelegateItself`.
 
-**Tests:** `test_cannotRegisterSelfAsTarget`, `test_sessionCannotCallDelegateItself`, `test_setTargetRejectsSelfAndRequiresSession`.
+### F2 — HIGH · Stale allowlist: narrowing/revoking scope silently failed · FIXED
+**9/12 agents · `registerSession` / `revokeSession`**
 
----
+`registerSession` only ever added to `_allowed` (union, not replace) and
+`revokeSession` never cleared it, so re-registering with a narrower target list —
+or revoking then reusing a key — left old targets live.
 
-## F2 — HIGH · Stale allowlist: scope narrow/revoke silently fails · FIXED
+**Fix:** the contract tracks each key's targets and selectors and **clears them**
+before applying a new scope, and on revoke. Scope is replaced, not unioned.
+**Tests:** `test_reRegisterReplacesScope`, `test_revokeClearsScopeAcrossReuse`.
 
-**Agents:** 9/12 · **`registerSession` / `revokeSession`**
+### F3 — HIGH · Value-only caps didn't bound ERC-20 movement · FIXED
+**5/12 agents · `execute`**
 
-`registerSession` only ever set `_allowed[key][t] = true` (additive union), and
-`revokeSession` deleted the `Session` struct but never touched `_allowed`. So
-re-registering a key with a narrower target list, or revoking then reusing a key
-address, left previously-granted targets silently live — the enforced scope
-diverged from the scope the root (and the emitted event) declared.
+Caps bounded `msg.value` only. An allowlisted target that moves assets via a
+`value == 0` call (ERC-20 `transfer`/`approve`) was completely uncapped.
 
-**Fix:** the contract now tracks each key's target list (`_keyTargets`) and
-**clears the previous allowlist** (`_clearTargets`) before applying a new one in
-`registerSession`, and on `revokeSession`. Scope is now replaced, not unioned.
-`setTarget` also now requires the session to exist.
+**Fix (real, not documentation):**
+- **Per-(key, target) selector allowlist** — calldata is no longer a blank cheque;
+  an unlisted selector reverts.
+- **Decoded amount caps** — `transfer`/`approve`/`transferFrom` amounts are decoded
+  from calldata and capped per-tx *and* per trailing 24h, exactly like native value.
+- **Counterparty rule** — the recipient/spender must be an allowlisted target and
+  may not be the token itself, so a key cannot approve an attacker.
+- **No uncapped selectors on token targets** — a target carrying token caps may
+  only be granted the three decoded selectors, closing the misconfiguration trap.
 
-**Tests:** `test_reRegisterReplacesTargets`, `test_revokeClearsAllowlistAcrossReuse`.
+**Tests:** `test_unlistedSelectorRejected`, `test_erc20TransferCappedByDecodedAmount`,
+`test_erc20DailyTokenCap`, `test_cannotApproveArbitrarySpender`,
+`test_cannotSendTokensToTokenItself`, `test_tokenTargetRejectsUncappedSelector`.
 
----
+### F4 — MEDIUM · Fixed-window 2× daily-cap burst · FIXED (see R1 below)
+**5/12 agents · `execute`**
 
-## F3 — HIGH · Value-only caps don't bound ERC-20/calldata · ACKNOWLEDGED + SCOPED
-
-**Agents:** 5/12 · **`execute`**
-
-The per-tx / daily caps bound `msg.value` (native BTC) only. An allowlisted
-target that moves assets via a `value == 0` call (ERC-20 `transfer`/`approve`, a
-vault `redeem`) is **not** bounded by the caps. This is inherent to native-value
-caps and was over-claimed by the original NatSpec.
-
-**Resolution:**
-- The contract NatSpec now states the guarantee **accurately**: caps bound native
-  value only; do **not** allowlist a target holding large standing
-  balances/approvals for a session key.
-- The off-chain signer registers only the specific targets a session needs and
-  uses **minimal per-action approvals** (the swap builder approves exactly
-  `amountIn` to the router, so standing approvals are ~0).
-- The worst escalation that F3 enabled (self-call → root) is closed by F1.
-- **Next phase (documented, not hidden):** amount-aware ERC-20 caps via a
-  per-target selector allowlist + balance-delta policy. Implementing this
-  correctly (constraining the `approve` spender argument, not just the selector)
-  is a deliberate follow-up rather than a rushed partial fix.
+The daily window was a resettable fixed bucket: spend the cap before a boundary,
+spend it again after. First replaced with a weighted sliding window — which round
+2 proved was **still** exploitable (see R1).
 
 ---
 
-## F4 — MEDIUM · Fixed-window 2× daily-cap burst · ACKNOWLEDGED + DISCLOSED
+## Round 2 — audit of the hardened rewrite
 
-**Agents:** 5/12 · **`execute`**
+### R1 — HIGH · Sliding window still allowed 2× per true trailing 24h · FIXED
+**4/6 agents (economic, math-precision, invariant, + verified independently)**
 
-The daily window is a fixed window anchored at `dayStart`, not a true sliding
-window: a key can spend `dailyCap` just before a boundary and again just after,
-moving ~2× cap in seconds. (Note: the commonly-suggested "advance `dayStart` by
-whole days" does **not** fix this — only a trailing-24h spend log does.)
+The weighted two-bucket counter decayed the previous window's usage *linearly with
+elapsed time*, assuming spend was smeared uniformly across it. Concentrating spends
+at bucket edges defeats that. Verified trace (`dailyCap = 1000`):
 
-**Resolution:**
-- NatSpec corrected: it is a **fixed 24h window**, not "rolling"; ~2× cap across a
-  boundary is the accepted on-chain bound.
-- The **off-chain signer enforces a true rolling-24h cap** (`store.spentLast24hWei`
-  is a real trailing window) for app-mediated sessions — defense in depth.
-- A full on-chain sliding window (timestamped spend log) is a documented option;
-  it trades gas for eliminating the boundary burst.
+| t | amount | weightedPrev | used | result |
+|---|---|---|---|---|
+| 86 399 | 1000 | 0 | 1000 | PASS |
+| 129 600 | 500 | 500 | 1000 | PASS |
+| 172 799 | 500 | 0 | 1000 | PASS |
+
+True trailing 24h `[86399, 172799]` contains **2000 = 2× cap**.
+
+**Fix:** replaced with a **bucketed ring** — 13 buckets × 2h, summing the most
+recent 13. Because `(13-1) × 2h = 24h`, every spend is counted for **at least 24
+hours** before it can age out, so the cap cannot be exceeded in any true trailing
+24h. O(13) reads, packed one slot per bucket.
+**Tests:** `test_noDoubleSpendWithinTrueTrailing24h`, `test_slidingWindowBlocksBoundaryDoubleSpend`,
+`test_slidingWindowFreesUpAfterFullPeriod`.
+
+### R2 — HIGH · `transferFrom` source unvalidated · FIXED
+**4/6 agents · `_enforceTokenPolicy`**
+
+`(, counterparty, amount) = abi.decode(...)` discarded `from`. A session key could
+call `transferFrom(victim, allowlistedRecipient, amount)` and drain **any third
+party's** allowance granted to this account — extending blast radius far beyond the
+account's own balance.
+
+**Fix:** decode `from` and require `from == address(this)`, reverting
+`ForeignSourceForbidden` otherwise.
+**Test:** `test_transferFromForeignSourceRejected`.
+
+### R3 — HIGH · Unbounded `_keyTargets` growth → revocation DoS · FIXED
+**3/6 agents · `_clearTarget`**
+
+`_clearTarget` cleared the per-target mappings but never removed the target from
+the `_keyTargets` array, while `_applyPolicy` re-pushed it. Ordinary, documented
+policy churn (`setTargetPolicy`, or `removeTarget` + re-add) grew the array without
+bound, so `_clearScope` — used by **`revokeSession`** — could eventually exceed the
+block gas limit. That breaks the contract's central promise: revocability, exactly
+when it's needed most.
+
+**Fix:** a 1-based `_targetIndex` makes membership explicit; `_clearTarget` removes
+the entry via swap-and-pop, so the array holds each target at most once.
+**Test:** `test_targetArrayDoesNotGrowOnPolicyChurn` (10 churn cycles → count stays 1).
+
+### R4 — LOW · Zero token cap didn't actually deny · FIXED
+`tokenPerTxCap == 0` is documented as "decoded transfers denied", but `0 > 0` is
+false so zero-amount calls passed. Now `perTx == 0` reverts outright.
+
+---
+
+## Accepted residual risk (documented, bounded)
+
+**Revocation cannot retroactively zero an ERC-20 allowance** a session key already
+granted via `approve`. This is inherent — an allowance lives on the token contract.
+It is **bounded**: an approval may only name an **allowlisted** spender and may not
+exceed `tokenPerTxCap`. The root can always sweep it with
+`execute(token, 0, approve(spender, 0))`. Operators should allowlist only trusted
+spenders (e.g. the canonical DEX router). Stated in the contract NatSpec.
 
 ---
 
 ## TypeScript custody review (manual) — no vulnerabilities found
 
-- **No secret exposure:** keys are AES-256-GCM sealed; the keystore has no
-  plaintext-export path; decryption happens only inside a scoped `use()` closure
-  with buffer scrubbing; import errors are sanitized so a raw key/seed never
-  reaches an error string, log, or the LLM. (`npm run smoke`.)
+- **No secret exposure:** AES-256-GCM sealed keys; no plaintext-export path;
+  decryption only inside a scoped `use()` closure with buffer scrubbing; import
+  errors sanitized so a raw key/seed never reaches a log, error string, or the LLM.
 - **Signer defense-in-depth:** independent policy re-check (watch-only, allowlist,
-  native caps, opt-in per-token cap); daily-cap **reserve-before-submit** closes a
-  TOCTOU window; releases on failure. (`npm run policycheck`.)
-- **Session path:** the outer 7702 tx targets the account; the ultimate target is
-  double-enforced (off-chain allowlist + on-chain delegate). Address-match checks
-  guard against a sealed key not matching its account.
+  native caps, per-token cap); daily-cap **reserve-before-submit** closes a TOCTOU
+  window and releases on failure.
+- **Automation:** kill-switch re-checked on **every** keeper tick (not just at
+  startup), plus per-user `/pause` — a stray direct call cannot bypass it.
 
 ---
 
 ## Verification
 
-```
-cd contracts && forge test      # 16 tests (5 are audit regressions) — all pass
-npm run smoke / policycheck / phasecheck / swapcheck   # green
+```bash
+cd contracts && forge test      # 25 tests — all pass
+npm run smoke / policycheck / phasecheck / swapcheck   # all green
 ```
 
 The delegate remains **unaudited by a third party**; this is an AI-assisted
-adversarial pass. A professional review is required before mainnet, per the
-bounty's security-review gate.
+adversarial pass across two rounds. A professional review is required before
+mainnet, per the bounty's security-review gate.

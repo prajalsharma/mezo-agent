@@ -1,9 +1,23 @@
 /**
  * ABI for SessionKeyDelegate (contracts/src/SessionKeyDelegate.sol) — the
- * EIP-7702 delegate the account's root EOA points at. Only the functions the
- * bot needs are included: session management (root-only) and `execute`
- * (session-key path), plus the `getSession` view.
+ * EIP-7702 delegate the account's root EOA points at.
+ *
+ * `registerSession` takes a TargetPolicy[] rather than a flat address list: each
+ * target carries the function selectors the session may call on it plus per-tx /
+ * trailing-24h caps on any ERC-20 amount decoded from calldata. That is what
+ * makes the on-chain scope bound token value, not just native value.
  */
+const TARGET_POLICY = {
+  name: "policies",
+  type: "tuple[]",
+  components: [
+    { name: "target", type: "address" },
+    { name: "selectors", type: "bytes4[]" },
+    { name: "tokenPerTxCap", type: "uint128" },
+    { name: "tokenDailyCap", type: "uint128" },
+  ],
+} as const;
+
 export const sessionKeyDelegateAbi = [
   {
     type: "function",
@@ -14,7 +28,7 @@ export const sessionKeyDelegateAbi = [
       { name: "expiry", type: "uint48" },
       { name: "perTxCap", type: "uint128" },
       { name: "dailyCap", type: "uint128" },
-      { name: "targets", type: "address[]" },
+      TARGET_POLICY,
     ],
     outputs: [],
   },
@@ -27,12 +41,30 @@ export const sessionKeyDelegateAbi = [
   },
   {
     type: "function",
-    name: "setTarget",
+    name: "setTargetPolicy",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "key", type: "address" },
+      {
+        name: "policy",
+        type: "tuple",
+        components: [
+          { name: "target", type: "address" },
+          { name: "selectors", type: "bytes4[]" },
+          { name: "tokenPerTxCap", type: "uint128" },
+          { name: "tokenDailyCap", type: "uint128" },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "removeTarget",
     stateMutability: "nonpayable",
     inputs: [
       { name: "key", type: "address" },
       { name: "target", type: "address" },
-      { name: "allowed", type: "bool" },
     ],
     outputs: [],
   },
@@ -55,10 +87,8 @@ export const sessionKeyDelegateAbi = [
     outputs: [
       { name: "exists", type: "bool" },
       { name: "expiry", type: "uint48" },
-      { name: "dayStart", type: "uint48" },
       { name: "perTxCap", type: "uint128" },
       { name: "dailyCap", type: "uint128" },
-      { name: "spentToday", type: "uint128" },
     ],
   },
   {
@@ -70,5 +100,23 @@ export const sessionKeyDelegateAbi = [
       { name: "target", type: "address" },
     ],
     outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "isSelectorAllowed",
+    stateMutability: "view",
+    inputs: [
+      { name: "key", type: "address" },
+      { name: "target", type: "address" },
+      { name: "selector", type: "bytes4" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "nativeUsage",
+    stateMutability: "view",
+    inputs: [{ name: "key", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
