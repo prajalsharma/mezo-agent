@@ -110,10 +110,39 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
   if (/\bbrowse market\b|\bmarket\b/.test(lower) && !/buy/.test(lower)) return { action: "marketBrowse" };
   { const m = t.match(/buy\s+(?:listing\s+)?([a-z0-9]+)/i); if (m) return { action: "marketBuy", listingId: m[1]! }; }
 
-  return {
-    action: "clarify",
-    question:
-      `I didn't catch that. Try: "swap 100 MUSD to mUSDC", "borrow 5000 MUSD against 0.1 BTC", ` +
-      `"lock 0.2 BTC for 28 days", "vote optimally", or /help. Known tokens: ${knownSymbols.join(", ")}.`,
-  };
+  return { action: "clarify", question: clarifyHelp(knownSymbols, t) };
+}
+
+/**
+ * Build the "I didn't catch that" text from the symbols that actually exist on
+ * the ACTIVE network.
+ *
+ * This used to hardcode `swap 100 MUSD to mUSDC`, which on testnet (where only
+ * BTC and MUSD are registered) advertised a token the very same sentence then
+ * omitted from "Known tokens" — so a user who copied the suggestion got the same
+ * rejection back and reasonably concluded the amount was the problem. The
+ * example must come from the same list the parser resolves against.
+ */
+function clarifyHelp(knownSymbols: string[], attempt: string): string {
+  const quoted = new Set(knownSymbols.map((s) => s.toLowerCase()));
+  // Name the specific unrecognised token when the message looked like a swap;
+  // "mUSDC isn't available here" is far more actionable than a generic retry.
+  const swapish = attempt.match(/(?:swap|trade|convert)\s+[\d.]+\s+([a-z0-9]+)\s+(?:to|for|into)\s+([a-z0-9]+)/i);
+  const unknown = swapish
+    ? [swapish[1]!, swapish[2]!].filter((s) => !quoted.has(s.toLowerCase()))
+    : [];
+
+  const pair =
+    knownSymbols.length >= 2
+      ? `swap 100 ${knownSymbols[1]} to ${knownSymbols[0]}`
+      : `swap 100 ${knownSymbols[0] ?? "MUSD"} to BTC`;
+
+  const lead = unknown.length
+    ? `I don't know ${unknown.join(" or ")} on ${env.network}. Known tokens: ${knownSymbols.join(", ")}.`
+    : `I didn't catch that. Known tokens: ${knownSymbols.join(", ")}.`;
+
+  return (
+    `${lead}\n\nTry: "${pair}", "borrow 5000 MUSD against 0.1 BTC", ` +
+    `"lock 0.2 BTC for 28 days", "vote optimally", or /help.`
+  );
 }
