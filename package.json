@@ -15,6 +15,7 @@
     "genkey": "tsx scripts/genkey.ts",
     "smoke": "tsx scripts/smoke.ts",
     "policycheck": "tsx scripts/policycheck.ts",
+    "accesscheck": "TELEGRAM_ALLOWED_USER_IDS=555 tsx scripts/accesscheck.ts",
     "swapcheck": "MEZO_NETWORK=mainnet tsx scripts/swapcheck.ts",
     "phasecheck": "KEEPER_ENABLED=true tsx scripts/phasecheck.ts",
     "contracts:test": "cd contracts && forge test"

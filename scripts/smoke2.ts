@@ -1,4 +1,5 @@
 // Verifies the new onboarding/custody features: seed-phrase import + spend caps.
+import "./_testenv.js";
 import { privateKeyToAccount, mnemonicToAccount } from "viem/accounts";
 import { parseEther } from "viem";
 import { importWallet, getUser } from "../src/wallet/walletService.js";

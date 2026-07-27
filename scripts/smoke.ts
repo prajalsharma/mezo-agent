@@ -1,10 +1,6 @@
 // Smoke test: exercises the deterministic Phase-1 core end-to-end (no Telegram).
-process.env.TELEGRAM_BOT_TOKEN = "dummy:token";
-process.env.MEZO_NETWORK = "testnet";
-process.env.MASTER_ENCRYPTION_KEY =
-  "799c6913b2793d2c08a783778788ddb06f090b2f93771f6bc6d247e3ac7d679b";
-process.env.DATA_DIR = "./data-smoke";
 
+import "./_testenv.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { LocalKeyStore } from "../src/custody/localKeystore.js";
 import { createWallet, getUser } from "../src/wallet/walletService.js";

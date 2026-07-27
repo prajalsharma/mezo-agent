@@ -3,6 +3,7 @@
  *   MASTER_ENCRYPTION_KEY=$(npm run -s genkey) TELEGRAM_BOT_TOKEN=x \
  *   DATA_DIR=$(mktemp -d) npx tsx scripts/phasecheck.ts
  */
+import "./_testenv.js";
 import { optimalAllocation } from "../src/core/optimalVoting.js";
 import { createDcaSchedule, runDueSchedules } from "../src/keeper/scheduler.js";
 import { buildBorrow } from "../src/surfaces/borrow.js";

@@ -1,5 +1,6 @@
 import { Bot } from "grammy";
-import { env, llmEnabled, feesEnabled } from "../config/env.js";
+import { env, llmEnabled, feesEnabled, accessRestricted } from "../config/env.js";
+import { log } from "../core/log.js";
 import { registry } from "../registry/registry.js";
 import { parseIntent } from "../llm/adapter.js";
 import {
@@ -44,6 +45,25 @@ export function buildBot(): Bot {
         });
     }
   });
+
+  // ── Access gate ─────────────────────────────────────────────────────────────
+  // Registered before every handler so nothing below it can be reached by an
+  // unlisted user. A Telegram bot has no "private" mode — anyone who learns the
+  // username can message it — so during local development this allowlist is what
+  // keeps a stranger from onboarding a wallet on your instance.
+  //
+  // We log the rejected ID (that is how you discover your own) but reply with
+  // nothing: a silent bot gives a scanner no signal that the token is live.
+  if (accessRestricted) {
+    bot.use(async (ctx, next) => {
+      const id = ctx.from?.id;
+      if (id === undefined || !env.allowedUserIds.has(id)) {
+        log.warn("access.denied", { telegramId: id ?? "unknown" });
+        return; // drop, no reply
+      }
+      await next();
+    });
+  }
 
   // ── Commands ───────────────────────────────────────────────────────────────
   bot.command("start", handleStart);
@@ -169,6 +189,11 @@ export function startupBanner(): string {
     `Mezo Agent starting\n` +
     `  network : ${env.network}\n` +
     `  LLM     : ${llmEnabled ? `${env.llm.provider} (${env.llm.anthropicModel})` : "deterministic fallback"}\n` +
-    `  swaps   : ${registry.hasContract("Router") ? "router configured" : "router pending registry confirmation"}`
+    `  swaps   : ${registry.hasContract("Router") ? "router configured" : "router pending registry confirmation"}\n` +
+    `  access  : ${
+      accessRestricted
+        ? `restricted to ${env.allowedUserIds.size} allowlisted user id(s)`
+        : "⚠️  OPEN — anyone who finds the bot username can use it"
+    }`
   );
 }

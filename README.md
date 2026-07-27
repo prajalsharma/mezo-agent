@@ -159,9 +159,73 @@ npm run dev             # starts the bot (long-polling)
 parser (`swap <amount> <TOKEN> to <TOKEN>`), so it is fully usable with no model
 vendor. The LLM layer is provider-agnostic (`src/llm/adapter.ts`).
 
+Keep the bot token out of the repo and out of shell history by supplying it
+per-shell instead of writing it to `.env`:
+
+```bash
+read -rs TELEGRAM_BOT_TOKEN && export TELEGRAM_BOT_TOKEN && npm start
+```
+
+### Access control
+
+A Telegram bot has no unlisted mode: anyone who learns the username can message
+it. `TELEGRAM_ALLOWED_USER_IDS` (comma-separated) restricts the bot to specific
+Telegram user IDs; everyone else is dropped before any handler runs, with no
+reply at all (an error reply would confirm to a scanner that the token is live).
+Leave it empty and the bot is open to everyone — the startup banner says which
+mode is active.
+
+To find your own ID, start the bot with the allowlist set to any value and
+message it; the denial is logged as `access.denied telegramId=<yours>`.
+
+The gate is middleware registered above every handler (`src/bot/bot.ts`), so
+handlers are unreachable rather than individually permission-checked.
+`ctx.from.id` is stamped by Telegram's servers, not the sender's client, so it
+cannot be forged by a caller. It is authorization, not concealment: strangers can
+still message the bot, they just get no response. It does not mitigate a leaked
+token — anyone holding the token can redirect updates, so rotate via BotFather
+`/revoke` if it is ever exposed.
+
+## Deployment
+
+The bot long-polls, so it needs **outbound network only** — no public URL, no
+inbound ports, no TLS certificate. A `Dockerfile` is included and runs on any
+container host.
+
+Three things that will cause data loss or silent breakage if missed:
+
+- **Mount a persistent volume at `/data`.** It holds users' encrypted key
+  material. On an ephemeral filesystem (the default on several PaaS providers)
+  every redeploy destroys every wallet — and because there is deliberately no
+  plaintext export path, those funds are unrecoverable.
+- **Reuse the same `MASTER_ENCRYPTION_KEY`.** Regenerating it makes an existing
+  keystore permanently undecryptable.
+- **Run exactly one instance.** Two processes polling the same token compete for
+  updates and both misbehave. Do not autoscale; pin replicas to 1.
+
+Avoid free tiers that idle-stop the process — a stopped poller is an unresponsive
+bot. Note that deploying with `MEZO_NETWORK=mainnet` and an empty allowlist means
+an unattended agent custodying strangers' real BTC on the Tier-3 stopgap
+described under "Trust model"; prefer testnet, or an allowlist, until the custody
+tier is upgraded and independently audited.
+
 ## Verifying it works
 
-`npm run smoke` (no Telegram token needed) checks:
+All checks below run with **no Telegram token and no network dependency on
+Telegram** — `scripts/_testenv.ts` stubs the environment and must be the first
+import in any check (ESM evaluates every `import` before the module body, so
+assigning `process.env` inside a script's own body runs too late).
+
+| command | covers |
+| --- | --- |
+| `npm run smoke` | custody round-trip, wallet creation, live testnet balance read, intent parsing |
+| `npm run smoke2` | seed-phrase import, per-tx spend caps, watch-only mode |
+| `npm run policycheck` | signer policy: allowlist, caps, watch-only, reserve/release ledger |
+| `npm run phasecheck` | Phase 2–5 logic: borrow, lock, DCA keeper, optimal voting, fee cap |
+| `npm run accesscheck` | access gate: unlisted user reaches no handler and gets no reply |
+| `cd contracts && forge test` | `SessionKeyDelegate` (25 tests, incl. 14 audit regressions) |
+
+`npm run smoke` specifically checks:
 
 1. keystore seal→use round-trip returns the original key and the sealed blob
    contains no plaintext;

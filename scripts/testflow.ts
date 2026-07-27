@@ -1,6 +1,7 @@
 // Faithful reproduction of the real Telegram wallet-creation flow.
 // Drives the actual grammY bot with a mocked Telegram API so we see exactly
 // what the handler does (and any error it throws) without hitting Telegram.
+import "./_testenv.js";
 import { buildBot } from "../src/bot/bot.js";
 
 type Captured = { method: string; payload: any };

@@ -6,6 +6,7 @@
  *   MASTER_ENCRYPTION_KEY=$(npm run -s genkey) TELEGRAM_BOT_TOKEN=x \
  *   DATA_DIR=$(mktemp -d) npx tsx scripts/policycheck.ts
  */
+import "./_testenv.js";
 import { parseEther, parseUnits, type Address } from "viem";
 import { createWallet, setMode } from "../src/wallet/walletService.js";
 import { signAndSubmit, PolicyViolationError } from "../src/custody/signer.js";

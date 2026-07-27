@@ -52,6 +52,20 @@ export const env = {
 
   dataDir: optional("DATA_DIR", "./data"),
 
+  /**
+   * Comma-separated Telegram user IDs permitted to interact with the bot.
+   * A Telegram bot is publicly reachable by username the moment it exists —
+   * there is no "unlisted" mode — so this is the only thing standing between a
+   * local dev run and a stranger driving a wallet-bearing agent. Empty => open
+   * to everyone (startup warns loudly).
+   */
+  allowedUserIds: new Set(
+    optional("TELEGRAM_ALLOWED_USER_IDS")
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isSafeInteger(n) && n > 0),
+  ),
+
   /** Keeper (DCA / auto-compound) global kill-switch. Off unless explicitly on. */
   keeperEnabled: optional("KEEPER_ENABLED", "false").toLowerCase() === "true",
 
@@ -72,6 +86,9 @@ export const env = {
 /** True when a non-zero fee AND a recipient are configured. */
 export const feesEnabled =
   env.fees.swapBps > 0 && /^0x[0-9a-fA-F]{40}$/.test(env.fees.recipient);
+
+/** True when the bot is restricted to a fixed set of Telegram user IDs. */
+export const accessRestricted = env.allowedUserIds.size > 0;
 
 /** True when the LLM parser is usable; otherwise the deterministic parser is used. */
 export const llmEnabled = env.llm.provider === "anthropic" && env.llm.anthropicApiKey !== "";
