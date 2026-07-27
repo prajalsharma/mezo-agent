@@ -1,0 +1,77 @@
+import "dotenv/config";
+
+/**
+ * Central, validated environment access. Nothing else in the app reads
+ * process.env directly — so misconfiguration fails fast and in one place.
+ */
+
+function required(name: string): string {
+  const v = process.env[name];
+  if (!v || v.trim() === "") {
+    throw new Error(`Missing required env var: ${name}. See .env.example.`);
+  }
+  return v.trim();
+}
+
+function optional(name: string, fallback = ""): string {
+  return (process.env[name] ?? fallback).trim();
+}
+
+export type NetworkName = "testnet" | "mainnet";
+
+const network = optional("MEZO_NETWORK", "testnet") as NetworkName;
+if (network !== "testnet" && network !== "mainnet") {
+  throw new Error(`MEZO_NETWORK must be "testnet" or "mainnet", got "${network}"`);
+}
+
+export const env = {
+  telegramBotToken: required("TELEGRAM_BOT_TOKEN"),
+  network,
+
+  /** Optional RPC override (else the per-network default in networks.ts is used). */
+  rpcUrl: optional("MEZO_RPC_URL"),
+
+  /**
+   * Confirmed contract addresses supplied at runtime (not invented in code).
+   * Setting the Router enables on-chain swap execution; setting the delegate
+   * enables the EIP-7702 /upgrade flow. Empty => the feature stays gated.
+   */
+  contracts: {
+    router: optional("MEZO_ROUTER_ADDRESS"),
+    delegate7702: optional("DELEGATE7702_ADDRESS"),
+  },
+
+  /** AES-256-GCM master key (hex). Validated to 32 bytes in the keystore. */
+  masterEncryptionKey: required("MASTER_ENCRYPTION_KEY"),
+
+  llm: {
+    provider: optional("LLM_PROVIDER", "anthropic"),
+    anthropicApiKey: optional("ANTHROPIC_API_KEY"),
+    anthropicModel: optional("ANTHROPIC_MODEL", "claude-sonnet-5"),
+  },
+
+  dataDir: optional("DATA_DIR", "./data"),
+
+  /** Keeper (DCA / auto-compound) global kill-switch. Off unless explicitly on. */
+  keeperEnabled: optional("KEEPER_ENABLED", "false").toLowerCase() === "true",
+
+  /**
+   * Monetization. A small, transparently-disclosed fee on swaps/zaps executed
+   * through the agent. Shown in EVERY pre-confirmation summary and via /fees —
+   * never silent. Zero (or no recipient) => no fee is charged or displayed.
+   * Capped at 100 bps (1%) in code so a misconfiguration can't overcharge users.
+   */
+  fees: {
+    swapBps: Math.min(Number(optional("AGENT_FEE_BPS", "0")) || 0, 100),
+    recipient: optional("AGENT_FEE_RECIPIENT"),
+    /** Monthly price for automation (DCA / auto-compound), display-only. */
+    automationNote: optional("AGENT_AUTOMATION_NOTE"),
+  },
+} as const;
+
+/** True when a non-zero fee AND a recipient are configured. */
+export const feesEnabled =
+  env.fees.swapBps > 0 && /^0x[0-9a-fA-F]{40}$/.test(env.fees.recipient);
+
+/** True when the LLM parser is usable; otherwise the deterministic parser is used. */
+export const llmEnabled = env.llm.provider === "anthropic" && env.llm.anthropicApiKey !== "";

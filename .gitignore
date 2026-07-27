@@ -1,5 +1,18 @@
 node_modules/
 dist/
 .env
+.env.local
 *.log
+
+# Local file-backed datastore (Phase 1 dev). Contains ENCRYPTED key material only,
+# but it is still user data — never commit it.
+data/
+
+# test-run data dirs
+data-*/
 package-lock.json
+
+# Foundry (contracts/) build output and vendored deps
+contracts/out/
+contracts/cache/
+contracts/lib/

@@ -1,0 +1,115 @@
+import type { Address } from "viem";
+import { env } from "../config/env.js";
+import {
+  SEED_REGISTRY,
+  WRAPPED_NATIVE_ADDRESS,
+  type ContractKey,
+  type NetworkRegistry,
+  type PoolInfo,
+  type TokenInfo,
+} from "./addresses.js";
+
+/**
+ * ContractRegistry — the single source of truth for addresses and token metadata.
+ *
+ * Phase 1 serves the seeded snapshot from addresses.ts. It is deliberately shaped
+ * so a later `refresh()` can re-fetch the canonical contracts reference / a
+ * subgraph and diff it (a maintenance requirement in the architecture) without
+ * changing any call site.
+ */
+class ContractRegistry {
+  private data: NetworkRegistry;
+
+  constructor() {
+    const seed = SEED_REGISTRY[env.network];
+    // Merge operator-supplied confirmed addresses (from env) over the seed —
+    // this is how the canonical Router / delegate get wired without editing code
+    // or inventing an address. Anything unset stays gated.
+    const contracts = { ...seed.contracts };
+    if (env.contracts.router) contracts.Router = env.contracts.router as Address;
+    if (env.contracts.delegate7702) contracts.Delegate7702 = env.contracts.delegate7702 as Address;
+    this.data = { ...seed, contracts };
+  }
+
+  /** Resolve a token by symbol (case-insensitive). Throws if unknown. */
+  token(symbol: string): TokenInfo {
+    const key = Object.keys(this.data.tokens).find(
+      (k) => k.toLowerCase() === symbol.toLowerCase(),
+    );
+    const token = key ? this.data.tokens[key] : undefined;
+    if (!token) {
+      throw new Error(
+        `Unknown token "${symbol}" on ${env.network}. Known: ${this.knownTokenSymbols().join(", ")}`,
+      );
+    }
+    return token;
+  }
+
+  tryToken(symbol: string): TokenInfo | undefined {
+    try {
+      return this.token(symbol);
+    } catch {
+      return undefined;
+    }
+  }
+
+  knownTokenSymbols(): string[] {
+    return Object.values(this.data.tokens).map((t) => t.symbol);
+  }
+
+  allTokens(): TokenInfo[] {
+    return Object.values(this.data.tokens);
+  }
+
+  /** Resolve a contract address by key. Throws if not yet configured. */
+  contract(key: ContractKey): Address {
+    const addr = this.data.contracts[key];
+    if (!addr) {
+      throw new Error(
+        `Contract "${key}" is not configured for ${env.network} yet. ` +
+          `It must be sourced from the canonical contracts reference before use.`,
+      );
+    }
+    return addr;
+  }
+
+  hasContract(key: ContractKey): boolean {
+    return Boolean(this.data.contracts[key]);
+  }
+
+  /** All DEX pools on this network. */
+  pools(): PoolInfo[] {
+    return this.data.pools;
+  }
+
+  /** Find the pool trading two symbols, regardless of order. Undefined if none. */
+  resolvePool(a: string, b: string): PoolInfo | undefined {
+    const x = a.toLowerCase();
+    const y = b.toLowerCase();
+    return this.data.pools.find((p) => {
+      const [p0, p1] = [p.pair[0].toLowerCase(), p.pair[1].toLowerCase()];
+      return (p0 === x && p1 === y) || (p0 === y && p1 === x);
+    });
+  }
+
+  /**
+   * ERC-20 routing address for a token. Native BTC routes through its wrapped
+   * precompile; every other token uses its own address. Used for DEX quoting.
+   */
+  routingAddress(token: TokenInfo): Address {
+    return token.native ? WRAPPED_NATIVE_ADDRESS : token.address;
+  }
+
+  /** ERC-20 address for a symbol (native BTC maps to its precompile). Undefined if unknown. */
+  erc20Of(symbol: string): Address | undefined {
+    const t = this.tryToken(symbol);
+    return t ? this.routingAddress(t) : undefined;
+  }
+
+  /** Whether an address is provisional and must be confirmed on-chain. */
+  needsConfirmation(key: ContractKey): boolean {
+    return this.data.needsConfirmation.includes(key);
+  }
+}
+
+export const registry = new ContractRegistry();

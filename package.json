@@ -1,28 +1,36 @@
 {
-  "name": "mezo-conversational-agent",
+  "name": "mezo-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Telegram-delivered natural-language agent for the Mezo Bitcoin-DeFi stack. LLM proposes a typed intent; deterministic code validates, simulates, and signs within policy.",
+  "description": "Mezo conversational agent — Telegram bot for the Mezo Bitcoin-DeFi stack (Phase 1: wallet, deposit QR, portfolio, swap)",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "demo": "tsx src/demo.ts"
+    "genkey": "tsx scripts/genkey.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "policycheck": "tsx scripts/policycheck.ts",
+    "swapcheck": "MEZO_NETWORK=mainnet tsx scripts/swapcheck.ts",
+    "phasecheck": "KEEPER_ENABLED=true tsx scripts/phasecheck.ts",
+    "contracts:test": "cd contracts && forge test"
   },
   "dependencies": {
-    "dotenv": "16.4.5",
-    "grammy": "1.30.0",
-    "viem": "2.21.19",
-    "zod": "3.23.8"
+    "@anthropic-ai/sdk": "^0.65.0",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.30.0",
+    "qrcode": "^1.5.4",
+    "viem": "^2.54.6",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/node": "^20.19.43",
-    "tsx": "4.19.1",
-    "typescript": "5.6.2"
+    "@types/node": "^22.7.0",
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
   }
 }
