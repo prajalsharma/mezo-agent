@@ -12,7 +12,7 @@ import { chainFor } from "../chain/networks.js";
 import { store, type UserRecord, type SessionKey } from "../db/store.js";
 import { sessionKeyDelegateAbi } from "../abis/delegate.js";
 import { LocalKeyStore } from "./localKeystore.js";
-import { limitsOf, fmtBtc } from "./policy.js";
+import { limitsOf, fmtBtc, tokenCapOf } from "./policy.js";
 
 /**
  * Signer — the isolated write path. Its only job is: "sign & submit this
@@ -33,6 +33,8 @@ export type SignablePlan = {
   policy: {
     /** Contracts the app intends to touch — signer rejects anything else. */
     allowedTargets: Address[];
+    /** ERC-20 amount this step moves, for per-token cap enforcement (optional). */
+    erc20?: { symbol: string; amount: bigint };
   };
 };
 
@@ -57,8 +59,7 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
   }
 
   // Spending caps on NATIVE BTC value moved. A compromised session cannot exceed
-  // these even if it bypasses the app-level confirmation. (ERC-20 value caps
-  // arrive with the price feed in a later phase.)
+  // these even if it bypasses the app-level confirmation.
   const value = plan.value ?? 0n;
   if (value > 0n) {
     const limits = limitsOf(user.limits);
@@ -78,6 +79,17 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
       );
     }
   }
+
+  // Optional per-token (ERC-20) raw-amount cap. Off by default; a USD-denominated
+  // cap arrives with the price feed. When set, it bounds a single token transfer.
+  if (plan.policy.erc20) {
+    const cap = tokenCapOf(user.limits, plan.policy.erc20.symbol);
+    if (cap !== undefined && plan.policy.erc20.amount > cap) {
+      throw new PolicyViolationError(
+        `Blocked: this moves more ${plan.policy.erc20.symbol} than your per-transaction cap for that token. Raise it with /limits.`,
+      );
+    }
+  }
 }
 
 /** True when the account is an EIP-7702 smart account with a live session key. */
@@ -93,14 +105,22 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
   // on-chain, so a bypass of this layer still cannot exceed scope.
   assertPolicy(user, plan);
 
-  const session = usableSession(user);
-  const hash = session
-    ? await submitViaSession(user, session, plan)
-    : await submitDirect(user, plan);
+  // Reserve the native value against the daily cap BEFORE submitting. assertPolicy
+  // and this reservation run synchronously (no await between them), so two rapid
+  // actions can't both pass the check against a stale total — closing the TOCTOU.
+  const value = plan.value ?? 0n;
+  const reservation = store.addSpend(user.telegramId, value, new Date().toISOString());
 
-  // Record the native value against the daily cap only after a successful submit.
-  store.addSpend(user.telegramId, plan.value ?? 0n, new Date().toISOString());
-  return hash;
+  const session = usableSession(user);
+  try {
+    return session
+      ? await submitViaSession(user, session, plan)
+      : await submitDirect(user, plan);
+  } catch (err) {
+    // Submission failed — release the reservation so it doesn't count against the cap.
+    store.releaseSpend(reservation);
+    throw err;
+  }
 }
 
 /** Legacy path: the root EOA signs and submits the transaction directly. */

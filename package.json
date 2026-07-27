@@ -13,7 +13,10 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "genkey": "tsx scripts/genkey.ts",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "policycheck": "tsx scripts/policycheck.ts",
+    "swapcheck": "MEZO_NETWORK=mainnet tsx scripts/swapcheck.ts",
+    "contracts:test": "cd contracts && forge test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",

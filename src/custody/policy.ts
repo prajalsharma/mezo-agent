@@ -19,11 +19,24 @@ export type SpendingLimits = {
   dailyNativeWei: string;
   /**
    * Native value (wei) above which a step-up confirmation is required in the UI
-   * (extra verification). Enforcement of the step-up lives in the handler; the
-   * threshold is defined here so policy is centralized.
+   * (extra verification), enforced in the swap handler.
    */
   confirmationThresholdNativeWei: string;
+  /**
+   * Optional per-transaction caps on ERC-20 amounts, keyed by token symbol, as
+   * raw (smallest-unit) decimal strings. Enforced in the signer. Undefined =>
+   * no per-token cap. A true USD-denominated cap arrives with the price feed;
+   * this raw-amount cap is the interim, documented mechanism.
+   */
+  perTxTokenCaps?: Record<string, string>;
 };
+
+/** Resolve the per-tx raw-amount cap for a token symbol, if any. */
+export function tokenCapOf(limits: SpendingLimits | undefined, symbol: string): bigint | undefined {
+  const caps = limitsOf(limits).perTxTokenCaps;
+  const raw = caps?.[symbol];
+  return raw === undefined ? undefined : BigInt(raw);
+}
 
 /** Conservative testnet defaults. Tunable per user via /limits in later phases. */
 export const DEFAULT_LIMITS: SpendingLimits = {

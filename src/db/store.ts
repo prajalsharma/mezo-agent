@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { Address } from "viem";
 import { env } from "../config/env.js";
@@ -59,8 +60,9 @@ export type TxRecord = {
   at: string;
 };
 
-/** Ledger of native value actually signed & submitted — backs the daily cap. */
+/** Ledger of native value reserved/submitted — backs the daily cap. */
 export type SpendRecord = {
+  id: string;
   telegramId: number;
   valueWei: string;
   at: string; // ISO timestamp
@@ -142,11 +144,25 @@ class Store {
       .reverse();
   }
 
-  /** Record native value actually submitted, for the rolling daily cap. */
-  addSpend(telegramId: number, valueWei: bigint, at: string): void {
-    if (valueWei <= 0n) return;
-    this.db.spendLedger.push({ telegramId, valueWei: valueWei.toString(), at });
+  /**
+   * Reserve native value against the rolling daily cap and return a handle.
+   * Reserving BEFORE submit (rather than recording after) closes the TOCTOU
+   * window where two rapid actions could both pass the cap check. Release the
+   * handle with `releaseSpend` if the submission fails.
+   */
+  addSpend(telegramId: number, valueWei: bigint, at: string): string {
+    const id = randomUUID();
+    if (valueWei <= 0n) return id;
+    this.db.spendLedger.push({ id, telegramId, valueWei: valueWei.toString(), at });
     this.flush();
+    return id;
+  }
+
+  /** Undo a reservation (e.g. the submit threw), so it doesn't count against the cap. */
+  releaseSpend(id: string): void {
+    const before = this.db.spendLedger.length;
+    this.db.spendLedger = this.db.spendLedger.filter((s) => s.id !== id);
+    if (this.db.spendLedger.length !== before) this.flush();
   }
 
   /** Sum of native value spent by a user within the last 24h. */

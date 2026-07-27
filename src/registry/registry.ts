@@ -2,8 +2,10 @@ import type { Address } from "viem";
 import { env } from "../config/env.js";
 import {
   SEED_REGISTRY,
+  WRAPPED_NATIVE_ADDRESS,
   type ContractKey,
   type NetworkRegistry,
+  type PoolInfo,
   type TokenInfo,
 } from "./addresses.js";
 
@@ -19,7 +21,14 @@ class ContractRegistry {
   private data: NetworkRegistry;
 
   constructor() {
-    this.data = SEED_REGISTRY[env.network];
+    const seed = SEED_REGISTRY[env.network];
+    // Merge operator-supplied confirmed addresses (from env) over the seed —
+    // this is how the canonical Router / delegate get wired without editing code
+    // or inventing an address. Anything unset stays gated.
+    const contracts = { ...seed.contracts };
+    if (env.contracts.router) contracts.Router = env.contracts.router as Address;
+    if (env.contracts.delegate7702) contracts.Delegate7702 = env.contracts.delegate7702 as Address;
+    this.data = { ...seed, contracts };
   }
 
   /** Resolve a token by symbol (case-insensitive). Throws if unknown. */
@@ -66,6 +75,29 @@ class ContractRegistry {
 
   hasContract(key: ContractKey): boolean {
     return Boolean(this.data.contracts[key]);
+  }
+
+  /** All DEX pools on this network. */
+  pools(): PoolInfo[] {
+    return this.data.pools;
+  }
+
+  /** Find the pool trading two symbols, regardless of order. Undefined if none. */
+  resolvePool(a: string, b: string): PoolInfo | undefined {
+    const x = a.toLowerCase();
+    const y = b.toLowerCase();
+    return this.data.pools.find((p) => {
+      const [p0, p1] = [p.pair[0].toLowerCase(), p.pair[1].toLowerCase()];
+      return (p0 === x && p1 === y) || (p0 === y && p1 === x);
+    });
+  }
+
+  /**
+   * ERC-20 routing address for a token. Native BTC routes through its wrapped
+   * precompile; every other token uses its own address. Used for DEX quoting.
+   */
+  routingAddress(token: TokenInfo): Address {
+    return token.native ? WRAPPED_NATIVE_ADDRESS : token.address;
   }
 
   /** Whether an address is provisional and must be confirmed on-chain. */

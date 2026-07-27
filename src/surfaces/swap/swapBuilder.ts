@@ -9,16 +9,19 @@ import { publicClient } from "../../chain/client.js";
 import { registry } from "../../registry/registry.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { routerAbi } from "../../abis/router.js";
-import type { TokenInfo } from "../../registry/addresses.js";
+import { poolAbi } from "../../abis/pool.js";
+import type { PoolInfo, TokenInfo } from "../../registry/addresses.js";
 
 /**
- * SwapBuilder — deterministic construction of a DEX swap against the
- * Velodrome-style Router V2. The LLM never reaches here; it only produces a
- * validated intent (from-symbol, to-symbol, amount). This module:
- *   1. resolves addresses from the registry (never invents them),
- *   2. quotes both the stable and volatile pool and picks the better route,
- *   3. computes an on-chain min-out from the slippage tolerance,
- *   4. emits an ordered plan (optional approval → swap) as encoded calldata.
+ * SwapBuilder — deterministic construction of a DEX swap. The LLM never reaches
+ * here; it only produces a validated intent (from-symbol, to-symbol, amount).
+ *
+ * Quoting is done DIRECTLY from the pool's live reserves (`getAmountOut`), so a
+ * real quote is available on mainnet with no Router dependency. Execution goes
+ * through the Velodrome-style Router V2 when its address is confirmed in the
+ * registry; until then the plan is quote-only (`executable = false`) and the
+ * handler shows the live quote without offering to sign. Addresses always come
+ * from the registry — never invented.
  */
 
 export type Route = {
@@ -46,10 +49,16 @@ export type SwapPlan = {
   minOut: bigint;
   minOutFormatted: string;
   slippagePct: number;
-  route: Route;
+  stable: boolean;
+  poolAddress: Address;
+  /** Encoded approval/swap steps — empty when the plan is quote-only. */
   steps: PlanStep[];
-  /** The router — the only target the signer should be allowed to touch here. */
-  router: Address;
+  /** True when on-chain execution is wired (Router confirmed & non-native). */
+  executable: boolean;
+  /** Why execution is gated, when it is. */
+  gatedReason?: string;
+  /** The router — the only non-token target the signer may touch (if executable). */
+  router?: Address;
 };
 
 export class SwapUnavailableError extends Error {}
@@ -68,41 +77,66 @@ export async function buildSwap(params: {
   if (tokenIn.symbol === tokenOut.symbol) {
     throw new SwapUnavailableError("Input and output tokens are the same.");
   }
-  if (!registry.hasContract("Router") || !registry.hasContract("PoolFactory")) {
+
+  const pool = registry.resolvePool(tokenIn.symbol, tokenOut.symbol);
+  if (!pool) {
+    const pairs = registry.pools().map((p) => p.pair.join("/")).join(", ") || "none on this network";
     throw new SwapUnavailableError(
-      "The DEX Router/PoolFactory address is not yet confirmed for this network. " +
-        "Swaps activate once the registry is populated from the canonical reference.",
+      `No direct pool for ${tokenIn.symbol} → ${tokenOut.symbol}. Available pools: ${pairs}.`,
     );
   }
-  const router = registry.contract("Router");
-  const factory = registry.contract("PoolFactory");
 
   const amountIn = parseUnits(humanAmountIn, tokenIn.decimals);
   if (amountIn <= 0n) throw new SwapUnavailableError("Amount must be greater than zero.");
 
-  // Native <-> token routes need the wrapped-native token as the route endpoint.
-  const nativeInvolved = tokenIn.native || tokenOut.native;
+  // 1. Live quote straight from the pool reserves (no Router needed).
+  const expectedOut = await quoteFromPool(pool, amountIn, tokenIn);
+  if (expectedOut <= 0n) {
+    throw new SwapUnavailableError(
+      `The pool returned a zero quote for ${tokenIn.symbol} → ${tokenOut.symbol} (amount too small or no liquidity).`,
+    );
+  }
+  const minOut = applySlippage(expectedOut, slippagePct);
+
+  const base = {
+    tokenIn,
+    tokenOut,
+    amountIn,
+    amountInFormatted: humanAmountIn,
+    expectedOut,
+    expectedOutFormatted: formatUnits(expectedOut, tokenOut.decimals),
+    minOut,
+    minOutFormatted: formatUnits(minOut, tokenOut.decimals),
+    slippagePct,
+    stable: pool.stable,
+    poolAddress: pool.address,
+  };
+
+  // 2. Execution wiring. Requires a confirmed Router + PoolFactory. Native-BTC
+  //    swaps additionally need the confirmed native-swap entrypoint, so they
+  //    stay quote-only for now (documented, not hidden).
+  const routerReady = registry.hasContract("Router") && registry.hasContract("PoolFactory");
+  const nativeInvolved = Boolean(tokenIn.native || tokenOut.native);
+  if (!routerReady) {
+    return {
+      ...base, steps: [], executable: false,
+      gatedReason: "Live quote only — the DEX Router address isn't confirmed in the registry yet, so execution is gated. Set it to enable signing.",
+    };
+  }
   if (nativeInvolved) {
-    throw new SwapUnavailableError(
-      "Native BTC swaps require the confirmed wrapped-native (WBTC) route endpoint, " +
-        "pending registry confirmation. Token↔token swaps (e.g. MUSD↔mUSDC) are available first.",
-    );
+    return {
+      ...base, steps: [], executable: false,
+      gatedReason: "Live quote only — native-BTC swap execution needs the confirmed native-swap entrypoint. Token↔token swaps execute now.",
+    };
   }
 
-  // Quote both pool types and keep the better one.
-  const best = await bestQuote(amountIn, tokenIn.address, tokenOut.address, factory);
-  if (!best) {
-    throw new SwapUnavailableError(
-      `No liquidity route found for ${tokenIn.symbol} → ${tokenOut.symbol}.`,
-    );
-  }
-
-  const minOut = applySlippage(best.amountOut, slippagePct);
+  const router = registry.contract("Router");
+  const factory = registry.contract("PoolFactory");
+  const route: Route = { from: tokenIn.address, to: tokenOut.address, stable: pool.stable, factory };
   const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
-
   const steps: PlanStep[] = [];
 
-  // Approval (token input only) — top up allowance to the router if short.
+  // Approval — top up allowance to the router if short.
   const allowance = (await publicClient().readContract({
     address: tokenIn.address,
     abi: erc20Abi,
@@ -113,11 +147,7 @@ export async function buildSwap(params: {
     steps.push({
       kind: "approval",
       to: tokenIn.address,
-      data: encodeFunctionData({
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [router, amountIn],
-      }),
+      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, amountIn] }),
       value: 0n,
       describe: `Approve ${humanAmountIn} ${tokenIn.symbol} for the DEX router`,
     });
@@ -129,60 +159,30 @@ export async function buildSwap(params: {
     data: encodeFunctionData({
       abi: routerAbi,
       functionName: "swapExactTokensForTokens",
-      args: [amountIn, minOut, [best.route], owner, deadline],
+      args: [amountIn, minOut, [route], owner, deadline],
     }),
     value: 0n,
-    describe: `Swap ${humanAmountIn} ${tokenIn.symbol} → ~${formatUnits(
-      best.amountOut,
-      tokenOut.decimals,
-    )} ${tokenOut.symbol}`,
+    describe: `Swap ${humanAmountIn} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol}`,
   });
 
-  return {
-    tokenIn,
-    tokenOut,
-    amountIn,
-    amountInFormatted: humanAmountIn,
-    expectedOut: best.amountOut,
-    expectedOutFormatted: formatUnits(best.amountOut, tokenOut.decimals),
-    minOut,
-    minOutFormatted: formatUnits(minOut, tokenOut.decimals),
-    slippagePct,
-    route: best.route,
-    steps,
-    router,
-  };
+  return { ...base, steps, executable: true, router };
 }
 
-async function bestQuote(
-  amountIn: bigint,
-  from: Address,
-  to: Address,
-  factory: Address,
-): Promise<{ amountOut: bigint; route: Route } | undefined> {
-  const candidates: Route[] = [
-    { from, to, stable: true, factory },
-    { from, to, stable: false, factory },
-  ];
-
-  let best: { amountOut: bigint; route: Route } | undefined;
-  for (const route of candidates) {
-    try {
-      const amounts = (await publicClient().readContract({
-        address: registry.contract("Router"),
-        abi: routerAbi,
-        functionName: "getAmountsOut",
-        args: [amountIn, [route]],
-      })) as bigint[];
-      const out = amounts.at(-1) ?? 0n;
-      if (out > 0n && (!best || out > best.amountOut)) {
-        best = { amountOut: out, route };
-      }
-    } catch {
-      // Pool of this type may not exist; try the other.
-    }
+/** Live quote from the pool's own reserves via getAmountOut(amountIn, tokenIn). */
+async function quoteFromPool(pool: PoolInfo, amountIn: bigint, tokenIn: TokenInfo): Promise<bigint> {
+  const tokenInRouting = registry.routingAddress(tokenIn);
+  try {
+    return (await publicClient().readContract({
+      address: pool.address,
+      abi: poolAbi,
+      functionName: "getAmountOut",
+      args: [amountIn, tokenInRouting],
+    })) as bigint;
+  } catch (err) {
+    throw new SwapUnavailableError(
+      `Could not read a quote from the pool: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
-  return best;
 }
 
 /** min-out = expected * (1 - slippage). Uses basis points for integer math. */

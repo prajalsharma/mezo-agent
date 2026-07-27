@@ -9,7 +9,7 @@ import type { SwapPlan } from "../surfaces/swap/swapBuilder.js";
  */
 
 type PendingInput =
-  | { kind: "swap"; plan: SwapPlan }
+  | { kind: "swap"; plan: SwapPlan; stepUpPending?: boolean }
   | { kind: "import-await" };
 
 type Pending = PendingInput & { expiresAt: number };

@@ -15,7 +15,7 @@ This repository is being built in phases. **This is Phase 1.**
 | Deposit address + scannable QR | ✅ |
 | Live portfolio view (BTC + tokens) | ✅ |
 | Telegram conversational UI | ✅ |
-| DEX swap (quote → simulate → confirm → sign) | ✅ (token↔token; native-BTC route pending registry confirmation) |
+| DEX swap — live quote → simulate → confirm → sign | ✅ live quotes (token↔token **and** native BTC, read from pool reserves); execution enabled by setting the confirmed `MEZO_ROUTER_ADDRESS` |
 | Spending limits (per-tx + rolling 24h cap) & watch-only mode | ✅ enforced in the signer (`/limits`, `/watch`) |
 | Health self-test | ✅ `/diag` |
 
@@ -143,12 +143,21 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
 
 ## Known Phase 1 limitations (tracked, not hidden)
 
-- **DEX Router address** is not yet published in the canonical reference; the swap
-  builder targets the standard Velodrome-style Router V2 interface and reads the
-  address from the registry. Token↔token swaps activate the moment the confirmed
-  Router (+ PoolFactory) address is added; native-BTC routes additionally need the
-  confirmed wrapped-native endpoint. The bot **refuses** to swap rather than invent
-  an address.
+- **Swap quoting is LIVE** — read directly from each pool's on-chain reserves
+  (`getAmountOut`), so real quotes (token↔token and native BTC) work today on
+  mainnet, with slippage → min-out. The registry is seeded with the canonical
+  tokens, `PoolFactory`, and the confirmed BTC/MUSD, MUSD/mUSDC, MUSD/mUSDT pools.
+- **DEX Router address** is not yet published in the canonical reference, so
+  on-chain swap *execution* is gated: set `MEZO_ROUTER_ADDRESS` to the confirmed
+  Router to enable atomic `approve → swapExactTokensForTokens`. Native-BTC swap
+  execution additionally awaits the confirmed native-swap entrypoint. The bot
+  **refuses to execute** (but still shows the live quote) rather than invent an
+  address. Verify with `npm run swapcheck`.
+- **Spending safety:** the confirmation step-up (a second high-value confirm above
+  the per-user threshold) is enforced in the swap flow; the daily-cap accounting
+  reserves value *before* submit and releases on failure (closing a TOCTOU
+  window); an opt-in per-token ERC-20 cap is enforced in the signer. Verify with
+  `npm run policycheck`.
 - Datastore is a local JSON file (encrypted key material only). Production is
   Postgres + Redis.
 - Custody is Tier 3 (see trust model). **Custody roadmap:** Tier 3 (app-level
@@ -167,6 +176,10 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
   B") reuses the same delegate and signer seams. The delegate is unaudited and
   must be deployed + registered per network before `/upgrade` is available —
   see `contracts/README.md`.
-- Spending caps currently bound **native BTC** value; per-token (ERC-20) USD caps
-  come with the price feed. Seed-phrase import uses the standard EVM path
-  `m/44'/60'/0'/0/0` (account 0).
+- Spending caps bind **native BTC** value plus an opt-in raw per-token cap;
+  true USD-denominated caps come with the price feed. Seed-phrase import uses the
+  standard EVM path `m/44'/60'/0'/0/0` (account 0).
+- The `SessionKeyDelegate` contract now has a passing Foundry test suite
+  (`npm run contracts:test`, 11 tests). Deploy it with
+  `contracts/script/Deploy.s.sol` and set `DELEGATE7702_ADDRESS` to enable
+  `/upgrade`. It remains unaudited pending the security review.

@@ -31,6 +31,15 @@ export async function executeSwap(
 ): Promise<SwapExecution> {
   const outcomes: StepOutcome[] = [];
 
+  // Defensive: only an executable plan (Router confirmed) reaches here.
+  if (!plan.executable || !plan.router || plan.steps.length === 0) {
+    return {
+      outcomes: [{ kind: "swap", ok: false, reason: plan.gatedReason ?? "This swap is quote-only; execution is not enabled." }],
+      aborted: true,
+    };
+  }
+  const allowedTargets = [plan.router, plan.tokenIn.address];
+
   for (const step of plan.steps) {
     // 1. Simulate immediately before signing this exact step.
     const sim = await simulateCall({
@@ -51,7 +60,13 @@ export async function executeSwap(
         to: step.to,
         data: step.data,
         value: step.value,
-        policy: { allowedTargets: [plan.router, plan.tokenIn.address] },
+        policy: {
+          allowedTargets,
+          // The swap step moves amountIn of the input token — cap-checked in the signer.
+          ...(step.kind === "swap" && !plan.tokenIn.native
+            ? { erc20: { symbol: plan.tokenIn.symbol, amount: plan.amountIn } }
+            : {}),
+        },
       });
     } catch (err) {
       outcomes.push({

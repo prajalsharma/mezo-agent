@@ -28,6 +28,19 @@ export const env = {
   telegramBotToken: required("TELEGRAM_BOT_TOKEN"),
   network,
 
+  /** Optional RPC override (else the per-network default in networks.ts is used). */
+  rpcUrl: optional("MEZO_RPC_URL"),
+
+  /**
+   * Confirmed contract addresses supplied at runtime (not invented in code).
+   * Setting the Router enables on-chain swap execution; setting the delegate
+   * enables the EIP-7702 /upgrade flow. Empty => the feature stays gated.
+   */
+  contracts: {
+    router: optional("MEZO_ROUTER_ADDRESS"),
+    delegate7702: optional("DELEGATE7702_ADDRESS"),
+  },
+
   /** AES-256-GCM master key (hex). Validated to 32 bytes in the keystore. */
   masterEncryptionKey: required("MASTER_ENCRYPTION_KEY"),
 
