@@ -27,6 +27,9 @@ COPY scripts ./scripts
 # the platform UI (Railway: right-click service → Attach volume → /data).
 ENV DATA_DIR=/data
 
-# tsx runs the TypeScript sources directly, matching `npm start` locally.
+# tsx runs the TypeScript sources directly. Run NODE directly (not npx/npm): a
+# wrapper process intercepts SIGTERM on redeploy and exits non-zero, which
+# Railway reports as "Deployment crashed". With node as the process, SIGTERM
+# reaches the graceful shutdown handler in src/index.ts → clean exit 0.
 RUN npm install tsx@^4.19.0
-CMD ["npx", "tsx", "src/index.ts"]
+CMD ["node", "--import", "tsx", "src/index.ts"]
