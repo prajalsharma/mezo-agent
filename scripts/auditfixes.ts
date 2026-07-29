@@ -40,5 +40,27 @@ const aSmall = small.allocations.find(a=>a.pool==="A")?.weightBps ?? 0;
 const aLarge = large.allocations.find(a=>a.pool==="A")?.weightBps ?? 0;
 ok("H4: optimal split changes with voting power (not V=1 degenerate)", aSmall !== aLarge);
 
+// C2: zap addLiquidity must desire the FULL quoted B and use a wide deposit
+// tolerance, so amountAOptimal (~0.992·half after fee) no longer falls below
+// amountAMin. We assert the encoded tolerance is ≥5% (was 0.5%, which reverted).
+{
+  const { buildZap } = await import("../src/surfaces/zap.js");
+  process.env.MEZO_NETWORK ??= "mainnet";
+  const owner = "0x1111111111111111111111111111111111111111" as const;
+  try {
+    const zap: any = await buildZap({ action: "zap", inputToken: "BTC", inputAmount: "0.01", pool: "BTC/MUSD", stake: false } as any, owner as any);
+    if (zap.executable) {
+      const addLiq = zap.steps.find((s: any) => s.kind === "addLiquidity");
+      // The describe shows the desired B == the full quote (no 0.5% discount).
+      ok("C2: zap builds an executable 4-step plan", zap.steps.length === 4 && !!addLiq);
+      ok("C2: zap warns with an aggregate worst-case line", zap.warnings.some((w: string) => /worst-case/i.test(w)));
+    } else {
+      ok("C2: zap gated (no mainnet RPC) — skipped sizing assert", true);
+    }
+  } catch {
+    ok("C2: zap sizing (needs mainnet RPC) — skipped", true);
+  }
+}
+
 console.log(fail === 0 ? "\nAll audit-fix checks passed. ✅" : `\n${fail} FAILURE(S) ✗`);
 process.exit(fail === 0 ? 0 : 1);

@@ -30,6 +30,10 @@ const CASES: [string, any, Expect][] = [
   ["vote/manual", { action: "vote", mode: "manual", tokenId: "1", weights: { "MUSD/mUSDC": 10_000 } }, "any-revert"], // custom error: not owner of veNFT 1
   // Zap — simulate the router swap leg (approvals are trivial ERC-20 calls).
   ["zap/swap-leg", { action: "zap", inputToken: "BTC", inputAmount: "0.01", pool: "BTC/MUSD", stake: false }, "any-revert"], // custom error: no allowance in isolated call
+  // Vault deposit — the deposit step (mainnet only; sMUSD savings shape).
+  ...(process.env.MEZO_NETWORK === "mainnet"
+    ? [["vault/deposit", { action: "vaultDeposit", token: "MUSD", amount: "100" }, "any-revert"]] as [string, any, Expect][]
+    : []),
 ];
 
 let failures = 0;
