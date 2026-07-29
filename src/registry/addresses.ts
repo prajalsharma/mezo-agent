@@ -146,6 +146,17 @@ const MAINNET: NetworkRegistry = {
       address: "0x7B7c000000000000000000000000000000000001",
       decimals: 18,
     },
+    // Bridged tokens from the canonical contracts reference; symbols + decimals
+    // verified on-chain. No DEX pool for these yet (only BTC/MUSD, MUSD/mUSDC,
+    // MUSD/mUSDT are published), so they are portfolio-displayable, not swappable.
+    mcbBTC: { symbol: "mcbBTC", name: "Mezo cbBTC", address: "0x6a7CD8E1384d49f502b4A4CE9aC9eb320835c5d7", decimals: 8 },
+    mFBTC: { symbol: "mFBTC", name: "Mezo FBTC", address: "0x812fcC0Bb8C207Fd8D6165a7a1173037F43B2dB8", decimals: 8 },
+    mswBTC: { symbol: "mswBTC", name: "Mezo swBTC", address: "0x29fA8F46CBB9562b87773c8f50a7F9F27178261c", decimals: 8 },
+    mSolvBTC: { symbol: "mSolvBTC", name: "Mezo SolvBTC", address: "0xa10aD2570ea7b93d19fDae6Bd7189fF4929Bc747", decimals: 18 },
+    mxSolvBTC: { symbol: "mxSolvBTC", name: "Mezo xSolvBTC", address: "0xdF708431162Ba247dDaE362D2c919e0fbAfcf9DE", decimals: 18 },
+    mDAI: { symbol: "mDAI", name: "Mezo DAI", address: "0x1531b6e3d51BF80f634957dF81A990B92dA4b154", decimals: 18 },
+    mUSDe: { symbol: "mUSDe", name: "Mezo USDe", address: "0xdf6542260a9F768f07030E4895083F804241F4C4", decimals: 18 },
+    mT: { symbol: "mT", name: "Mezo T", address: "0xaaC423eDC4E3ee9ef81517e8093d52737165b71F", decimals: 18 },
   },
   contracts: {
     PoolFactory: "0x83FE469C636C4081b87bA5b3Ae9991c6Ed104248",
