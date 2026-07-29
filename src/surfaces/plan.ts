@@ -128,9 +128,18 @@ export async function executeActionPlan(
     });
     await onProgress?.(`Submitted ${step.kind}: ${hash}`);
 
-    // 3. Wait for confirmation when a later step depends on this one.
+    // 3. Wait for confirmation when a later step depends on this one. BOUNDED —
+    // grammY dispatches updates sequentially, so an unbounded wait on a stuck tx
+    // would freeze the whole bot (including /pause). A timeout lets the handler
+    // return and the bot stay responsive; the user can retry. (Audit R2 H2.)
     if (step.waitForReceipt) {
-      const receipt = await publicClient().waitForTransactionReceipt({ hash });
+      let receipt;
+      try {
+        receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });
+      } catch {
+        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} not confirmed within 90s (tx ${hash}); stopping. It may still land — check before retrying.` });
+        return { outcomes, aborted: true };
+      }
       store.updateTxByHash(hash, receipt.status === "success" ? "confirmed" : "failed");
       if (receipt.status !== "success") {
         outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} transaction reverted on-chain` });

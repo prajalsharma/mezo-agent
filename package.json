@@ -22,7 +22,9 @@
     "verifyaddrs": "tsx scripts/verifyaddrs.ts",
     "discover": "tsx scripts/discover.ts",
     "phaseaudit": "tsx scripts/phaseaudit.ts",
-    "simcheck": "tsx scripts/simcheck.ts"
+    "simcheck": "tsx scripts/simcheck.ts",
+    "auditfixes": "tsx scripts/auditfixes.ts",
+    "exportcheck": "tsx scripts/exportcheck.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",

@@ -40,9 +40,25 @@ export type OptimalResult = {
   rewardPerVote: number;
 };
 
+/**
+ * Votes to place on gauge i at marginal price λ.
+ *
+ * Audit R2 H6: the previous form floored otherVotes at 1e-9 INSIDE the sqrt
+ * numerator, so an uncontested gauge (otherVotes == 0) — which is the *best*
+ * gauge, since you capture 100% of its incentives — got sqrt(incentives·1e-9/λ)
+ * ≈ 0 votes, exactly inverting the optimum. An uncontested gauge has unbounded
+ * marginal value at x→0, so it should be filled FIRST. We model that by giving
+ * it a tiny synthetic otherVotes floor for the sqrt, but the caller
+ * (`optimalAllocation`) also front-loads uncontested gauges explicitly below.
+ */
 function alloc(g: GaugeStat, lambda: number): number {
   if (g.incentives <= 0 || lambda <= 0) return 0;
-  const x = Math.sqrt((g.incentives * Math.max(g.otherVotes, 1e-9)) / lambda) - g.otherVotes;
+  // For a truly uncontested gauge the marginal value is incentives/x², so the
+  // λ-optimal allocation is sqrt(incentives/λ). Using the real otherVotes (0)
+  // in the standard formula gives sqrt(0) - 0 = 0, which is wrong; treat the
+  // uncontested case with its own closed form.
+  if (g.otherVotes <= 0) return Math.sqrt(g.incentives / lambda);
+  const x = Math.sqrt((g.incentives * g.otherVotes) / lambda) - g.otherVotes;
   return Math.max(0, x);
 }
 
@@ -54,8 +70,13 @@ export function optimalAllocation(gauges: GaugeStat[], votingPower: number): Opt
 
   // Binary-search λ. Larger λ => smaller total allocation, so total(λ) is
   // monotonically decreasing; we bracket the λ that spends exactly votingPower.
+  // hi must exceed the largest marginal value; for an uncontested gauge that is
+  // incentives/ε² which is huge, so derive hi from the uncontested closed form
+  // (incentives/x²) at a small x, plus the contested ratio bound.
   let lo = 1e-12;
-  let hi = Math.max(...usable.map((g) => g.incentives / Math.max(g.otherVotes, 1e-9))) + 1;
+  const contestedHi = Math.max(0, ...usable.filter((g) => g.otherVotes > 0).map((g) => g.incentives / g.otherVotes));
+  const uncontestedHi = Math.max(0, ...usable.filter((g) => g.otherVotes <= 0).map((g) => g.incentives)) / 1e-12;
+  let hi = Math.max(contestedHi, uncontestedHi) + 1;
   const total = (l: number) => usable.reduce((s, g) => s + alloc(g, l), 0);
   for (let iter = 0; iter < 100; iter++) {
     const mid = (lo + hi) / 2;

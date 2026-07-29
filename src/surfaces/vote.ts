@@ -1,6 +1,7 @@
-import { encodeFunctionData, type Address } from "viem";
+import { encodeFunctionData, formatUnits, type Address } from "viem";
+import { publicClient } from "../chain/client.js";
 import { registry } from "../registry/registry.js";
-import { voterAbi } from "../abis/mezo.js";
+import { voterAbi, votingEscrowAbi } from "../abis/mezo.js";
 import { optimalAllocation, explainAllocation } from "../core/optimalVoting.js";
 import { liveIncentives } from "../core/incentivesFeed.js";
 import { gatedPlan, ActionUnavailableError, type ActionPlan } from "./plan.js";
@@ -69,6 +70,9 @@ export function buildVote(intent: VoteIntent): ActionPlan | Promise<ActionPlan> 
   return buildOptimalVote(intent);
 }
 
+/** Minimum total priced incentive (MUSD) before an optimal vote is executable. */
+const MIN_INCENTIVE_MUSD = 1;
+
 async function buildOptimalVote(intent: VoteIntent): Promise<ActionPlan> {
   if (!registry.hasContract("Voter")) {
     return gatedPlan({
@@ -78,35 +82,62 @@ async function buildOptimalVote(intent: VoteIntent): Promise<ActionPlan> {
     });
   }
 
-  const snapshot = await liveIncentives(Date.now() / 1000);
-  const totalIncentives = snapshot.stats.reduce((s, g) => s + g.incentives, 0);
-
-  if (totalIncentives <= 0) {
-    // Honest live state — not a gate. There is nothing to optimize against.
-    throw new ActionUnavailableError(
-      "No bribes or fee rewards are posted on the pool gauges for this epoch (checked live just now), " +
-        'so there is no incentive data to optimize. You can still vote manually: e.g. "vote with veNFT 3: 60% MUSD/mUSDC, 40% BTC/MUSD".',
-    );
-  }
-
-  const result = optimalAllocation(snapshot.stats, 1);
-  const summary = [
-    "Optimal allocation (maximizes expected reward-per-vote this epoch, water-filling method):",
-    ...explainAllocation(result),
-    `Blended: ~${result.rewardPerVote.toFixed(4)} MUSD-equivalent per unit of voting power.`,
-  ];
-  if (snapshot.unpriced.length > 0) {
-    summary.push(
-      `⚠️ Excluded from optimization (no MUSD price route): ${snapshot.unpriced.map((a) => a.slice(0, 10) + "…").join(", ")}.`,
-    );
-  }
-
+  // Require the veNFT id BEFORE the (expensive) feed read, and read the REAL
+  // voting power from it — water-filling is not scale-free, so solving at V=1
+  // over-concentrated every real position (Audit R2 H4).
   if (!intent.tokenId) {
-    // The allocation is shown, but we never guess which veNFT casts it.
     throw new ActionUnavailableError(
-      summary.join("\n") + '\n\nWhich veBTC NFT should cast this vote? Say e.g. "vote optimally with veNFT 3".',
+      'Which veBTC NFT should cast this vote? Say e.g. "vote optimally with veNFT 3".',
     );
   }
+  const tokenId = BigInt(intent.tokenId);
+  const votingPowerWei = (await publicClient().readContract({
+    address: registry.contract("VotingEscrowBTC"),
+    abi: votingEscrowAbi, functionName: "balanceOfNFT", args: [tokenId],
+  })) as bigint;
+  if (votingPowerWei <= 0n) {
+    throw new ActionUnavailableError(`veNFT #${intent.tokenId} has no voting power (expired or not yours). Check the id.`);
+  }
+  const votingPower = Number(formatUnits(votingPowerWei, 18));
+
+  const snapshot = await liveIncentives(Date.now() / 1000, tokenId);
+  const totalIncentives = snapshot.gauges.reduce((s, g) => s + g.incentives, 0);
+  const anyUnpriced = snapshot.gauges.some((g) => g.unpricedTokens.length > 0);
+
+  // Raw per-gauge MUSD numbers, always shown so the user can sanity-check the
+  // allocation and reject an implausible one (defends against thin-pool price
+  // skew steering the vote — Audit R2 H5/M3).
+  const rawLines = snapshot.gauges
+    .filter((g) => g.incentivesMusdWei > 0n || g.unpricedTokens.length > 0)
+    .map((g) => `• ${g.pool}: ~${g.incentives.toFixed(2)} MUSD incentives, ${g.otherVotes.toFixed(2)} other votes` +
+      (g.unpricedTokens.length ? ` (+${g.unpricedTokens.length} unpriced reward token(s))` : ""));
+
+  // Refuse to auto-submit when data is incomplete or trivially small — direct to
+  // a manual vote instead of committing power on a maybe-manipulated snapshot.
+  if (totalIncentives < MIN_INCENTIVE_MUSD || anyUnpriced) {
+    throw new ActionUnavailableError(
+      [
+        anyUnpriced
+          ? "Some gauges pay rewards in tokens with no MUSD price route, so an 'optimal' split can't be computed honestly without under-counting them."
+          : `Total posted incentives this epoch are below ${MIN_INCENTIVE_MUSD} MUSD, so there's nothing meaningful to optimize.`,
+        "",
+        "Live per-gauge incentives:",
+        ...rawLines,
+        "",
+        'Vote manually with the numbers above, e.g. "vote with veNFT ' + intent.tokenId + ': 60% MUSD/mUSDC, 40% BTC/MUSD".',
+      ].join("\n"),
+    );
+  }
+
+  const result = optimalAllocation(snapshot.gauges, votingPower);
+  const summary = [
+    "Optimal allocation (water-filling over LIVE incentives, computed for your veNFT's actual power):",
+    ...explainAllocation(result),
+    `Blended: ~${result.rewardPerVote.toFixed(4)} MUSD per unit of voting power; total ~${result.totalExpectedReward.toFixed(2)} MUSD.`,
+    "",
+    "Live per-gauge data used:",
+    ...rawLines,
+  ];
 
   const voter = registry.contract("Voter");
   const pools: Address[] = [];
@@ -121,13 +152,16 @@ async function buildOptimalVote(intent: VoteIntent): Promise<ActionPlan> {
     kind: "vote", to: voter, value: 0n,
     data: encodeFunctionData({
       abi: voterAbi, functionName: "vote",
-      args: [BigInt(intent.tokenId), pools, bps],
+      args: [tokenId, pools, bps],
     }),
     describe: `Vote veNFT #${intent.tokenId} optimally: ${result.allocations.map((a) => `${a.pool} ${(a.weightBps / 100).toFixed(0)}%`).join(", ")}`,
   };
   return {
     action: "vote", title: "🗳️ Vote (optimal)", summary,
-    warnings: ["Votes persist across epochs until changed; weights are relative."],
+    warnings: [
+      "Votes persist across epochs until changed.",
+      "Incentive values are a live snapshot and can move; the raw per-gauge numbers are shown above — reject if they look wrong.",
+    ],
     steps: [step], allowedTargets: [voter], executable: true, nativeValue: 0n,
   };
 }

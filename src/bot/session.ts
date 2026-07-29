@@ -16,12 +16,18 @@ type PendingInput =
 
 type Pending = PendingInput & { expiresAt: number };
 
+// Fund-moving plans expire fast so a stale quote can't execute at an old price.
 const PENDING_TTL_MS = 3 * 60 * 1000;
+// The import prompt is not a quote — a short TTL just risks the pasted secret
+// falling through to the LLM after it lapses (Audit R2 C3). Give it a long
+// window; the message handler also has an unconditional secret-shaped-text guard.
+const IMPORT_TTL_MS = 30 * 60 * 1000;
 
 const pending = new Map<number, Pending>();
 
 export function setPending(telegramId: number, p: PendingInput): void {
-  pending.set(telegramId, { ...p, expiresAt: Date.now() + PENDING_TTL_MS });
+  const ttl = p.kind === "import-await" ? IMPORT_TTL_MS : PENDING_TTL_MS;
+  pending.set(telegramId, { ...p, expiresAt: Date.now() + ttl });
 }
 
 export function getPending(telegramId: number): Pending | undefined {

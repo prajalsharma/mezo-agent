@@ -11,9 +11,10 @@ import {
   handleExportConfirm,
   handleExportCancel,
   maybeHandleImportKey,
+  looksLikeSecret,
 } from "./handlers/onboarding.js";
 import { handlePortfolio, handleDeposit } from "./handlers/portfolio.js";
-import { handleLimits, handleWatch } from "./handlers/limits.js";
+import { handleLimits, handleWatch, handleLimitsConfirm, handleLimitsCancel } from "./handlers/limits.js";
 import { handleUpgrade } from "./handlers/delegate.js";
 import {
   handleSwapIntent,
@@ -120,7 +121,8 @@ export function buildBot(): Bot {
     const lines = ["<b>💸 Fees</b>", ""];
     if (feesEnabled) {
       lines.push(
-        `• Swap / zap: <b>${env.fees.swapBps / 100}%</b> of the input amount, taken in the input token.`,
+        `• Swaps: <b>${env.fees.swapBps / 100}%</b> of the input amount, taken in the input token.`,
+        `• Zaps currently charge <b>no</b> agent fee (only the pool's own swap fee applies).`,
         `• Shown on every confirmation before you approve — you always see the exact amount.`,
         `• Fee recipient: <code>${env.fees.recipient}</code>`,
       );
@@ -153,6 +155,8 @@ export function buildBot(): Bot {
   bot.callbackQuery("wallet:import", handleImportPrompt);
   bot.callbackQuery("wallet:export-confirm", handleExportConfirm);
   bot.callbackQuery("wallet:export-cancel", handleExportCancel);
+  bot.callbackQuery("limits:confirm", handleLimitsConfirm);
+  bot.callbackQuery("limits:cancel", handleLimitsCancel);
   bot.callbackQuery("swap:confirm", handleSwapConfirm);
   bot.callbackQuery("swap:cancel", handleSwapCancel);
   bot.callbackQuery("action:confirm", handleActionConfirm);
@@ -164,6 +168,22 @@ export function buildBot(): Bot {
     if (await maybeHandleImportKey(ctx)) return;
 
     const text = ctx.message.text;
+
+    // UNCONDITIONAL secret guard (Audit R2 C3). Even outside an import flow — a
+    // lapsed window, a re-paste after a failed import, or a user pasting a key
+    // unprompted — a private key or seed phrase must NEVER reach parseIntent
+    // (which posts the message to the LLM). Detect the shape, delete the
+    // message, and refuse. This runs before any LLM call.
+    if (looksLikeSecret(text)) {
+      await ctx.deleteMessage().catch(() => {});
+      clearPending(ctx.from?.id ?? 0);
+      await ctx.reply(
+        "🛑 That looked like a private key or seed phrase, so I deleted it and did NOT process it. " +
+          "Never paste secrets unprompted. To import, tap Import on /start first, then paste when asked.",
+      );
+      return;
+    }
+
     if (text.startsWith("/")) return; // unknown command; ignore
 
     const intent = await parseIntent(text, registry.knownTokenSymbols());

@@ -139,6 +139,24 @@ export async function handleExportCancel(ctx: Context): Promise<void> {
   await ctx.reply("Export cancelled. Nothing was revealed.");
 }
 
+/**
+ * Detect a private key or BIP-39 seed phrase by SHAPE, so such text can be
+ * blocked before it ever reaches the LLM parser (Audit R2 C3). Deliberately
+ * broad: a false positive just asks the user to rephrase; a false negative
+ * leaks a secret to a third-party model.
+ */
+export function looksLikeSecret(text: string): boolean {
+  const t = text.trim();
+  // Private key: 64 hex chars, optional 0x.
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(t)) return true;
+  // Seed phrase: 12/15/18/21/24 lowercase alphabetic words.
+  const words = t.split(/\s+/);
+  if ([12, 15, 18, 21, 24].includes(words.length) && words.every((w) => /^[a-z]{3,8}$/.test(w))) {
+    return true;
+  }
+  return false;
+}
+
 /** Handles the follow-up message containing a pasted private key. */
 export async function maybeHandleImportKey(ctx: Context): Promise<boolean> {
   const telegramId = ctx.from?.id;
@@ -147,22 +165,26 @@ export async function maybeHandleImportKey(ctx: Context): Promise<boolean> {
   const p = getPending(telegramId);
   if (!p || p.kind !== "import-await") return false;
 
-  clearPending(telegramId);
-  // Delete the message containing the secret as fast as possible.
+  // Delete the message containing the secret as fast as possible. Do NOT clear
+  // pending yet — if the import fails we re-arm so a corrected re-paste is still
+  // consumed here and never falls through to the LLM (Audit R2 C3).
   await ctx.deleteMessage().catch(() => {});
 
   try {
     const user = await importWallet(telegramId, text.trim());
+    clearPending(telegramId);
     await ctx.reply(
       `✅ ${b("Account imported")} (your key message was deleted).\n\n` +
         `${code(user.address)}\n\nUse /portfolio or /deposit.`,
       { parse_mode: "HTML" },
     );
   } catch (err) {
+    // Re-arm: the next message is still treated as an import attempt.
+    setPending(telegramId, { kind: "import-await" });
     if (err instanceof WalletImportError) {
-      await ctx.reply(`❌ ${esc(err.message)} Import aborted. Nothing was stored.`);
+      await ctx.reply(`❌ ${esc(err.message)} Nothing was stored. Paste again, or /cancel to stop.`);
     } else {
-      await ctx.reply("❌ Import failed. Nothing was stored.");
+      await ctx.reply("❌ Import failed. Nothing was stored. Paste again, or /cancel to stop.");
     }
   }
   return true;

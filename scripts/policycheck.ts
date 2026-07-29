@@ -63,6 +63,18 @@ async function main() {
     }),
   );
 
+  // 5b. CRITICAL (Audit R2 C1): BTC spent via the ERC-20 precompile (value:0n,
+  // erc20 symbol "BTC") must hit the NATIVE per-tx cap, not slip through. This
+  // is the lock/swap/zap/vault/stake bypass.
+  setMode(user.telegramId, "active");
+  const precompile = "0x7b7C000000000000000000000000000000000000";
+  await expectBlock("BTC-via-precompile respects native per-tx cap", () =>
+    signAndSubmit(store.getUser(user.telegramId)!, {
+      to: precompile, value: 0n,
+      policy: { allowedTargets: [precompile], erc20: { symbol: "BTC", amount: parseEther("5") } },
+    }),
+  );
+
   // 6. Reserve/release (TOCTOU): a reservation counts immediately; releasing undoes it.
   const before = store.spentLast24hWei(user.telegramId);
   const id = store.addSpend(user.telegramId, parseEther("0.01"), new Date().toISOString());

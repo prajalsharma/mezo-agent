@@ -41,6 +41,8 @@ export type PlanStep = {
   describe: string;
   /** Wait for this step's receipt before the next (approval before spend). */
   waitForReceipt?: boolean;
+  /** ERC-20 amount this step moves, for the signer's per-token / BTC cap. */
+  erc20?: { symbol: string; amount: bigint };
 };
 
 export type SwapFee = {
@@ -183,6 +185,7 @@ export async function buildSwap(params: {
             kind: "fee", to: tokenIn.address, value: 0n,
             data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [fee.recipient, fee.amount] }),
             describe: `Agent fee ${fee.amountFormatted} ${tokenIn.symbol} (${fee.bps / 100}%)`,
+            erc20: { symbol: tokenIn.symbol, amount: fee.amount },
           },
     );
   }
@@ -210,7 +213,11 @@ export async function buildSwap(params: {
     });
   }
 
-  // One swap direction for everything: token↔token over routing addresses.
+  // One swap direction for everything: token↔token over routing addresses. The
+  // spend cap is enforced HERE (not on the approval, which may be skipped when
+  // an allowance already exists): the swap step carries the erc20 descriptor so
+  // the signer prices it — BTC via btcWeiMoved's symbol check, tokens via the
+  // per-token cap. (Audit R2 C1/H8.)
   steps.push({
     kind: "swap", to: router, value: 0n,
     data: encodeFunctionData({
@@ -219,6 +226,7 @@ export async function buildSwap(params: {
       args: [amountInNet, minOut, [route], owner, deadline],
     }),
     describe: `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol}`,
+    erc20: { symbol: tokenIn.symbol, amount: amountInNet },
   });
 
   return { ...base, steps, executable: true, router };

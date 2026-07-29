@@ -72,15 +72,35 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
     });
   }
 
+  // Honest aggregate exposure (Audit R2): a zap is 4 separate txs, not one
+  // atomic action, so the true worst case is the swap-leg slippage (0.5%) + the
+  // deposit-ratio tolerance (7%) + price impact, and it can be sandwiched in the
+  // guaranteed inter-tx gap. Disclose it plainly rather than the per-leg 0.5%.
+  const worstCaseLine =
+    "⚠️ Worst-case cost up to ~7.5% (0.5% swap slippage + up to 7% deposit-ratio tolerance + pool price impact). " +
+    "This zap is 4 separate transactions and can be front-run between them; use a small size on thin pools.";
+
   const router = registry.contract("Router");
   const factory = registry.contract("PoolFactory");
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
   const route = { from: registry.routingAddress(input), to: registry.routingAddress(other), stable: p.stable, factory };
-  // Received-side floor at 0.5% slippage; also used as the addLiquidity desired
-  // amount so the plan never assumes more of the other token than it is
-  // guaranteed to hold post-swap (any surplus stays in the wallet as dust).
+
+  // Swap-leg slippage floor (the real value protection): 0.5% off the quote.
   const minOther = (otherOut * 9_950n) / 10_000n;
-  const minHalf = (half * 9_950n) / 10_000n;
+
+  // addLiquidity sizing (Audit R2 C2). The swap itself moves the pool price by
+  // the fee + our own impact, so at deposit time the pool wants a DIFFERENT
+  // ratio than the pre-swap quote. The previous plan set amountAMin to 99.5% of
+  // `half` while side B was already discounted, so amountAOptimal (~0.992·half
+  // after a 0.3% fee) fell below amountAMin and addLiquidity reverted on EVERY
+  // fee-bearing pool — after the swap had irreversibly settled. Fix:
+  //   • desire the FULL quoted B (otherOut), so the router can pull the optimal
+  //     amount up to what we actually hold;
+  //   • set both mins to a wide LP-deposit tolerance (7%) that absorbs the swap
+  //     fee + impact — value is already protected on the swap leg's minOther.
+  const LP_MIN_BPS = 9_300n; // 7% tolerance on the deposit ratio
+  const amountAMin = (half * LP_MIN_BPS) / 10_000n;
+  const amountBMin = (otherOut * LP_MIN_BPS) / 10_000n;
   // Everything is ERC-20 on Mezo: native BTC spends through its precompile
   // (route.from is already the routing address), so a single code path covers
   // both native and token inputs — no msg.value, no ETH-variant functions.
@@ -88,6 +108,9 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
   const otherAddr = route.to;
   const steps: ActionStep[] = [
     {
+      // The whole BTC input is capped here (btcWeiMoved reads erc20.symbol "BTC"),
+      // so the intermediate other-token legs below carry no cap tag — they move
+      // funds derived from this already-capped input, not new principal.
       kind: "approval", to: inAddr, value: 0n,
       data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, half * 2n] }),
       describe: `Approve ${intent.inputAmount} ${inSym} for the router`,
@@ -104,24 +127,25 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
     },
     {
       kind: "approval", to: otherAddr, value: 0n,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, minOther] }),
-      describe: `Approve ${formatUnits(minOther, other.decimals)} ${otherSym} for the router`,
-      erc20: { symbol: other.symbol, amount: minOther }, waitForReceipt: true,
+      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, otherOut] }),
+      describe: `Approve ${formatUnits(otherOut, other.decimals)} ${otherSym} for the router`,
+      waitForReceipt: true,
     },
     {
       kind: "addLiquidity", to: router, value: 0n,
       data: encodeFunctionData({
         abi: routerAbi, functionName: "addLiquidity",
-        args: [inAddr, otherAddr, p.stable, half, minOther, minHalf, (minOther * 9_900n) / 10_000n, owner, deadline],
+        args: [inAddr, otherAddr, p.stable, half, otherOut, amountAMin, amountBMin, owner, deadline],
       }),
-      describe: `Add ~${formatUnits(half, input.decimals)} ${inSym} + ~${formatUnits(minOther, other.decimals)} ${otherSym} as liquidity`,
+      describe: `Add ~${formatUnits(half, input.decimals)} ${inSym} + ~${formatUnits(otherOut, other.decimals)} ${otherSym} as liquidity`,
     },
   ];
 
   return {
     action: "zap", title: "⚡ Zap into pool", summary,
-    warnings: ["Each leg enforces a 0.5% slippage floor on-chain; a failed leg halts the remaining steps."],
+    warnings: [worstCaseLine, "Multi-tx zap is not atomic; a failed leg halts the remaining steps and may leave a residual allowance."],
     steps, allowedTargets: [router, inAddr, otherAddr],
-    executable: true, nativeValue: 0n,
+    // Step-up threshold is BTC-denominated: a BTC-input zap moves the full input.
+    executable: true, nativeValue: input.native ? half * 2n : 0n,
   };
 }

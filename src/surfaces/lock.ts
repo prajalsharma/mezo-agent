@@ -56,11 +56,13 @@ export function buildLock(intent: LockIntent): ActionPlan {
   ];
   return {
     action: "lock", title: `🔒 Lock ${intent.asset} (ve${intent.asset})`, summary, warnings: [],
-    steps, allowedTargets: steps.map((s) => s.to), executable: true, nativeValue: 0n,
+    steps, allowedTargets: steps.map((s) => s.to), executable: true,
+    // Step-up threshold is BTC-denominated; only a BTC lock counts toward it.
+    nativeValue: intent.asset === "BTC" ? value : 0n,
   };
 }
 
-export function buildExtendLock(intent: ExtendLockIntent): ActionPlan {
+export async function buildExtendLock(intent: ExtendLockIntent, owner: Address): Promise<ActionPlan> {
   if (!intent.addDays && !intent.addAmount) {
     throw new ActionUnavailableError("Specify more time (addDays) and/or more amount (addAmount).");
   }
@@ -93,9 +95,12 @@ export function buildExtendLock(intent: ExtendLockIntent): ActionPlan {
     });
   }
   if (intent.addAmount) {
+    // Fund-moving branch — refuse unless the caller owns the target veNFT.
+    await assertOwnsLock(owner, String(intent.tokenId));
     // Added BTC travels through the ERC-20 precompile like createLock: approve
     // the escrow, then increaseAmount — no msg.value.
     const value = parseUnits(intent.addAmount, 18);
+    nativeValue += value; // BTC, for the step-up threshold
     steps.push(approveStep(registry.erc20Of("BTC")!, ve, value, "BTC"));
     steps.push({
       kind: "increaseAmount", to: ve, value: 0n,
@@ -104,6 +109,7 @@ export function buildExtendLock(intent: ExtendLockIntent): ActionPlan {
         args: [tokenId, value],
       }),
       describe: `Add ${intent.addAmount} BTC to lock #${intent.tokenId}`,
+      erc20: { symbol: "BTC", amount: value },
     });
   }
 
@@ -112,4 +118,23 @@ export function buildExtendLock(intent: ExtendLockIntent): ActionPlan {
     warnings: ["Extending resets voting-power decay; the new unlock date is checked on-chain before signing."],
     steps, allowedTargets: steps.map((s) => s.to), executable: true, nativeValue,
   };
+}
+
+/**
+ * increaseAmount() in a Velodrome-style escrow is a "deposit-for" call: it does
+ * NOT require msg.sender to own the veNFT, so a wrong/misparsed tokenId would
+ * irrecoverably donate the caller's BTC into a stranger's lock. Guard it with an
+ * off-chain ownership check before building the fund-moving step. (Audit R2.)
+ */
+export async function assertOwnsLock(owner: Address, tokenId: string): Promise<void> {
+  const { publicClient } = await import("../chain/client.js");
+  const nftOwner = (await publicClient().readContract({
+    address: registry.contract("VotingEscrowBTC"),
+    abi: votingEscrowAbi, functionName: "ownerOf", args: [BigInt(tokenId)],
+  })) as Address;
+  if (nftOwner.toLowerCase() !== owner.toLowerCase()) {
+    throw new ActionUnavailableError(
+      `veNFT #${tokenId} is not owned by your account, so adding BTC to it would give the funds away. Check the id.`,
+    );
+  }
 }

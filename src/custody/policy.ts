@@ -1,54 +1,90 @@
-import { formatEther, parseEther } from "viem";
+import { formatEther, parseEther, parseUnits, type Address } from "viem";
 
 /**
  * Spending policy — the bounty requires "spending limits and confirmation
  * thresholds so a compromised session cannot drain an account."
  *
- * Phase 1 scaffold: hard caps on NATIVE BTC value moved per transaction and per
- * rolling 24h window, enforced in the signer (defense in depth: the signer
- * refuses to sign an over-cap tx even if every other layer is bypassed), plus a
- * watch-only mode. Per-token (ERC-20) USD caps arrive with the price-feed
- * integration in a later phase; that limitation is documented, not hidden.
+ * Hard caps on BTC value moved per transaction and per rolling 24h window, plus
+ * per-token raw-amount caps, all enforced in the signer (defense in depth: the
+ * signer refuses to sign an over-cap tx even if every other layer is bypassed),
+ * plus a watch-only mode.
+ *
+ * CRITICAL on Mezo: native BTC is spent through its ERC-20 precompile
+ * (WRAPPED_NATIVE_ADDRESS), so a BTC-moving transaction carries `value: 0n` and
+ * the BTC amount lives in calldata. The signer therefore must treat approvals /
+ * transfers of the BTC precompile as native spend — measuring only `msg.value`
+ * would leave every lock/swap/zap/vault/stake uncapped. (Audit R2 C1.)
  *
  * Amounts are stored as decimal strings (wei) because JSON cannot hold bigint.
  */
 export type SpendingLimits = {
-  /** Max native BTC (wei) movable in a single transaction. */
+  /** Max BTC (wei) movable in a single transaction (native OR via precompile). */
   perTxNativeWei: string;
-  /** Max native BTC (wei) movable within any rolling 24h window. */
+  /** Max BTC (wei) movable within any rolling 24h window. */
   dailyNativeWei: string;
-  /**
-   * Native value (wei) above which a step-up confirmation is required in the UI
-   * (extra verification), enforced in the swap handler.
-   */
+  /** BTC value (wei) above which the UI requires a step-up confirmation. */
   confirmationThresholdNativeWei: string;
   /**
-   * Optional per-transaction caps on ERC-20 amounts, keyed by token symbol, as
-   * raw (smallest-unit) decimal strings. Enforced in the signer. Undefined =>
-   * no per-token cap. A true USD-denominated cap arrives with the price feed;
-   * this raw-amount cap is the interim, documented mechanism.
+   * Per-transaction caps on ERC-20 amounts, keyed by token symbol, as raw
+   * (smallest-unit) decimal strings. Enforced in the signer. Ships with
+   * conservative defaults so the cap is never silently absent (Audit R2 H8);
+   * settable via `/limits token <SYMBOL> <amount>`.
    */
-  perTxTokenCaps?: Record<string, string>;
+  perTxTokenCaps: Record<string, string>;
 };
 
-/** Resolve the per-tx raw-amount cap for a token symbol, if any. */
-export function tokenCapOf(limits: SpendingLimits | undefined, symbol: string): bigint | undefined {
-  const caps = limitsOf(limits).perTxTokenCaps;
-  const raw = caps?.[symbol];
-  return raw === undefined ? undefined : BigInt(raw);
+/**
+ * Conservative per-token defaults so an ERC-20 outbound plan is never uncapped.
+ * Raw units (decimals baked in). A token with no entry falls back to
+ * UNKNOWN_TOKEN_CAP_RAW rather than "unlimited" — fail-closed, not fail-open.
+ */
+const TOKEN_DECIMALS: Record<string, number> = { MUSD: 18, mUSDC: 6, mUSDT: 6, MEZO: 18 };
+const TOKEN_DEFAULT_HUMAN: Record<string, string> = {
+  MUSD: "10000", mUSDC: "10000", mUSDT: "10000", MEZO: "100000",
+};
+/** Fallback cap for any ERC-20 the defaults don't name (assumes 18-dec worst case). */
+export const UNKNOWN_TOKEN_CAP_RAW = parseUnits("1000", 18).toString();
+
+function defaultTokenCaps(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [sym, human] of Object.entries(TOKEN_DEFAULT_HUMAN)) {
+    out[sym] = parseUnits(human, TOKEN_DECIMALS[sym] ?? 18).toString();
+  }
+  return out;
 }
 
-/** Conservative testnet defaults. Tunable per user via /limits in later phases. */
+/**
+ * Per-tx raw-amount cap for a token symbol. Never returns undefined: an unknown
+ * token gets the conservative fallback, so the signer's ERC-20 branch is always
+ * live (Audit R2 H8 — previously this returned undefined for every call because
+ * no code path populated perTxTokenCaps).
+ */
+export function tokenCapOf(limits: SpendingLimits | undefined, symbol: string): bigint {
+  const caps = limitsOf(limits).perTxTokenCaps;
+  const raw = caps[symbol];
+  return BigInt(raw ?? UNKNOWN_TOKEN_CAP_RAW);
+}
+
 export const DEFAULT_LIMITS: SpendingLimits = {
   perTxNativeWei: parseEther("0.05").toString(),
   dailyNativeWei: parseEther("0.2").toString(),
   confirmationThresholdNativeWei: parseEther("0.02").toString(),
+  perTxTokenCaps: defaultTokenCaps(),
 };
 
 export function limitsOf(limits: SpendingLimits | undefined): SpendingLimits {
-  return limits ?? DEFAULT_LIMITS;
+  // Merge so a legacy record persisted before perTxTokenCaps existed still gets
+  // the defaults rather than an empty (fail-open) map.
+  if (!limits) return DEFAULT_LIMITS;
+  return {
+    ...limits,
+    perTxTokenCaps: { ...defaultTokenCaps(), ...(limits.perTxTokenCaps ?? {}) },
+  };
 }
 
 export function fmtBtc(wei: string | bigint): string {
   return `${formatEther(typeof wei === "bigint" ? wei : BigInt(wei))} BTC`;
 }
+
+/** The BTC ERC-20 precompile — an approval/transfer here is a native BTC spend. */
+export const BTC_PRECOMPILE = "0x7b7C000000000000000000000000000000000000" as Address;

@@ -3,6 +3,7 @@ import { publicClient } from "../../chain/client.js";
 import { simulateCall } from "../../core/simulator.js";
 import { signAndSubmit } from "../../custody/signer.js";
 import { store, type UserRecord } from "../../db/store.js";
+import { registry } from "../../registry/registry.js";
 import type { PlanStep, SwapPlan } from "./swapBuilder.js";
 
 /**
@@ -38,7 +39,16 @@ export async function executeSwap(
       aborted: true,
     };
   }
-  const allowedTargets = [plan.router, plan.tokenIn.address];
+  // Allowlist from the addresses the plan actually calls: the router, the
+  // ROUTING address of the input (the BTC precompile for native, not the 0x000…0
+  // sentinel), and the fee recipient when a fee step exists. Building it from
+  // tokenIn.address made native swaps unsignable — the steps target 0x7b7C…0000
+  // but the allowlist held 0x000…0. (Audit R2 H1.)
+  const allowedTargets = [
+    plan.router,
+    registry.routingAddress(plan.tokenIn),
+    ...(plan.fee ? [plan.fee.recipient] : []),
+  ];
 
   for (const step of plan.steps) {
     // 1. Simulate immediately before signing this exact step.
@@ -60,19 +70,11 @@ export async function executeSwap(
         to: step.to,
         data: step.data,
         value: step.value,
-        policy: {
-          allowedTargets,
-          // Steps that move the input token are cap-checked in the signer: the
-          // swap moves the net amount, the fee step moves the fee amount.
-          ...(!plan.tokenIn.native && (step.kind === "swap" || step.kind === "fee")
-            ? {
-                erc20: {
-                  symbol: plan.tokenIn.symbol,
-                  amount: step.kind === "swap" ? plan.amountInNet : (plan.fee?.amount ?? 0n),
-                },
-              }
-            : {}),
-        },
+        // Cap metadata now travels ON the step (set by the builder), so native
+        // BTC is capped via the signer's btcWeiMoved and tokens via the per-token
+        // cap — the previous `!native` guard here inverted reality and exempted
+        // native BTC from all caps. (Audit R2 C1/H1.)
+        policy: { allowedTargets, ...(step.erc20 ? { erc20: step.erc20 } : {}) },
       });
     } catch (err) {
       outcomes.push({

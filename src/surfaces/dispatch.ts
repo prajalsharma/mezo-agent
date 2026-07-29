@@ -27,7 +27,7 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
     case "unstakeLp": return buildUnstakeLp(intent, owner);
     case "claim": return buildClaim(intent, owner);
     case "lock": return buildLock(intent);
-    case "extendLock": return buildExtendLock(intent);
+    case "extendLock": return buildExtendLock(intent, owner);
     case "vote": return buildVote(intent);
     case "zap": return buildZap(intent, owner);
     case "matchbox": return buildMatchbox(intent);

@@ -16,13 +16,21 @@ const ZERO = "0x0000000000000000000000000000000000000000";
 /** Safety bound: a user with more veNFTs than this claims via explicit ids. */
 const MAX_ENUMERATED_NFTS = 50n;
 
-export async function ownedVeNfts(owner: Address): Promise<bigint[]> {
+export type OwnedNfts = {
+  ids: bigint[];
+  /** True on-chain balance (may exceed ids.length when truncated). */
+  total: bigint;
+  /** True when the list was capped at MAX_ENUMERATED_NFTS. */
+  truncated: boolean;
+};
+
+export async function ownedVeNftsDetailed(owner: Address): Promise<OwnedNfts> {
   const ve = registry.contract("VotingEscrowBTC");
   const c = publicClient();
-  const n = (await c.readContract({
+  const total = (await c.readContract({
     address: ve, abi: votingEscrowAbi, functionName: "balanceOf", args: [owner],
   })) as bigint;
-  const count = n > MAX_ENUMERATED_NFTS ? MAX_ENUMERATED_NFTS : n;
+  const count = total > MAX_ENUMERATED_NFTS ? MAX_ENUMERATED_NFTS : total;
   const ids: bigint[] = [];
   for (let i = 0n; i < count; i++) {
     const id = (await c.readContract({
@@ -30,7 +38,12 @@ export async function ownedVeNfts(owner: Address): Promise<bigint[]> {
     })) as bigint;
     if (id > 0n) ids.push(id);
   }
-  return ids;
+  return { ids, total, truncated: total > MAX_ENUMERATED_NFTS };
+}
+
+/** Ids only (back-compat). Prefer ownedVeNftsDetailed to surface truncation. */
+export async function ownedVeNfts(owner: Address): Promise<bigint[]> {
+  return (await ownedVeNftsDetailed(owner)).ids;
 }
 
 export async function claimableRebase(tokenId: bigint): Promise<bigint> {

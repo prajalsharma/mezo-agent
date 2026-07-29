@@ -12,7 +12,7 @@ import { chainFor } from "../chain/networks.js";
 import { store, type UserRecord, type SessionKey } from "../db/store.js";
 import { sessionKeyDelegateAbi } from "../abis/delegate.js";
 import { LocalKeyStore } from "./localKeystore.js";
-import { limitsOf, fmtBtc, tokenCapOf } from "./policy.js";
+import { limitsOf, fmtBtc, tokenCapOf, BTC_PRECOMPILE } from "./policy.js";
 
 /**
  * Signer — the isolated write path. Its only job is: "sign & submit this
@@ -47,6 +47,22 @@ function keystore(): LocalKeyStore {
   return (_keystore ??= new LocalKeyStore());
 }
 
+/**
+ * BTC (wei) this step actually moves. On Mezo BTC is spent through its ERC-20
+ * precompile, so a BTC transfer carries `value: 0n` and the amount is in the
+ * erc20 descriptor (symbol "BTC") or is a direct call to the precompile. We
+ * count BOTH so the native caps bind on every BTC path, not just payable ones.
+ * (Audit R2 C1.)
+ */
+function btcWeiMoved(plan: SignablePlan): bigint {
+  let wei = plan.value ?? 0n;
+  const e = plan.policy.erc20;
+  if (e && (e.symbol === "BTC" || plan.to.toLowerCase() === BTC_PRECOMPILE.toLowerCase())) {
+    wei += e.amount;
+  }
+  return wei;
+}
+
 function assertPolicy(user: UserRecord, plan: SignablePlan): void {
   if (user.mode === "watch-only") {
     throw new PolicyViolationError("Account is in watch-only mode; refusing to sign.");
@@ -58,35 +74,38 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
     );
   }
 
-  // Spending caps on NATIVE BTC value moved. A compromised session cannot exceed
-  // these even if it bypasses the app-level confirmation.
-  const value = plan.value ?? 0n;
-  if (value > 0n) {
-    const limits = limitsOf(user.limits);
+  const limits = limitsOf(user.limits);
+
+  // BTC caps — measured on the BTC actually moved (native value + precompile
+  // ERC-20), so lock/swap/zap/vault/stake are all bound, not just Trove ops.
+  const btc = btcWeiMoved(plan);
+  if (btc > 0n) {
     const perTx = BigInt(limits.perTxNativeWei);
-    if (value > perTx) {
+    if (btc > perTx) {
       throw new PolicyViolationError(
-        `Blocked: ${fmtBtc(value)} exceeds the per-transaction limit of ${fmtBtc(perTx)}. ` +
-          `Raise it with /limits.`,
+        `Blocked: ${fmtBtc(btc)} exceeds the per-transaction limit of ${fmtBtc(perTx)}. Raise it with /limits.`,
       );
     }
     const daily = BigInt(limits.dailyNativeWei);
     const spent = store.spentLast24hWei(user.telegramId);
-    if (spent + value > daily) {
+    if (spent + btc > daily) {
       throw new PolicyViolationError(
-        `Blocked: this would put 24h spend at ${fmtBtc(spent + value)}, over the daily ` +
+        `Blocked: this would put 24h spend at ${fmtBtc(spent + btc)}, over the daily ` +
           `limit of ${fmtBtc(daily)} (already spent ${fmtBtc(spent)}). Raise it with /limits.`,
       );
     }
   }
 
-  // Optional per-token (ERC-20) raw-amount cap. Off by default; a USD-denominated
-  // cap arrives with the price feed. When set, it bounds a single token transfer.
-  if (plan.policy.erc20) {
-    const cap = tokenCapOf(user.limits, plan.policy.erc20.symbol);
-    if (cap !== undefined && plan.policy.erc20.amount > cap) {
+  // Per-token (non-BTC ERC-20) cap. tokenCapOf now always returns a value
+  // (conservative default for unknown tokens), so this branch can no longer be
+  // silently skipped (Audit R2 H8). BTC is handled by the native caps above.
+  const e = plan.policy.erc20;
+  if (e && e.symbol !== "BTC" && plan.to.toLowerCase() !== BTC_PRECOMPILE.toLowerCase()) {
+    const cap = tokenCapOf(user.limits, e.symbol);
+    if (e.amount > cap) {
       throw new PolicyViolationError(
-        `Blocked: this moves more ${plan.policy.erc20.symbol} than your per-transaction cap for that token. Raise it with /limits.`,
+        `Blocked: this moves more ${e.symbol} than your per-transaction cap for that token ` +
+          `(${cap} raw). Raise it with "/limits token ${e.symbol} <amount>".`,
       );
     }
   }
@@ -105,11 +124,11 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
   // on-chain, so a bypass of this layer still cannot exceed scope.
   assertPolicy(user, plan);
 
-  // Reserve the native value against the daily cap BEFORE submitting. assertPolicy
+  // Reserve the BTC moved against the daily cap BEFORE submitting. assertPolicy
   // and this reservation run synchronously (no await between them), so two rapid
   // actions can't both pass the check against a stale total — closing the TOCTOU.
-  const value = plan.value ?? 0n;
-  const reservation = store.addSpend(user.telegramId, value, new Date().toISOString());
+  // Uses btcWeiMoved (not msg.value) so precompile BTC spends are also ledgered.
+  const reservation = store.addSpend(user.telegramId, btcWeiMoved(plan), new Date().toISOString());
 
   const session = usableSession(user);
   try {

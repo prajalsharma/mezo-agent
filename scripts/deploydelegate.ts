@@ -9,7 +9,7 @@
  *   MEZO_NETWORK=testnet npx tsx scripts/deploydelegate.ts --deploy  # deploy
  */
 import "./_testenv.js";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -25,10 +25,21 @@ const KEYFILE = join(DIR, "deployer.key");
 function deployerKey(): Hex {
   if (!existsSync(KEYFILE)) {
     mkdirSync(DIR, { recursive: true, mode: 0o700 });
-    const pk = generatePrivateKey();
-    writeFileSync(KEYFILE, pk, { mode: 0o600 });
+    const fresh = generatePrivateKey();
+    writeFileSync(KEYFILE, fresh, { mode: 0o600 });
   }
-  return readFileSync(KEYFILE, "utf8").trim() as Hex;
+  // Reject a directory/file whose perms are looser than owner-only — mkdir's
+  // mode only applies at creation, so a pre-existing loose dir must be caught.
+  const dirMode = statSync(DIR).mode & 0o077;
+  const fileMode = statSync(KEYFILE).mode & 0o077;
+  if (dirMode !== 0 || fileMode !== 0) {
+    throw new Error(`Refusing to use ${KEYFILE}: it (or its dir) is group/other-accessible. chmod 700 the dir and 600 the file.`);
+  }
+  const raw = readFileSync(KEYFILE, "utf8").trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) {
+    throw new Error(`${KEYFILE} is not a 0x + 64-hex private key. Delete it to regenerate.`);
+  }
+  return raw as Hex;
 }
 
 const pk = deployerKey();
@@ -50,10 +61,13 @@ if (bal === 0n) {
 
 const rpc = chainFor(env.network).rpcUrls.default.http[0]!;
 console.log(`\nDeploying SessionKeyDelegate via forge…`);
+// SECURITY: never pass the key as an argv element — it would be visible in
+// `ps aux` / /proc/<pid>/cmdline and captured by command logging. forge's
+// --interactive reads the key from stdin instead, so it stays off the argv.
 const out = execFileSync(
   "forge",
-  ["create", "src/SessionKeyDelegate.sol:SessionKeyDelegate", "--rpc-url", rpc, "--private-key", pk, "--broadcast", "--json"],
-  { cwd: "contracts", encoding: "utf8", env: { ...process.env, PATH: `${process.env.HOME}/.foundry/bin:${process.env.PATH}` } },
+  ["create", "src/SessionKeyDelegate.sol:SessionKeyDelegate", "--rpc-url", rpc, "--interactive", "--broadcast", "--json"],
+  { cwd: "contracts", encoding: "utf8", input: `${pk}\n`, env: { ...process.env, PATH: `${process.env.HOME}/.foundry/bin:${process.env.PATH}` } },
 );
 const parsed = JSON.parse(out.split("\n").filter(Boolean).at(-1)!);
 const addr = parsed.deployedTo as string;

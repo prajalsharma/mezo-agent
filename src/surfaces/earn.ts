@@ -2,7 +2,7 @@ import { encodeFunctionData, formatUnits, parseUnits, type Address } from "viem"
 import { publicClient } from "../chain/client.js";
 import { registry } from "../registry/registry.js";
 import { gaugeAbi, voterAbi, rewardsDistributorAbi } from "../abis/mezo.js";
-import { ownedVeNfts, claimableRebase, votingRewardsForPool, earnedAcross } from "../core/veEnumeration.js";
+import { ownedVeNftsDetailed, claimableRebase, votingRewardsForPool, earnedAcross } from "../core/veEnumeration.js";
 import { erc20Abi } from "../abis/erc20.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
 import type { VaultDepositIntent, StakeLpIntent, UnstakeLpIntent, ClaimIntent } from "../llm/intent.js";
@@ -27,13 +27,34 @@ function pool(poolId: string) {
   return p;
 }
 
-/** Live gauge lookup via the Voter. Returns undefined when no gauge exists. */
+/**
+ * Live gauge lookup via the Voter, VALIDATED before use. The Voter address is
+ * registry-verified, but its `gauges()` return is an RPC read that then becomes
+ * the spender of the user's whole LP balance — so we confirm the gauge has code
+ * and that its `stakingToken()` is exactly this pool before trusting it as an
+ * approval target. A spoofed/unexpected address fails the identity check rather
+ * than draining the LP. (Audit R2 H7.) Returns undefined when no gauge exists.
+ */
 async function gaugeFor(poolAddr: Address): Promise<Address | undefined> {
   const voter = registry.contract("Voter");
   const g = (await publicClient().readContract({
     address: voter, abi: voterAbi, functionName: "gauges", args: [poolAddr],
   })) as Address;
-  return g && g.toLowerCase() !== ZERO_ADDR ? g : undefined;
+  if (!g || g.toLowerCase() === ZERO_ADDR) return undefined;
+
+  const code = await publicClient().getCode({ address: g });
+  if (!code || code === "0x") {
+    throw new ActionUnavailableError("The resolved gauge address has no code — refusing to use it.");
+  }
+  const staking = (await publicClient().readContract({
+    address: g, abi: gaugeAbi, functionName: "stakingToken",
+  }).catch(() => ZERO_ADDR)) as Address;
+  if (staking.toLowerCase() !== poolAddr.toLowerCase()) {
+    throw new ActionUnavailableError(
+      `Gauge identity check failed (stakingToken != pool) — refusing to approve or stake against it.`,
+    );
+  }
+  return g;
 }
 
 export async function buildStakeLp(intent: StakeLpIntent, owner: Address): Promise<ActionPlan> {
@@ -203,7 +224,15 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
   }
 
   if (intent.scope === "all" || intent.scope === "rebase" || intent.scope === "bribe") {
-    const veNfts = registry.hasContract("VotingEscrowBTC") ? await ownedVeNfts(owner) : [];
+    const owned = registry.hasContract("VotingEscrowBTC")
+      ? await ownedVeNftsDetailed(owner)
+      : { ids: [], total: 0n, truncated: false };
+    const veNfts = owned.ids;
+    if (owned.truncated) {
+      summary.push(
+        `⚠️ You hold ${owned.total} veNFTs; only the first ${veNfts.length} are included. Claim again for the rest.`,
+      );
+    }
 
     if ((intent.scope === "all" || intent.scope === "rebase") && registry.hasContract("RewardsDistributor")) {
       const rd = registry.contract("RewardsDistributor");
@@ -221,13 +250,17 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
 
     if (intent.scope === "all" || intent.scope === "bribe") {
       const voter = registry.contract("Voter");
-      // Collect every bribe/fee contract with a positive earned balance per NFT,
-      // then claim each NFT's set in one call per kind.
+      // Resolve each pool's bribe/fee contracts ONCE (they're NFT-independent);
+      // the previous code re-read them per veNFT, turning claim-all into ~2000
+      // sequential RPC calls that an attacker could inflate by gifting the
+      // victim dust veNFTs. (Audit R2 H3/H11.)
+      const poolRewards = await Promise.all(
+        registry.pools().map((p) => votingRewardsForPool(p.address)),
+      );
       for (const id of veNfts) {
         const bribes: Address[] = []; const bribeTokens: Address[][] = [];
         const fees: Address[] = []; const feeTokens: Address[][] = [];
-        for (const p of registry.pools()) {
-          const { bribe, fee } = await votingRewardsForPool(p.address);
+        for (const { bribe, fee } of poolRewards) {
           if (bribe && (await earnedAcross(bribe, id)) > 0n) { bribes.push(bribe.contract); bribeTokens.push(bribe.tokens); }
           if (fee && (await earnedAcross(fee, id)) > 0n) { fees.push(fee.contract); feeTokens.push(fee.tokens); }
         }
@@ -260,9 +293,22 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
     );
   }
 
+  // Bound the plan so a griefer who gifted the user many dust veNFTs can't make
+  // "claim all" a 150-transaction, unbounded-gas confirmation. (Audit R2 H11.)
+  const MAX_CLAIM_STEPS = 20;
+  const trimmed = steps.length > MAX_CLAIM_STEPS;
+  const finalSteps = trimmed ? steps.slice(0, MAX_CLAIM_STEPS) : steps;
+  if (trimmed) {
+    summary.push(
+      `⚠️ ${steps.length} claimable items found; this plan claims the first ${MAX_CLAIM_STEPS}. Run "claim all" again for the rest. ` +
+        `(A large count can mean dust positions were sent to your account.)`,
+    );
+  }
+
   return {
     action: "claim", title: "🎁 Claim rewards", summary,
-    warnings: [], steps, allowedTargets: [...new Set(targets)], executable: true, nativeValue: 0n,
+    warnings: [`This plan is ${finalSteps.length} separate transaction(s); each is simulated before signing.`],
+    steps: finalSteps, allowedTargets: [...new Set(finalSteps.map((s) => s.to))], executable: true, nativeValue: 0n,
   };
 }
 

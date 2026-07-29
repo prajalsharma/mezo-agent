@@ -110,6 +110,9 @@ export const voterAbi = [
 ] as const;
 
 export const gaugeAbi = [
+  // stakingToken() must equal the pool address — the identity check that stops a
+  // spoofed Voter.gauges() return from becoming an approval spender (Audit R2 H7).
+  { type: "function", name: "stakingToken", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "deposit", stateMutability: "nonpayable", inputs: [{ name: "_amount", type: "uint256" }], outputs: [] },
   { type: "function", name: "withdraw", stateMutability: "nonpayable", inputs: [{ name: "_amount", type: "uint256" }], outputs: [] },
   { type: "function", name: "getReward", stateMutability: "nonpayable", inputs: [{ name: "_account", type: "address" }], outputs: [] },
