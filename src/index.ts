@@ -3,6 +3,8 @@ import { runPreflight, formatPreflightText } from "./core/preflight.js";
 import { log, errMsg } from "./core/log.js";
 import { env } from "./config/env.js";
 import { startKeeper } from "./keeper/scheduler.js";
+import { installBotProfile } from "./bot/menu.js";
+import { setBotUsername } from "./bot/handlers/menu.js";
 
 /**
  * Entry point. Phase 1 runs the bot in long-polling mode for local development.
@@ -54,8 +56,15 @@ async function main() {
     log.warn("startup.deleteWebhook-failed", { error: errMsg(err) });
   }
 
+  // Install the slash-command menu + profile description/bio so the bot presents
+  // a polished first impression (mirrors Trojan/Maestro/BONKbot onboarding).
+  await installBotProfile(bot);
+
   await bot.start({
-    onStart: (me) => console.log(`✅ Bot @${me.username} is live (long-polling). Send /start or /diag.`),
+    onStart: (me) => {
+      setBotUsername(me.username);
+      console.log(`✅ Bot @${me.username} is live (long-polling). Send /start or /diag.`);
+    },
   });
 }
 

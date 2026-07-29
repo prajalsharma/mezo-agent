@@ -27,6 +27,8 @@ import { clearPending } from "./session.js";
 import { store } from "../db/store.js";
 import { runPreflight, formatPreflightText } from "../core/preflight.js";
 import { getUser } from "../wallet/walletService.js";
+import { installBotProfile } from "./menu.js";
+import { handleMenuCallback, handleReferral, setBotUsername } from "./handlers/menu.js";
 
 export function buildBot(): Bot {
   const bot = new Bot(env.telegramBotToken);
@@ -99,6 +101,7 @@ export function buildBot(): Bot {
   bot.command("export", handleExportPrompt);
   bot.command("accounts", (ctx) => handleAccount(ctx, { action: "account", op: "list" }));
   bot.command("dca", (ctx) => handleDcaCancel(ctx, { action: "dcaCancel" }));
+  bot.command("referral", handleReferral);
 
   // Emergency stop for scheduled automation (bounty: access controls / kill-switch).
   bot.command("pause", async (ctx) => {
@@ -125,6 +128,7 @@ export function buildBot(): Bot {
         `• Zaps currently charge <b>no</b> agent fee (only the pool's own swap fee applies).`,
         `• Shown on every confirmation before you approve — you always see the exact amount.`,
         `• Fee recipient: <code>${env.fees.recipient}</code>`,
+        `• Referral share: <b>${env.fees.referralSharePct}%</b> of the fee goes to whoever referred the trader (/referral).`,
       );
     } else {
       lines.push("• No agent fee is currently charged on this deployment.");
@@ -161,6 +165,7 @@ export function buildBot(): Bot {
   bot.callbackQuery("swap:cancel", handleSwapCancel);
   bot.callbackQuery("action:confirm", handleActionConfirm);
   bot.callbackQuery("action:cancel", handleActionCancel);
+  bot.callbackQuery(/^menu:/, handleMenuCallback);
 
   // ── Free text → intent → the right surface ───────────────────────────────────
   bot.on("message:text", async (ctx) => {

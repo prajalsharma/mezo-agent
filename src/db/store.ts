@@ -49,6 +49,8 @@ export type UserRecord = {
   session?: SessionKey;
   delegation?: Delegation;
   createdAt: string;
+  /** Telegram id of the user who referred this one (deep-link attribution). */
+  referredBy?: number;
 };
 
 export type TxRecord = {
@@ -199,6 +201,15 @@ class Store {
       this.db.active[id] = list.length - 1; // new account becomes active
     }
     this.flush();
+  }
+
+  /** How many distinct users this telegramId has referred (deep-link). */
+  countReferrals(telegramId: number): number {
+    const seen = new Set<number>();
+    for (const [id, list] of Object.entries(this.db.accounts)) {
+      if (list[0]?.referredBy === telegramId) seen.add(Number(id));
+    }
+    return seen.size;
   }
 
   addTx(tx: TxRecord): void {

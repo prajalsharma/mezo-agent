@@ -3,6 +3,8 @@ import { env } from "../../config/env.js";
 import { createWallet, exportPrivateKey, getUser, importWallet, WalletImportError } from "../../wallet/walletService.js";
 import { explorerAddressUrl } from "../../chain/networks.js";
 import { setPending, getPending, clearPending } from "../session.js";
+import { store } from "../../db/store.js";
+import { mainMenu, homeCard } from "../menu.js";
 import { b, i, code, link, esc } from "../format.js";
 
 const netLabel = env.network === "mainnet" ? "🟢 MAINNET" : "🧪 TESTNET";
@@ -10,17 +12,22 @@ const netLabel = env.network === "mainnet" ? "🟢 MAINNET" : "🧪 TESTNET";
 export async function handleStart(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
-  const existing = getUser(telegramId);
 
+  // Deep-link referral capture: t.me/<bot>?start=<referrerId>. Recorded only
+  // for a genuinely new user, never self-referral. (Attribution primitive; the
+  // fee revenue-share is disclosed via /referral and /fees.)
+  const payload = (ctx.match as string | undefined)?.trim();
+  const pendingRef = payload && /^\d+$/.test(payload) && Number(payload) !== telegramId
+    ? Number(payload)
+    : undefined;
+
+  const existing = getUser(telegramId);
   if (existing) {
-    await ctx.reply(
-      `Welcome back. You're on ${netLabel}.\n\n` +
-        `Your account:\n${code(existing.address)}\n\n` +
-        `Try:\n• /portfolio — balances\n• /deposit — fund with a QR code\n• "swap 100 MUSD to mUSDC"`,
-      { parse_mode: "HTML" },
-    );
-    return;
+    const home = await homeCard(telegramId);
+    if (home) { await ctx.reply(home.text, { parse_mode: "HTML", reply_markup: home.menu, link_preview_options: { is_disabled: true } }); return; }
   }
+
+  if (pendingRef !== undefined) rememberPendingReferral(telegramId, pendingRef);
 
   const kb = new InlineKeyboard()
     .text("🆕 Create a new wallet", "wallet:create")
@@ -30,10 +37,22 @@ export async function handleStart(ctx: Context): Promise<void> {
   await ctx.reply(
     `👋 ${b("Mezo Agent")} — operate the Mezo Bitcoin-DeFi stack in plain language.\n\n` +
       `Network: ${netLabel}\n\n` +
-      `To begin, create a fresh in-bot wallet, or import an existing account.\n\n` +
+      (pendingRef !== undefined ? i(`🎁 Referred by a friend — you're both set up for referral rewards.`) + "\n\n" : "") +
+      `Borrow · Swap · Zap · Stake · Lock & Vote — all in chat, every action confirmed.\n\n` +
       i("🔒 Keys are encrypted, never shown in chat, and every transaction needs your explicit confirmation. Set spending caps anytime with /limits."),
     { parse_mode: "HTML", reply_markup: kb },
   );
+}
+
+/** In-memory pending referral (referrer id) until the wallet is actually created. */
+const pendingReferrals = new Map<number, number>();
+function rememberPendingReferral(newUser: number, referrer: number): void {
+  pendingReferrals.set(newUser, referrer);
+}
+export function consumePendingReferral(newUser: number): number | undefined {
+  const r = pendingReferrals.get(newUser);
+  pendingReferrals.delete(newUser);
+  return r;
 }
 
 export async function handleCreate(ctx: Context): Promise<void> {
@@ -51,6 +70,13 @@ export async function handleCreate(ctx: Context): Promise<void> {
   // If creation fails, the error boundary surfaces it in-chat — never silent.
   const user = await createWallet(telegramId);
 
+  // Attribute a pending deep-link referral now that the account exists.
+  const referrer = consumePendingReferral(telegramId);
+  if (referrer !== undefined) {
+    const rec = getUser(telegramId);
+    if (rec && rec.referredBy === undefined) { rec.referredBy = referrer; store.saveUser(rec); }
+  }
+
   await ctx.reply(
     `✅ ${b("Wallet created.")}\n\n` +
       `Your address:\n${code(user.address)}\n\n` +
@@ -58,7 +84,7 @@ export async function handleCreate(ctx: Context): Promise<void> {
       `Fund it with /deposit, then check /portfolio.\n\n` +
       `🔒 Your key is encrypted at rest and never logged or shared with any AI model.\n` +
       `You stay in control: /export reveals your private key any time (for MetaMask etc.), behind an explicit warning.`,
-    { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+    { parse_mode: "HTML", reply_markup: mainMenu(), link_preview_options: { is_disabled: true } },
   );
 }
 

@@ -98,6 +98,8 @@ export const env = {
     recipient: optional("AGENT_FEE_RECIPIENT"),
     /** Monthly price for automation (DCA / auto-compound), display-only. */
     automationNote: optional("AGENT_AUTOMATION_NOTE"),
+    /** Referral revenue share (% of the agent fee), disclosed via /referral. */
+    referralSharePct: Math.min(Math.max(Number(optional("AGENT_REFERRAL_SHARE_PCT", "30")) || 0, 0), 100),
   },
 } as const;
 
