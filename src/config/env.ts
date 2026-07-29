@@ -85,7 +85,9 @@ export const env = {
       anthropicApiKey,
       anthropicModel: optional("ANTHROPIC_MODEL", "claude-sonnet-5"),
       geminiApiKey,
-      geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash"),
+      // "-latest" alias auto-tracks the current flash model, so it won't get
+      // retired for new keys the way a pinned version (e.g. gemini-2.5-flash) does.
+      geminiModel: optional("GEMINI_MODEL", "gemini-flash-latest"),
     };
   })(),
 
