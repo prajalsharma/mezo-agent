@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { env, llmEnabled } from "../config/env.js";
+import { log, errMsg } from "../core/log.js";
 import { Intent, INTENT_TOOL_SCHEMA, type Intent as IntentT } from "./intent.js";
 
 /**
@@ -27,15 +28,25 @@ export async function parseIntent(
 ): Promise<IntentT> {
   if (!llmEnabled) return fallbackParse(message, knownSymbols);
 
-  const client = new Anthropic({ apiKey: env.llm.anthropicApiKey });
-  const res = await client.messages.create({
-    model: env.llm.anthropicModel,
-    max_tokens: 512,
-    system: SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", ")),
-    tools: [INTENT_TOOL_SCHEMA as never],
-    tool_choice: { type: "tool", name: INTENT_TOOL_SCHEMA.name },
-    messages: [{ role: "user", content: message }],
-  });
+  // Any LLM-call failure (drained/invalid key, rate limit, network) MUST degrade
+  // to the deterministic parser — never leave the user's message unanswered. An
+  // empty Anthropic balance surfaces here as a 400/402; we catch it and fall back
+  // so a billing lapse silently downgrades the bot instead of breaking it.
+  let res;
+  try {
+    const client = new Anthropic({ apiKey: env.llm.anthropicApiKey });
+    res = await client.messages.create({
+      model: env.llm.anthropicModel,
+      max_tokens: 512,
+      system: SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", ")),
+      tools: [INTENT_TOOL_SCHEMA as never],
+      tool_choice: { type: "tool", name: INTENT_TOOL_SCHEMA.name },
+      messages: [{ role: "user", content: message }],
+    });
+  } catch (err) {
+    log.warn("llm.call-failed", { error: errMsg(err) });
+    return fallbackParse(message, knownSymbols);
+  }
 
   const toolUse = res.content.find((c) => c.type === "tool_use");
   if (!toolUse || toolUse.type !== "tool_use") {
