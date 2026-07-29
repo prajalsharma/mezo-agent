@@ -31,10 +31,7 @@ export async function handleStart(ctx: Context): Promise<void> {
     `👋 ${b("Mezo Agent")} — operate the Mezo Bitcoin-DeFi stack in plain language.\n\n` +
       `Network: ${netLabel}\n\n` +
       `To begin, create a fresh in-bot wallet, or import an existing account.\n\n` +
-      i(
-        "Note: this Phase-1 build uses a contained-custodial account (key encrypted at rest). " +
-          "The production trust model is non-custodial, scoped session keys — see the README.",
-      ),
+      i("🔒 Keys are encrypted, never shown in chat, and every transaction needs your explicit confirmation. Set spending caps anytime with /limits."),
     { parse_mode: "HTML", reply_markup: kb },
   );
 }
