@@ -19,6 +19,7 @@ import { setBotUsername } from "./bot/handlers/menu.js";
  *   3. Surface any startup error loudly and exit non-zero.
  */
 async function main() {
+  // deploy marker: v-gemini (ensures Railway builds the LLM-provider + /diag work)
   console.log(startupBanner());
 
   // 1. Preflight — localizes a broken subsystem before we even connect.
