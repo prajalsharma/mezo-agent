@@ -1,9 +1,32 @@
 import { encodeFunctionData, parseEther, parseUnits, formatUnits, type Address } from "viem";
 import { registry } from "../registry/registry.js";
 import { borrowerOperationsAbi } from "../abis/mezo.js";
+import { publicClient } from "../chain/client.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
 import { txnFee, musdToken } from "./fees.js";
 import type { BorrowIntent, RepayIntent, AdjustIntent } from "../llm/intent.js";
+
+// fetchPrice is nonpayable on-chain but returns the price on an eth_call; declare
+// it as view here so viem's readContract will read it. Returns USD/BTC * 1e18.
+const PRICE_ABI = [
+  { type: "function", name: "fetchPrice", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+] as const;
+
+/** Live BTC price in USD from the Mezo PriceFeed. undefined if unreadable (fail-open). */
+async function readBtcPriceUsd(): Promise<number | undefined> {
+  if (!registry.hasContract("PriceFeed")) return undefined;
+  try {
+    const raw = (await publicClient().readContract({
+      address: registry.contract("PriceFeed"),
+      abi: PRICE_ABI,
+      functionName: "fetchPrice",
+    })) as bigint;
+    const price = Number(formatUnits(raw, 18));
+    return price > 0 ? price : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Borrow surface — Mezo Borrow / MUSD (Liquity-style CDP). Open a Trove by
@@ -33,7 +56,7 @@ function borrowGated(title: string, action: string, summary: string[], warnings:
   });
 }
 
-export function buildBorrow(intent: BorrowIntent): ActionPlan {
+export async function buildBorrow(intent: BorrowIntent): Promise<ActionPlan> {
   const collateralBTC = Number(intent.collateralBTC);
   const mintMUSD = Number(intent.mintMUSD);
   if (collateralBTC <= 0) throw new ActionUnavailableError("Collateral must be greater than zero.");
@@ -44,19 +67,49 @@ export function buildBorrow(intent: BorrowIntent): ActionPlan {
   }
 
   const fee = mintMUSD * 0.01;
+  const grossDebt = mintMUSD + fee;
   const summary = [
     `Deposit collateral: ${intent.collateralBTC} BTC`,
     `Mint: ${intent.mintMUSD} MUSD`,
     `Borrowing fee (est. 1%): ~${fee.toFixed(2)} MUSD`,
-    `Total debt incl. fee: ~${(mintMUSD + fee).toFixed(2)} MUSD`,
+    `Total debt incl. fee: ~${grossDebt.toFixed(2)} MUSD`,
   ];
   const warnings = [
     `Keep your collateral ratio above the ${(MCR * 100).toFixed(0)}% minimum or the Trove can be liquidated.`,
-    `Live collateral ratio is computed from the on-chain price immediately before signing.`,
   ];
 
   if (NEEDED.some((k) => !registry.hasContract(k))) {
     return borrowGated("🏦 Borrow MUSD (open Trove)", "borrow", summary, warnings);
+  }
+
+  // Live collateral-ratio check against the on-chain BTC price. Blocks an
+  // under-collateralized borrow HERE with exact numbers (min BTC / max mint), so
+  // the user never confirms an impossible Trove. Fail-open: if the price can't be
+  // read, we skip the check and let the pre-Confirm simulation catch it instead.
+  const btcPrice = await readBtcPriceUsd();
+  if (btcPrice !== undefined) {
+    const collateralUsd = collateralBTC * btcPrice;
+    const icr = collateralUsd / grossDebt; // ratio (1.0 = 100%)
+    const ok = icr >= MCR;
+    summary.push(
+      `Collateral ratio: ~${(icr * 100).toFixed(0)}% ${ok ? "✅" : "❌"} (min ${(MCR * 100).toFixed(0)}%, BTC ~$${Math.round(btcPrice).toLocaleString()})`,
+    );
+    if (!ok) {
+      const minColl = (MCR * grossDebt) / btcPrice;
+      const maxNetMint = collateralUsd / MCR / 1.01;
+      const hint =
+        maxNetMint >= MIN_NET_DEBT_MUSD
+          ? `The most you can borrow with ${intent.collateralBTC} BTC is ~${Math.floor(maxNetMint).toLocaleString()} MUSD.`
+          : `${intent.collateralBTC} BTC isn't enough to open a Trove at all (minimum debt is ${MIN_NET_DEBT_MUSD.toLocaleString()} MUSD).`;
+      throw new ActionUnavailableError(
+        `Under-collateralized. ${intent.collateralBTC} BTC (~$${Math.round(collateralUsd).toLocaleString()}) can't back ` +
+          `${intent.mintMUSD} MUSD debt — the 110% minimum needs ~$${Math.round(MCR * grossDebt).toLocaleString()} of collateral. ` +
+          `To mint ${intent.mintMUSD} MUSD you'd need ≥ ${minColl.toFixed(4)} BTC. ${hint} ` +
+          `Tip: aim for 150%+ so a price dip doesn't liquidate you.`,
+      );
+    }
+  } else {
+    warnings.push("Live collateral ratio is computed from the on-chain price immediately before signing.");
   }
 
   const bo = registry.contract("BorrowerOperations");

@@ -16,8 +16,8 @@ function check(name: string, cond: boolean) {
   console.log(`  ${cond ? "✓" : "✗ FAIL"} ${name}`);
   if (!cond) failures++;
 }
-function expectThrow(name: string, fn: () => unknown) {
-  try { fn(); console.log(`  ✗ FAIL ${name} (no throw)`); failures++; }
+async function expectThrow(name: string, fn: () => unknown) {
+  try { await fn(); console.log(`  ✗ FAIL ${name} (no throw)`); failures++; }
   catch { console.log(`  ✓ ${name}`); }
 }
 
@@ -49,11 +49,11 @@ async function main() {
 
   // ── Surface validation ─────────────────────────────────────────────────────
   console.log("Surface guardrails:");
-  expectThrow("borrow below 1800 MUSD min net debt rejected", () =>
+  await expectThrow("borrow below 1800 MUSD min net debt rejected", () =>
     buildBorrow({ action: "borrow", collateralBTC: "0.1", mintMUSD: "500" }));
-  const borrowPlan = buildBorrow({ action: "borrow", collateralBTC: "0.1", mintMUSD: "5000" });
+  const borrowPlan = await buildBorrow({ action: "borrow", collateralBTC: "0.1", mintMUSD: "5000" });
   check("valid borrow builds a plan with summary", borrowPlan.summary.length > 0 && borrowPlan.title.includes("Borrow"));
-  expectThrow("veBTC lock over 28 days rejected", () =>
+  await expectThrow("veBTC lock over 28 days rejected", () =>
     buildLock({ action: "lock", asset: "BTC", amount: "0.2", lockDays: 60 }));
   const lockPlan = buildLock({ action: "lock", asset: "MEZO", amount: "1000", lockDays: 365 });
   check("valid veMEZO lock builds a plan", lockPlan.action === "lock");
