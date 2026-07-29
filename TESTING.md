@@ -1,5 +1,24 @@
 # Testing Checklist — every bounty task, verified
 
+## ✅ LIVE end-to-end run — Matsnet testnet (real signed transactions)
+
+Driven through the actual pipeline (build → simulate → sign-within-policy →
+submit) via `npm run e2e`. Bot wallet `0x7B1894415178DbFe95B8EEb82b3d374BC4F9d513`,
+funded 0.048 BTC from the deployer. All confirmed on-chain:
+
+| Flow | Result | Tx |
+| --- | --- | --- |
+| **Borrow** (openTrove) | Trove active: 2001.8 MUSD debt, 0.035 BTC collateral; 1800 MUSD minted | `0xa4eb29b79e4249009315e286871634e831c242d9a19a5f2647e598ae682a3d38` |
+| **Lock veBTC** (approve+createLock) | 1 veBTC NFT minted | `0x614c61fe…` (approve) · `0x4d2bf532…` (createLock) |
+| **Swap** (100 MUSD → mUSDC) | 82.65 mUSDC received (thin testnet pool), min-out enforced | `0x397f3ed363751ccbb99e4df6d5b6967d92c1b86bd0c40a33e366176c8f4794c3` |
+| **Delegate deploy** (EIP-7702) | bytecode-exact match to artifact | `0x9d26cdb9…` → `0xa7a25f30731a34ac7a92cc0261c87256996d6173` |
+
+Final bot balances: 1700 MUSD, 82.65 mUSDC, 0.008 BTC — consistent with a
+1800-MUSD borrow, a 100-MUSD swap, and a 0.005-BTC lock. The full Telegram →
+sign → chain loop is proven on-chain.
+
+
+
 How to use: run the **In-Telegram** checks against the live bot (testnet), tick
 each box. `Expected` is the pass criterion — anything else is a bug. Items
 marked 🔒 are executable-blocked on unpublished contract addresses (see README

@@ -24,7 +24,8 @@
     "phaseaudit": "tsx scripts/phaseaudit.ts",
     "simcheck": "tsx scripts/simcheck.ts",
     "auditfixes": "tsx scripts/auditfixes.ts",
-    "exportcheck": "tsx scripts/exportcheck.ts"
+    "exportcheck": "tsx scripts/exportcheck.ts",
+    "e2e": "MEZO_NETWORK=testnet tsx scripts/e2e.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
