@@ -45,8 +45,25 @@ async function main() {
     console.log("⏱️  Keeper enabled (DCA / auto-compound).");
   }
 
-  process.once("SIGINT", () => bot.stop());
-  process.once("SIGTERM", () => bot.stop());
+  // Graceful shutdown. On every redeploy Railway sends SIGTERM to the OLD
+  // instance; if it dies mid-poll it shows as "Deployment crashed". Awaiting
+  // bot.stop() and exiting 0 makes the handover a clean STOP instead — and stops
+  // the old poller so the new instance doesn't hit a 409 Conflict on the shared
+  // Telegram token.
+  let stopping = false;
+  const shutdown = async (signal: string) => {
+    if (stopping) return;
+    stopping = true;
+    log.info("shutdown.begin", { signal });
+    try {
+      await bot.stop();
+    } catch (err) {
+      log.warn("shutdown.stop-failed", { error: errMsg(err) });
+    }
+    process.exit(0);
+  };
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
   // 2. Ensure polling can actually receive updates.
   try {
