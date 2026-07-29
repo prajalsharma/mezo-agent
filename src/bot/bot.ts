@@ -253,7 +253,7 @@ export function startupBanner(): string {
   return (
     `Mezo Agent starting\n` +
     `  network : ${env.network}\n` +
-    `  LLM     : ${llmEnabled ? `${env.llm.provider} (${env.llm.anthropicModel})` : "deterministic fallback"}\n` +
+    `  LLM     : ${llmEnabled ? `${env.llm.provider} (${env.llm.provider === "gemini" ? env.llm.geminiModel : env.llm.anthropicModel})` : "deterministic fallback"}\n` +
     `  swaps   : ${registry.hasContract("Router") ? "router configured" : "router pending registry confirmation"}\n` +
     `  access  : ${
       accessRestricted

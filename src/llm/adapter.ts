@@ -28,37 +28,99 @@ export async function parseIntent(
 ): Promise<IntentT> {
   if (!llmEnabled) return fallbackParse(message, knownSymbols);
 
+  const system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
+
   // Any LLM-call failure (drained/invalid key, rate limit, network) MUST degrade
   // to the deterministic parser — never leave the user's message unanswered. An
-  // empty Anthropic balance surfaces here as a 400/402; we catch it and fall back
-  // so a billing lapse silently downgrades the bot instead of breaking it.
-  let res;
+  // empty balance surfaces here as a 400/402/429; we catch it and fall back so a
+  // billing lapse or free-tier rate-limit silently downgrades the bot instead of
+  // breaking it.
+  let raw: unknown;
   try {
-    const client = new Anthropic({ apiKey: env.llm.anthropicApiKey });
-    res = await client.messages.create({
-      model: env.llm.anthropicModel,
-      max_tokens: 512,
-      system: SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", ")),
-      tools: [INTENT_TOOL_SCHEMA as never],
-      tool_choice: { type: "tool", name: INTENT_TOOL_SCHEMA.name },
-      messages: [{ role: "user", content: message }],
-    });
+    raw = env.llm.provider === "gemini"
+      ? await callGemini(system, message)
+      : await callAnthropic(system, message);
   } catch (err) {
-    log.warn("llm.call-failed", { error: errMsg(err) });
+    log.warn("llm.call-failed", { provider: env.llm.provider, error: errMsg(err) });
     return fallbackParse(message, knownSymbols);
   }
 
-  const toolUse = res.content.find((c) => c.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
+  if (raw === undefined) {
     return { action: "clarify", question: "Sorry, I couldn't understand that. Try: swap 100 MUSD to mUSDC" };
   }
   // Deterministic validation of the model's proposal — the model does not get
-  // the last word; the schema does.
-  const parsed = Intent.safeParse(toolUse.input);
+  // the last word; the schema does. (Same Zod schema for every provider.)
+  const parsed = Intent.safeParse(raw);
   if (!parsed.success) {
     return { action: "clarify", question: "Could you rephrase? e.g. \"swap 100 MUSD to mUSDC\"" };
   }
   return parsed.data;
+}
+
+/** Anthropic (Claude) backend. Returns the raw tool input, or undefined. */
+async function callAnthropic(system: string, message: string): Promise<unknown> {
+  const client = new Anthropic({ apiKey: env.llm.anthropicApiKey });
+  const res = await client.messages.create({
+    model: env.llm.anthropicModel,
+    max_tokens: 512,
+    system,
+    tools: [INTENT_TOOL_SCHEMA as never],
+    tool_choice: { type: "tool", name: INTENT_TOOL_SCHEMA.name },
+    messages: [{ role: "user", content: message }],
+  });
+  const toolUse = res.content.find((c) => c.type === "tool_use");
+  return toolUse && toolUse.type === "tool_use" ? toolUse.input : undefined;
+}
+
+/**
+ * Google Gemini backend — via the OpenAI-compatible endpoint, so the SAME flat
+ * function schema and forced tool_choice work unchanged and no extra SDK is
+ * needed (native fetch). Gemini has a genuinely free tier (Google AI Studio key),
+ * which makes it the zero-cost way to get real conversational parsing.
+ */
+async function callGemini(system: string, message: string): Promise<unknown> {
+  const resp = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.llm.geminiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: env.llm.geminiModel,
+        max_tokens: 512,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: message },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: INTENT_TOOL_SCHEMA.name,
+              description: INTENT_TOOL_SCHEMA.description,
+              parameters: INTENT_TOOL_SCHEMA.input_schema,
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: INTENT_TOOL_SCHEMA.name } },
+      }),
+    },
+  );
+  if (!resp.ok) {
+    throw new Error(`gemini ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  }
+  const data = (await resp.json()) as {
+    choices?: { message?: { tool_calls?: { function?: { arguments?: string } }[] } }[];
+  };
+  const argsJson = data.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+  if (!argsJson) return undefined;
+  try {
+    return JSON.parse(argsJson);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

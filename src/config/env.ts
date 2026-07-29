@@ -63,9 +63,12 @@ export const env = {
   masterEncryptionKey: required("MASTER_ENCRYPTION_KEY"),
 
   llm: {
+    // "gemini" (Google AI Studio — free tier) or "anthropic" (Claude — paid).
     provider: optional("LLM_PROVIDER", "anthropic"),
     anthropicApiKey: optional("ANTHROPIC_API_KEY"),
     anthropicModel: optional("ANTHROPIC_MODEL", "claude-sonnet-5"),
+    geminiApiKey: optional("GEMINI_API_KEY"),
+    geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash"),
   },
 
   dataDir: optional("DATA_DIR", "./data"),
@@ -121,4 +124,6 @@ export const txnFeesEnabled = env.fees.txnBps > 0 && validRecipient;
 export const accessRestricted = env.allowedUserIds.size > 0;
 
 /** True when the LLM parser is usable; otherwise the deterministic parser is used. */
-export const llmEnabled = env.llm.provider === "anthropic" && env.llm.anthropicApiKey !== "";
+export const llmEnabled =
+  (env.llm.provider === "anthropic" && env.llm.anthropicApiKey !== "") ||
+  (env.llm.provider === "gemini" && env.llm.geminiApiKey !== "");
