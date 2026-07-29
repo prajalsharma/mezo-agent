@@ -245,6 +245,13 @@ const TESTNET: NetworkRegistry = {
     Voter: "0x72F8dd7F44fFa19E45955aa20A5486E8EB255738",
     RewardsDistributor: "0x10B0E7b3411F4A38ca2F6BB697aA28D607924729",
 
+    // EIP-7702 session-key delegate — deployed by this project on Matsnet and
+    // bytecode-verified (deployed runtime == compiled artifact, exact match; the
+    // same artifact the 25 SessionKeyDelegate tests pass against). Enables the
+    // /upgrade scoped-session flow — the bounty's PREFERRED custody model.
+    // Redeploy with `npm run -s ... deploydelegate --deploy` and update here.
+    Delegate7702: "0xa7a25f30731a34ac7a92cc0261c87256996d6173",
+
     // Mezo Borrow on Matsnet. Same source and same verification as mainnet:
     // `MEZO_NETWORK=testnet npm run verifyaddrs` reports 5/5 cross-references
     // and BorrowerOperations.musd() == the MUSD token below. 228 live Troves at
@@ -263,7 +270,7 @@ const TESTNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDC"], address: "0x525F049A4494dA0a6c87E3C4df55f9929765Dc3e", stable: true },
     { pair: ["MUSD", "mUSDT"], address: "0x27414B76CF00E24ed087adb56E26bAeEEe93494e", stable: true },
   ],
-  needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market", "Delegate7702"],
+  needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market"],
   // No Matsnet vault addresses are published.
   vaults: [],
 };

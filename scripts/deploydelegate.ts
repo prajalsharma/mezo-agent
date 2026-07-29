@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { formatEther, type Hex } from "viem";
+import { createWalletClient, http, formatEther, type Hex } from "viem";
 import { publicClient } from "../src/chain/client.js";
 import { chainFor } from "../src/chain/networks.js";
 import { env } from "../src/config/env.js";
@@ -59,21 +59,27 @@ if (bal === 0n) {
   process.exit(1);
 }
 
-const rpc = chainFor(env.network).rpcUrls.default.http[0]!;
-console.log(`\nDeploying SessionKeyDelegate via forge…`);
-// SECURITY: never pass the key as an argv element — it would be visible in
-// `ps aux` / /proc/<pid>/cmdline and captured by command logging. forge's
-// --interactive reads the key from stdin instead, so it stays off the argv.
-const out = execFileSync(
-  "forge",
-  ["create", "src/SessionKeyDelegate.sol:SessionKeyDelegate", "--rpc-url", rpc, "--interactive", "--broadcast", "--json"],
-  { cwd: "contracts", encoding: "utf8", input: `${pk}\n`, env: { ...process.env, PATH: `${process.env.HOME}/.foundry/bin:${process.env.PATH}` } },
-);
-const parsed = JSON.parse(out.split("\n").filter(Boolean).at(-1)!);
-const addr = parsed.deployedTo as string;
-console.log(`deployedTo: ${addr}`);
-console.log(`tx        : ${parsed.transactionHash}`);
+const chain = chainFor(env.network);
+console.log(`\nDeploying SessionKeyDelegate…`);
+// SECURITY: deploy via viem from the compiled artifact bytecode. The key stays
+// inside this Node process — it is never placed on a command line (visible in
+// `ps`/`/proc`) and never needs a TTY. forge only compiles; it never sees the key.
+execFileSync("forge", ["build"], {
+  cwd: "contracts", stdio: "ignore",
+  env: { ...process.env, PATH: `${process.env.HOME}/.foundry/bin:${process.env.PATH}` },
+});
+const artifactPath = join(process.cwd(), "contracts", "out", "SessionKeyDelegate.sol", "SessionKeyDelegate.json");
+const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+const bytecode = (artifact.bytecode?.object ?? artifact.bytecode) as Hex;
+const abi = artifact.abi;
 
-const code = await c.getCode({ address: addr as Hex });
-console.log(`code      : ${code ? (code.length - 2) / 2 : 0} bytes on-chain ✅`);
-console.log(`\nSet in env:\n  DELEGATE7702_ADDRESS=${addr}`);
+const wallet = createWalletClient({ account, chain, transport: http(chain.rpcUrls.default.http[0]) });
+const hash = await wallet.deployContract({ abi, bytecode, args: [] });
+console.log(`tx        : ${hash}`);
+const receipt = await c.waitForTransactionReceipt({ hash });
+const addr = receipt.contractAddress!;
+console.log(`deployedTo: ${addr}`);
+
+const code = await c.getCode({ address: addr });
+console.log(`code      : ${code ? (code.length - 2) / 2 : 0} bytes on-chain ${code && code !== "0x" ? "✅" : "❌"}`);
+console.log(`\nSet in env / Railway:\n  DELEGATE7702_ADDRESS=${addr}`);
