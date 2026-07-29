@@ -10,7 +10,8 @@ Automated evidence (run locally, no Telegram needed):
 
 | Command | Proves |
 | --- | --- |
-| `npm run phaseaudit` | Which surfaces can sign vs. preview, live against the registry |
+| `npm run phaseaudit` | Which surfaces can sign vs. preview, live against the registry (10 executable + 3 live-checks on testnet) |
+| `npm run verifyve` | Router + ve(3,3) addresses: on-chain cross-reference proof |
 | `npm run simcheck` | Borrow calldata simulates against the real chain (openTrove succeeds) |
 | `npm run verifyaddrs` | Wired addresses have code + 5/5 cross-references on-chain |
 | `npm run smoke` / `smoke2` | Custody round-trip, no plaintext at rest, import + caps |
@@ -43,46 +44,49 @@ Automated evidence (run locally, no Telegram needed):
 - [ ] Simulation-before-sign: attempt any borrow action with insufficient funds →
       decoded human reason (e.g. "Trove does not exist or is closed"), **no tx submitted**
 
-## 3 · Swaps — ✅ quote + slippage; 🔒 execution (Router unpublished)
+## 3 · Swaps — ✅ EXECUTABLE both networks (incl. native BTC via precompile)
 
-- [ ] (mainnet) `swap 100 MUSD to mUSDC` → live pool quote (~99 mUSDC), slippage tolerance shown, fee line if configured
-- [ ] (testnet) same message → "I don't know mUSDC on testnet. Known tokens: BTC, MUSD." — **names the unknown token, never guesses**
-- [ ] Quote screen shows minimum-received at the configured slippage
-- [ ] Execution attempt → clear "Router address not confirmed" gate, not a silent failure
+- [ ] `swap 100 MUSD to mUSDC` → live pool quote, min-received at slippage, fee line if configured → Confirm → tx hash
+- [ ] `swap 0.01 BTC to MUSD` → native swap routes through the BTC ERC-20 precompile (approve + swap; no wrapping step shown)
 - [ ] `swap 2 XYZ to BTC` → refuses unknown token (never invents an address)
+- [ ] Testnet token set now includes mUSDC/mUSDT (published pools verified on-chain)
 
-## 4 · Earn: vaults, zap, LP stake — 🔒 (vaults/Voter/Router unpublished)
+## 4 · Earn: vaults, zap, LP stake — ✅ zap/stake EXECUTABLE (testnet); 🔒 vaults
 
-- [ ] `zap 0.01 BTC into MUSD/mUSDC` → split + expected LP preview, staking opt-in question, gated at execution with the reason named
-- [ ] `stake LP MUSD/mUSDC` / `unstake LP MUSD/mUSDC` → correct preview + gate reason (Voter)
-- [ ] `deposit 100 MUSD into vault` → preview + gate reason (vault addresses unpublished)
+- [ ] `zap 0.01 BTC into BTC/MUSD` → live split quote → approve/swap/approve/addLiquidity steps → Confirm → LP lands
+- [ ] `zap 0.01 BTC into MUSD/mUSDC` → multi-hop named refusal (input not a pool token) — asks you to swap first
+- [ ] `stake LP BTC/MUSD` → gauge resolved live from Voter; with no LP → "You hold no BTC/MUSD LP to stake" (live balance read)
+- [ ] `unstake LP BTC/MUSD` → same live checks against the gauge
+- [ ] Mainnet note: Voter has ZERO gauges yet — stake/claim there correctly refuse "no gauge exists"
+- [ ] `deposit 100 MUSD into vault` → preview + gate reason (ERC-4626 wiring pending)
 
-## 5 · Claims — 🔒 (Voter / RewardsDistributor unpublished)
+## 5 · Claims — ✅ gauge claims EXECUTABLE; 🔒 rebase/bribe (needs veNFT enumeration)
 
-- [ ] `claim all` → aggregated claim-everything plan (rebases + bribes + gauge), gated with reason
-- [ ] `claim rebases` / `claim bribes` → scope parsed correctly into the plan
+- [ ] `claim all` → enumerates every pool's gauge from the Voter, claims where earned > 0; with nothing earned → live "Nothing to claim from gauges right now"
+- [ ] `claim rebases` / `claim bribes` → scope parsed; gated with the veNFT-enumeration reason
 
-## 6 · Locking & veNFTs — 🔒 (VotingEscrow unpublished)
+## 6 · Locking & veNFTs — ✅ veBTC EXECUTABLE; 🔒 veMEZO/Matchbox
 
-- [ ] `lock 0.2 BTC for 28 days` → veBTC preview; `for 40 days` → **refused** (1–28d bound)
-- [ ] `lock 1000 MEZO for 2 years` → veMEZO preview (≤4y bound enforced)
-- [ ] `extend lock 1 by 30 days` · `transfer veNFT 1 to 0x…` · `merge veNFT 1 into 2` → correct previews
-- [ ] `pair my veBTC` (Matchbox) → gated with reason
+- [ ] `lock 0.2 BTC for 28 days` → approve-precompile + createLock steps → Confirm → veNFT minted; `for 40 days` → **refused** (1–28d bound)
+- [ ] `lock 1000 MEZO for 2 years` → veMEZO preview (escrow unpublished; ≤4y bound enforced)
+- [ ] `extend lock 1 by 30 days` → increaseUnlockTime executes · `transfer veNFT 1 to 0x…` · `merge veNFT 1 into 2` → execute (must own the veNFT)
+- [ ] `pair my veBTC` (Matchbox) → gated with reason (community project)
 
-## 7 · Voting — ✅ optimizer math live; 🔒 on-chain submit
+## 7 · Voting — ✅ manual EXECUTABLE; optimal = optimizer live, submit needs indexer
 
-- [ ] `vote optimally` → water-filling allocation with **per-gauge explanation**
-      (transparency required by "Optimization Quality" criterion); submit gated on Voter
+- [ ] `vote with veNFT 3: 60% MUSD/mUSDC, 40% BTC/MUSD` → Voter.vote calldata, executes (must own the veNFT)
+- [ ] `vote manually` without a veNFT id → asks for the id (never guesses)
+- [ ] `vote optimally` → water-filling allocation with **per-gauge explanation**; submission gated on the incentives indexer (we never fabricate incentive numbers)
 - [ ] Optimizer unit-proof: `npm run phasecheck` (allocation sums to 100.00% bps, no negative weights)
 
 ## 8 · Mezo Market — 🔒 (address unpublished)
 
 - [ ] `browse market` / `buy listing 42` → parsed, previewed, gated with reason
 
-## 9 · Bonus features — ✅ all live (DCA trades land once Router exists)
+## 9 · Bonus features — ✅ all live (DCA trades execute via the wired Router)
 
 - [ ] `dca 50 MUSD to BTC every 24h` → schedule card: amount, pair, interval, revocable — requires explicit confirm
-- [ ] Keeper tick appears in Railway logs; run reports "swap execution gated" (correct until Router)
+- [ ] Keeper tick appears in Railway logs; due runs now EXECUTE the swap through the Router (within the signer caps)
 - [ ] `/dca` → lists schedules; `cancel dca <id>` revokes
 - [ ] `auto-compound on` → preference stored; `off` clears
 - [ ] `/pause` → keeper skips this user (check log line) → `/resume` restores — **emergency kill-switch**
@@ -108,8 +112,8 @@ Automated evidence (run locally, no Telegram needed):
 | Near-liquidation Trove | MCR warning on every card; live ratio computed pre-sign |
 | Insufficient balance/allowance | Simulation surfaces decoded revert; nothing submitted |
 | Unknown token / pool | Named refusal; never invents an address |
-| Slippage exceeded | Min-received encoded in swap plan; tx reverts rather than fills badly (execution pending Router) |
-| Expired lock / zero voting weight | Gated surfaces; decoded-error paths implemented, exercisable once VotingEscrow/Voter exist |
+| Slippage exceeded | Min-received encoded on-chain in every swap/zap leg; tx reverts rather than fills badly |
+| Expired lock / zero voting weight | Live surfaces; protocol reverts decode to human text (custom-error cases explained generically) |
 | Scheduled-action retry | Keeper marks run, reports reason, retries next tick; occurrence limit enforced |
 | Missed epoch | Auto-compound fires on next tick after due; idempotent (no double-run) |
 | Failed/partial zap | Plan is atomic per step with receipt waits; failure halts the chain and reports the step |
@@ -124,4 +128,4 @@ Automated evidence (run locally, no Telegram needed):
 | Maintenance plan | ✅ in SUBMISSION.md |
 | Video demo | ❌ **to record** — script: onboarding → borrow → zap preview → claim-all preview → lock+vote preview → market preview → DCA live |
 | Live Mainnet deployment | ⏳ after security review (bounty's own ordering) |
-| Full execution of swap/earn/lock/vote/market | ⏳ blocked on unpublished addresses — ask #developers in Mezo Discord |
+| Full execution of swap/zap/stake/claim/lock/vote | ✅ wired + on-chain verified (testnet end-to-end; mainnet awaits protocol gauges) |

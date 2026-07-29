@@ -23,13 +23,13 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
     case "adjust": return buildAdjust(intent);
     case "closeTrove": return buildCloseTrove();
     case "vaultDeposit": return buildVaultDeposit(intent);
-    case "stakeLp": return buildStakeLp(intent);
-    case "unstakeLp": return buildUnstakeLp(intent);
-    case "claim": return buildClaim(intent);
+    case "stakeLp": return buildStakeLp(intent, owner);
+    case "unstakeLp": return buildUnstakeLp(intent, owner);
+    case "claim": return buildClaim(intent, owner);
     case "lock": return buildLock(intent);
     case "extendLock": return buildExtendLock(intent);
     case "vote": return buildVote(intent);
-    case "zap": return buildZap(intent);
+    case "zap": return buildZap(intent, owner);
     case "matchbox": return buildMatchbox(intent);
     case "marketBrowse": return buildMarketBrowse(intent.query);
     case "marketBuy": return buildMarketBuy(intent);

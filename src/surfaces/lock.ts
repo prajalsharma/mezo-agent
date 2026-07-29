@@ -41,29 +41,22 @@ export function buildLock(intent: LockIntent): ActionPlan {
 
   const ve = registry.contract(key);
   const duration = BigInt(intent.lockDays * DAY);
-  const steps: ActionStep[] = [];
-  let nativeValue = 0n;
-
-  if (intent.asset === "BTC") {
-    nativeValue = parseEther(intent.amount);
-    steps.push({
-      kind: "createLock", to: ve, value: nativeValue,
-      data: encodeFunctionData({ abi: votingEscrowAbi, functionName: "createLock", args: [duration] }),
-      describe: `Lock ${intent.amount} BTC for ${intent.lockDays}d`,
-    });
-  } else {
-    const mezo = registry.erc20Of("MEZO")!;
-    const value = parseUnits(intent.amount, 18);
-    steps.push(approveStep(mezo, ve, value, "MEZO"));
-    steps.push({
+  const value = parseUnits(intent.amount, 18);
+  // Both escrows take the ERC-20 path. Native BTC is spent through its ERC-20
+  // precompile (registry.erc20Of("BTC") == 0x7b7C…0000), which mirrors the
+  // native balance — so no msg.value is attached and no wrapping step exists.
+  const tokenAddr = intent.asset === "BTC" ? registry.erc20Of("BTC")! : registry.erc20Of("MEZO")!;
+  const steps: ActionStep[] = [
+    approveStep(tokenAddr, ve, value, intent.asset),
+    {
       kind: "createLock", to: ve, value: 0n,
       data: encodeFunctionData({ abi: votingEscrowAbi, functionName: "createLock", args: [value, duration] }),
-      describe: `Lock ${intent.amount} MEZO for ${intent.lockDays}d`,
-    });
-  }
+      describe: `Lock ${intent.amount} ${intent.asset} for ${intent.lockDays}d`,
+    },
+  ];
   return {
     action: "lock", title: `🔒 Lock ${intent.asset} (ve${intent.asset})`, summary, warnings: [],
-    steps, allowedTargets: steps.map((s) => s.to), executable: true, nativeValue,
+    steps, allowedTargets: steps.map((s) => s.to), executable: true, nativeValue: 0n,
   };
 }
 
@@ -74,8 +67,49 @@ export function buildExtendLock(intent: ExtendLockIntent): ActionPlan {
   const summary: string[] = [`Extend lock #${intent.tokenId}:`];
   if (intent.addDays) summary.push(`• +${intent.addDays} days`);
   if (intent.addAmount) summary.push(`• +${intent.addAmount} to the locked amount`);
-  return gatedPlan({
+
+  // veBTC is the only escrow with a confirmed address today; veMEZO extends
+  // activate the moment VotingEscrowMEZO lands (same calldata shape).
+  if (!registry.hasContract("VotingEscrowBTC")) {
+    return gatedPlan({
+      action: "extendLock", title: "⏳ Extend lock", summary,
+      reason: "Preview only — the VotingEscrow address isn't confirmed on this deployment yet.",
+    });
+  }
+
+  const ve = registry.contract("VotingEscrowBTC");
+  const tokenId = BigInt(intent.tokenId);
+  const steps: ActionStep[] = [];
+  let nativeValue = 0n;
+
+  if (intent.addDays) {
+    steps.push({
+      kind: "extendLock", to: ve, value: 0n,
+      data: encodeFunctionData({
+        abi: votingEscrowAbi, functionName: "increaseUnlockTime",
+        args: [tokenId, BigInt(intent.addDays * DAY)],
+      }),
+      describe: `Extend lock #${intent.tokenId} by ${intent.addDays} days`,
+    });
+  }
+  if (intent.addAmount) {
+    // Added BTC travels through the ERC-20 precompile like createLock: approve
+    // the escrow, then increaseAmount — no msg.value.
+    const value = parseUnits(intent.addAmount, 18);
+    steps.push(approveStep(registry.erc20Of("BTC")!, ve, value, "BTC"));
+    steps.push({
+      kind: "increaseAmount", to: ve, value: 0n,
+      data: encodeFunctionData({
+        abi: votingEscrowAbi, functionName: "increaseAmount",
+        args: [tokenId, value],
+      }),
+      describe: `Add ${intent.addAmount} BTC to lock #${intent.tokenId}`,
+    });
+  }
+
+  return {
     action: "extendLock", title: "⏳ Extend lock", summary,
-    reason: "Preview only — the VotingEscrow address isn't confirmed on this deployment yet.",
-  });
+    warnings: ["Extending resets voting-power decay; the new unlock date is checked on-chain before signing."],
+    steps, allowedTargets: steps.map((s) => s.to), executable: true, nativeValue,
+  };
 }

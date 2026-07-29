@@ -61,15 +61,15 @@ export const hintHelpersAbi = [
 
 // ── Earn: VotingEscrow / Voter / Gauge (Velodrome fork) ──────────────────────
 export const votingEscrowAbi = [
-  // veMEZO: ERC-20 value + duration. veBTC variant is payable (native), below.
+  // Both escrows use the ERC-20 form. veBTC locks native BTC via its ERC-20
+  // precompile (0x7b7C…0000): approve the precompile to the escrow, then
+  // createLock(value, duration). Verified by simulation — the on-chain veBTC
+  // has NO payable 1-arg variant (that call reverts opaquely), while the 2-arg
+  // call reaches SafeERC20.transferFrom (decoded allowance failure).
   { type: "function", name: "createLock", stateMutability: "nonpayable", inputs: [
     { name: "_value", type: "uint256" }, { name: "_lockDuration", type: "uint256" },
   ], outputs: [{ name: "tokenId", type: "uint256" }] },
-  // veBTC: native BTC as msg.value.
-  { type: "function", name: "createLock", stateMutability: "payable", inputs: [
-    { name: "_lockDuration", type: "uint256" },
-  ], outputs: [{ name: "tokenId", type: "uint256" }] },
-  { type: "function", name: "increaseAmount", stateMutability: "payable", inputs: [
+  { type: "function", name: "increaseAmount", stateMutability: "nonpayable", inputs: [
     { name: "_tokenId", type: "uint256" }, { name: "_value", type: "uint256" },
   ], outputs: [] },
   { type: "function", name: "increaseUnlockTime", stateMutability: "nonpayable", inputs: [

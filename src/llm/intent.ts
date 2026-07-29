@@ -79,6 +79,9 @@ export const VoteIntent = z.object({
   mode: z.enum(["manual", "optimal"]).default("optimal"),
   // manual mode: pool identifier -> weight in basis points.
   weights: z.record(z.string(), z.number().int().min(0).max(10_000)).optional(),
+  // The veBTC NFT casting the vote ("vote with veNFT 3 ..."). Required for
+  // on-chain submission; without it the bot asks instead of guessing.
+  tokenId: z.string().regex(/^\d+$/).optional(),
 });
 export const MarketBrowseIntent = z.object({
   action: z.literal("marketBrowse"),

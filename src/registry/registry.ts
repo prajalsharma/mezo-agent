@@ -71,6 +71,11 @@ class ContractRegistry {
     }
   }
 
+  /** The active network's human name (for error messages). */
+  networkName(): string {
+    return env.network;
+  }
+
   knownTokenSymbols(): string[] {
     return Object.values(this.data.tokens).map((t) => t.symbol);
   }

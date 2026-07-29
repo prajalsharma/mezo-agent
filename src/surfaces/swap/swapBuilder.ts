@@ -35,9 +35,12 @@ export type Route = {
 export type PlanStep = {
   kind: "approval" | "swap" | "fee";
   to: Address;
-  data: Hex;
+  /** Absent for a plain native-value transfer (native-BTC agent fee). */
+  data?: Hex;
   value: bigint;
   describe: string;
+  /** Wait for this step's receipt before the next (approval before spend). */
+  waitForReceipt?: boolean;
 };
 
 export type SwapFee = {
@@ -142,45 +145,56 @@ export async function buildSwap(params: {
     poolAddress: pool.address,
   };
 
-  // 2. Execution wiring. Requires a confirmed Router + PoolFactory. Native-BTC
-  //    swaps additionally need the confirmed native-swap entrypoint, so they
-  //    stay quote-only for now (documented, not hidden).
+  // 2. Execution wiring. Requires a confirmed Router + PoolFactory. All three
+  //    directions execute: token↔token via swapExactTokensForTokens, and native
+  //    BTC via the ETH-named Velodrome entrypoints (ETH == native gas asset).
   const routerReady = registry.hasContract("Router") && registry.hasContract("PoolFactory");
-  const nativeInvolved = Boolean(tokenIn.native || tokenOut.native);
   if (!routerReady) {
     return {
       ...base, steps: [], executable: false,
       gatedReason: "Live quote only — the DEX Router address isn't confirmed in the registry yet, so execution is gated. Set it to enable signing.",
     };
   }
-  if (nativeInvolved) {
-    return {
-      ...base, steps: [], executable: false,
-      gatedReason: "Live quote only — native-BTC swap execution needs the confirmed native-swap entrypoint. Token↔token swaps execute now.",
-    };
-  }
-
   const router = registry.contract("Router");
   const factory = registry.contract("PoolFactory");
-  const route: Route = { from: tokenIn.address, to: tokenOut.address, stable: pool.stable, factory };
+  // Routes always use the routing (wrapped-precompile) address: the Router's
+  // ETH-named variants move native BTC but still expect the 0x7b7C…0000 token
+  // in the Route tuple — passing the zero sentinel produces a dead route.
+  const route: Route = {
+    from: registry.routingAddress(tokenIn),
+    to: registry.routingAddress(tokenOut),
+    stable: pool.stable,
+    factory,
+  };
   const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
   const steps: PlanStep[] = [];
 
   // Agent fee: an explicit, visible transfer of the input token. It is its own
-  // step so it appears in the confirmation and in transaction history.
+  // step so it appears in the confirmation and in transaction history. Native
+  // input pays the fee as a plain value transfer.
   if (fee) {
-    steps.push({
-      kind: "fee",
-      to: tokenIn.address,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [fee.recipient, fee.amount] }),
-      value: 0n,
-      describe: `Agent fee ${fee.amountFormatted} ${tokenIn.symbol} (${fee.bps / 100}%)`,
-    });
+    steps.push(
+      tokenIn.native
+        ? {
+            kind: "fee", to: fee.recipient, data: undefined, value: fee.amount,
+            describe: `Agent fee ${fee.amountFormatted} BTC (${fee.bps / 100}%)`,
+          }
+        : {
+            kind: "fee", to: tokenIn.address, value: 0n,
+            data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [fee.recipient, fee.amount] }),
+            describe: `Agent fee ${fee.amountFormatted} ${tokenIn.symbol} (${fee.bps / 100}%)`,
+          },
+    );
   }
 
-  // Approval — top up allowance to the router if short (net amount only).
+  // Approval on the ROUTING address. Native BTC approves through its ERC-20
+  // precompile (0x7b7C…0000), which mirrors the native balance — Mezo's design
+  // means there is no wrapping step and no msg.value swap path; the on-chain
+  // veBTC escrow confirmed this pattern (SafeERC20.transferFrom on the
+  // precompile), and the Router exposes no weth()/native entrypoint metadata.
+  const inRouting = route.from;
   const allowance = (await publicClient().readContract({
-    address: tokenIn.address,
+    address: inRouting,
     abi: erc20Abi,
     functionName: "allowance",
     args: [owner, router],
@@ -188,22 +202,22 @@ export async function buildSwap(params: {
   if (allowance < amountInNet) {
     steps.push({
       kind: "approval",
-      to: tokenIn.address,
+      to: inRouting,
       data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, amountInNet] }),
       value: 0n,
       describe: `Approve ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} for the DEX router`,
+      waitForReceipt: true,
     });
   }
 
+  // One swap direction for everything: token↔token over routing addresses.
   steps.push({
-    kind: "swap",
-    to: router,
+    kind: "swap", to: router, value: 0n,
     data: encodeFunctionData({
       abi: routerAbi,
       functionName: "swapExactTokensForTokens",
       args: [amountInNet, minOut, [route], owner, deadline],
     }),
-    value: 0n,
     describe: `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol}`,
   });
 

@@ -6,6 +6,7 @@
  *   MEZO_NETWORK=mainnet MASTER_ENCRYPTION_KEY=$(npm run -s genkey) \
  *   TELEGRAM_BOT_TOKEN=x npx tsx scripts/swapcheck.ts
  */
+import "./_testenv.js";
 import { registry } from "../src/registry/registry.js";
 import { env } from "../src/config/env.js";
 import { buildSwap, SwapUnavailableError } from "../src/surfaces/swap/swapBuilder.js";

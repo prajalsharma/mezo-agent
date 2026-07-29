@@ -132,8 +132,17 @@ const MAINNET: NetworkRegistry = {
   },
   contracts: {
     PoolFactory: "0x83FE469C636C4081b87bA5b3Ae9991c6Ed104248",
-    // Router address to be confirmed on-chain — see needsConfirmation. Quoting
-    // does not need it (pools expose getAmountOut); execution does.
+
+    // DEX Router + ve(3,3) suite. Source: docs/developers/features/mezo-pools.md
+    // in mezo-org/documentation. Verified on-chain by `npm run verifyve`:
+    // Router.factory == PoolFactory, VeBTC.token == BTC precompile,
+    // VeBTC.voter == Voter, Voter.ve == VeBTC, RewardsDistributor.ve == VeBTC.
+    // NOTE: mainnet Voter has ZERO gauges at time of wiring (Voter.length()==0),
+    // so LP staking is live code but protocol-empty here; testnet has 4 gauges.
+    Router: "0x16A76d3cd3C1e3CE843C6680d6B37E9116b5C706",
+    VotingEscrowBTC: "0x7D807e9CE1ef73048FEe9A4214e75e894ea25914",
+    Voter: "0x3A4a6919F70e5b0aA32401747C471eCfe2322C1b",
+    RewardsDistributor: "0x535E01F948458E0b64F9dB2A01Da6F32E240140f",
 
     // Mezo Borrow (Liquity-style CDP). Source: the canonical MUSD developer
     // reference, https://mezo.org/docs/developers/musd/musd-redemptions.
@@ -157,7 +166,10 @@ const MAINNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDC"], address: "0xEd812AEc0Fecc8fD882Ac3eccC43f3aA80A6c356", stable: true },
     { pair: ["MUSD", "mUSDT"], address: "0x10906a9E9215939561597b4C8e4b98F93c02031A", stable: true },
   ],
-  needsConfirmation: ["Router", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "RewardsDistributor", "Matchbox", "Market", "Delegate7702"],
+  // VotingEscrowMEZO, Matchbox, Market: genuinely unpublished. veMEZO has no
+  // documented contract; Matchbox is a community project (matchbox.markets);
+  // Mezo Market has no published contract address.
+  needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market", "Delegate7702"],
 };
 
 const TESTNET: NetworkRegistry = {
@@ -175,10 +187,30 @@ const TESTNET: NetworkRegistry = {
       address: "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503",
       decimals: 18,
     },
+    // Read on-chain from the published testnet pools' token0/token1 (symbols
+    // and 6-decimals confirmed via eth_call) — not copied from any doc table.
+    mUSDC: {
+      symbol: "mUSDC",
+      name: "Mezo USDC (Matsnet)",
+      address: "0xe1a26db653708A2AD8F824E92Db9852410e33A59",
+      decimals: 6,
+    },
+    mUSDT: {
+      symbol: "mUSDT",
+      name: "Mezo USDT (Matsnet)",
+      address: "0x629320719a6190bd145C277226fd45e7648F950A",
+      decimals: 6,
+    },
   },
   contracts: {
-    // Testnet DEX / pool addresses are resolved at runtime from the canonical
-    // reference or the explorer; seeded here as they are confirmed on Matsnet.
+    // DEX Router + ve(3,3) on Matsnet. Same source and verification as mainnet
+    // (`MEZO_NETWORK=testnet npm run verifyve`, 15/15 including per-pool
+    // factory checks and a live gauge lookup for MUSD/mUSDC).
+    PoolFactory: "0x4947243CC818b627A5D06d14C4eCe7398A23Ce1A",
+    Router: "0x9a1ff7FE3a0F69959A3fBa1F1e5ee18e1A9CD7E9",
+    VotingEscrowBTC: "0xB63fcCd03521Cf21907627bd7fA465C129479231",
+    Voter: "0x72F8dd7F44fFa19E45955aa20A5486E8EB255738",
+    RewardsDistributor: "0x10B0E7b3411F4A38ca2F6BB697aA28D607924729",
 
     // Mezo Borrow on Matsnet. Same source and same verification as mainnet:
     // `MEZO_NETWORK=testnet npm run verifyaddrs` reports 5/5 cross-references
@@ -191,10 +223,14 @@ const TESTNET: NetworkRegistry = {
     SortedTroves: "0x722E4D24FD6Ff8b0AC679450F3D91294607268fA",
     PriceFeed: "0x86bCF0841622a5dAC14A313a15f96A95421b9366",
   },
-  // No DEX pools are published for Matsnet testnet yet — only MUSD. Swaps quote
-  // and execute on mainnet, where the pools live.
-  pools: [],
-  needsConfirmation: ["PoolFactory", "Router", "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "RewardsDistributor", "Matchbox", "Market", "Delegate7702"],
+  // Matsnet pools from mezo-pools.md; factory() of each verified == the
+  // testnet PoolFactory, token0/token1 and stable flags read on-chain.
+  pools: [
+    { pair: ["BTC", "MUSD"], address: "0xd16A5Df82120ED8D626a1a15232bFcE2366d6AA9", stable: false },
+    { pair: ["MUSD", "mUSDC"], address: "0x525F049A4494dA0a6c87E3C4df55f9929765Dc3e", stable: true },
+    { pair: ["MUSD", "mUSDT"], address: "0x27414B76CF00E24ed087adb56E26bAeEEe93494e", stable: true },
+  ],
+  needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market", "Delegate7702"],
 };
 
 export const SEED_REGISTRY: Record<NetworkName, NetworkRegistry> = {

@@ -6,15 +6,13 @@ Earn, veBTC/veMEZO locking + voting, Matchbox, Market) in plain language, with
 
 This repository is built in phases. **Phases 1–5 are implemented.**
 
-> **How to read "status" below.** Mezo has published addresses only for tokens,
-> the PoolFactory, and the DEX pools. Borrow, VotingEscrow, Voter, Matchbox and
-> Market addresses are **not** in the canonical reference yet. Per the security
-> rule *never invent an address*, every surface that needs an unpublished address
-> is built end-to-end (typed intent → validate → **build real calldata** →
-> simulate → confirm → sign) but **execution-gated** until the address is set in
-> the registry (via env). Pure-logic features (optimal voting, DCA scheduling,
-> multi-account) are fully live and unit-tested. "✅ live" = works today; "✅
-> gated" = code-complete + tested, activates when the address lands.
+> **How to read "status" below.** Every wired address comes from Mezo's own
+> docs (contracts reference, MUSD developer reference, mezo-pools developer
+> page) and is **verified on-chain before use** (`npm run verifyaddrs`,
+> `npm run verifyve`). Per the security rule *never invent an address*, the few
+> surfaces whose contracts remain unpublished (veMEZO escrow, Matchbox, Market)
+> are built end-to-end but **execution-gated** until their address lands (via
+> `MEZO_ADDR_*` env). Everything else executes on both networks.
 
 ## Phase 1 scope
 
@@ -41,12 +39,16 @@ canonical reference; nothing here is gated by missing code.
 | --- | --- | --- |
 | **2** | Borrow (open Trove) — min-net-debt + MCR guardrails, borrowing-fee preview | ✅ **executable** (simulated on testnet + mainnet) |
 | 2 | Repay / Adjust / Close Trove | ✅ **executable** |
-| 2 | Vault deposit · Stake / Unstake LP · Claim rewards | ✅ gated |
-| **3** | Lock veBTC (1–28d) / veMEZO (≤4y), Extend | ✅ gated (VotingEscrow ABI) |
-| 3 | Vote — **optimal** (water-filling) + manual | ✅ optimizer live & tested; on-chain vote gated |
-| 3 | Mezo Market — browse / buy | ✅ gated |
-| **4** | Zap-to-enter (single asset → LP, optional stake) | ✅ split quoted live; execution gated |
-| 4 | Matchbox pairing · veNFT transfer / merge | ✅ gated |
+| 2 | Stake / Unstake LP · Claim gauge earnings | ✅ **executable** (gauge from Voter, live) |
+| 2 | Vault deposit | 🔒 preview (ERC-4626 wiring pending) |
+| **3** | Lock veBTC (1–28d), Extend | ✅ **executable** (via BTC ERC-20 precompile) |
+| 3 | Lock veMEZO (≤4y) | 🔒 preview (escrow unpublished) |
+| 3 | Vote — manual weights | ✅ **executable** (Voter.vote) |
+| 3 | Vote — **optimal** (water-filling) | ✅ optimizer live & tested; needs incentives indexer |
+| 3 | Mezo Market — browse / buy | 🔒 preview (no published contract) |
+| **4** | Zap-to-enter (single asset → LP) | ✅ **executable** (swap + addLiquidity, slippage-floored) |
+| 4 | veNFT transfer / merge | ✅ **executable** |
+| 4 | Matchbox pairing | 🔒 preview (community project) |
 | **5** | DCA schedules (pre-authorized, scoped, revocable) | ✅ **live** (scheduler + keeper, unit-tested) |
 | 5 | Auto-compound preference · Multi-account | ✅ **live** |
 | 5 | Optimal-voting algorithm (transparent, documented) | ✅ **live** (`src/core/optimalVoting.ts`) |
@@ -74,11 +76,21 @@ Addresses are read from the canonical reference, never hardcoded from memory:
   is the live, linked deployment".
 - **DEX pools / PoolFactory** — from the contracts reference, verified live
   (`getAmountOut` returns non-zero, `factory()` matches).
-- **Voter, VotingEscrowBTC/MEZO, RewardsDistributor, Matchbox, Market, Router** —
-  **not published** in the canonical reference at time of writing, and not
-  derivable on-chain: `npm run discover` follows accessors from PoolFactory, and
-  `PoolFactory.voter()` resolves to a Gnosis Safe 1.3.0 (5-of-N admin multisig),
-  not a ve(3,3) Voter. These surfaces stay preview-only rather than guessing.
+- **Router + ve(3,3) suite** (`Router`, `VotingEscrowBTC` (VeBTC), `Voter`,
+  `RewardsDistributor`) — from `docs/developers/features/mezo-pools.md` in
+  mezo-org/documentation (both networks, including the testnet PoolFactory and
+  pools), then **verified on-chain** by `npm run verifyve`: `Router.factory ==
+  PoolFactory`, `VeBTC.token == BTC precompile`, `VeBTC.voter == Voter`,
+  `Voter.ve == VeBTC`, `RewardsDistributor.ve == VeBTC`, per-pool `factory()`
+  checks, and a live `Voter.gauges(pool)` lookup. Testnet 15/15; mainnet 11/12
+  (the "failure" is `Voter.length() == 0` — no gauges created yet, a protocol
+  state fact, not an address problem).
+- **VotingEscrowMEZO, Matchbox, Market** — genuinely unpublished: veMEZO has no
+  documented contract, Matchbox is an external community project
+  (matchbox.markets), and Mezo Market has no published contract. These stay
+  preview-only rather than guessing. (`PoolFactory.voter()` resolving to a
+  Gnosis Safe 5-of-N is the admin, not the ve(3,3) Voter — the real Voter came
+  from the docs page and proved itself via the cross-references above.)
 
 > A signature mismatch found this way: Mezo's MUSD fork drops Liquity's leading
 > `_maxFeePercentage` argument from `openTrove` and `withdrawMUSD`. The upstream
@@ -94,29 +106,29 @@ no code change. The bot refuses to act against an unconfirmed address rather
 than invent one. `npm run phaseaudit` prints this table live for the configured
 network.
 
-| Feature | Status today | Env key that unlocks it |
+| Feature | Status today | Env key (override) |
 | --- | --- | --- |
-| Wallet / portfolio / deposit QR | ✅ live | — (none needed) |
-| Borrow / Repay / Adjust / Close Trove | ✅ **executable** (addresses seeded + on-chain verified) | — (override: `MEZO_ADDR_BORROWEROPERATIONS` etc.) |
-| Swap quotes | ✅ live (pool-direct) | — |
-| Swap **execution** | 🔒 preview | `MEZO_ROUTER_ADDRESS` (or `MEZO_ADDR_ROUTER`) |
-| Zap into pool | 🔒 preview | `MEZO_ROUTER_ADDRESS` |
-| Stake / Unstake LP | 🔒 preview | `MEZO_ADDR_VOTER` |
-| Claim rewards (gauge/bribe) | 🔒 preview | `MEZO_ADDR_VOTER` |
-| Claim rebases | 🔒 preview | `MEZO_ADDR_REWARDSDISTRIBUTOR` |
-| Vote (optimal/manual) | 🔒 preview | `MEZO_ADDR_VOTER` (+ incentives indexer) |
-| Lock veBTC / extend / veNFT transfer & merge | 🔒 preview | `MEZO_ADDR_VOTINGESCROWBTC` |
-| Lock veMEZO | 🔒 preview | `MEZO_ADDR_VOTINGESCROWMEZO` |
-| Matchbox pairing | 🔒 preview | `MEZO_ADDR_MATCHBOX` |
-| Mezo Market browse / buy | 🔒 preview | `MEZO_ADDR_MARKET` |
-| Vault deposits | 🔒 preview | vault addresses (unpublished; registry edit) |
+| Wallet / portfolio / deposit QR | ✅ live | — |
+| Borrow / Repay / Adjust / Close Trove | ✅ **executable** (verified + simulated, both networks) | `MEZO_ADDR_BORROWEROPERATIONS` … |
+| Swap quotes + **execution** (incl. native BTC via precompile) | ✅ **executable** | `MEZO_ADDR_ROUTER` |
+| Zap into pool (single asset → LP) | ✅ **executable** (pool-member input; multi-hop preview) | `MEZO_ADDR_ROUTER` |
+| Stake / Unstake LP | ✅ **executable** — gauge resolved live from Voter¹ | `MEZO_ADDR_VOTER` |
+| Claim gauge earnings | ✅ **executable** (enumerates gauges, claims where earned > 0)¹ | `MEZO_ADDR_VOTER` |
+| Claim rebases / bribes | 🔒 preview — needs veNFT enumeration (indexer) | `MEZO_ADDR_REWARDSDISTRIBUTOR` |
+| Vote — manual weights | ✅ **executable** (`vote with veNFT <id>: 60% MUSD/mUSDC …`) | `MEZO_ADDR_VOTER` |
+| Vote — optimal | 🔒 preview — optimizer live, needs the incentives indexer | — |
+| Lock veBTC / extend / veNFT transfer & merge | ✅ **executable** (BTC via ERC-20 precompile) | `MEZO_ADDR_VOTINGESCROWBTC` |
+| Lock veMEZO | 🔒 preview — escrow address genuinely unpublished | `MEZO_ADDR_VOTINGESCROWMEZO` |
+| Matchbox pairing | 🔒 preview — community project, external contracts | `MEZO_ADDR_MATCHBOX` |
+| Mezo Market browse / buy | 🔒 preview — no published contract | `MEZO_ADDR_MARKET` |
+| Vault deposits | 🔒 preview — vault addresses published but ERC-4626 wiring pending | — |
 | EIP-7702 `/upgrade` (session keys) | 🔒 preview | `DELEGATE7702_ADDRESS` (deploy `contracts/` first) |
-| DCA / auto-compound scheduling | ✅ live (`KEEPER_ENABLED=true`) | trades land once the swap Router is set |
+| DCA / auto-compound scheduling | ✅ live — trades land now that the Router is wired | `KEEPER_ENABLED=true` |
 | Multi-account, limits, watch-only, optimal-voting math | ✅ live | — |
 
-The 🔒 addresses are **not published** in Mezo's canonical contracts reference
-and are not derivable on-chain (see "Address provenance"). Ask the Mezo team
-(#developers on Discord); the moment you have one, set the env var and restart.
+¹ Live on **testnet** (4 gauges). The mainnet Voter is deployed but had **zero
+gauges** at wiring time (`Voter.length() == 0`) — staking/claims there activate
+when the protocol creates gauges; the code path is identical.
 
 ## The core invariant
 
