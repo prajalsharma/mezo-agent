@@ -6,6 +6,8 @@ import { LocalKeyStore } from "../custody/localKeystore.js";
 import { store } from "../db/store.js";
 import { probe7702Support } from "../chain/eip7702.js";
 import { registry } from "../registry/registry.js";
+import { llmSelfTest } from "../llm/adapter.js";
+import { llmEnabled } from "../config/env.js";
 import { errMsg } from "./log.js";
 
 /**
@@ -101,6 +103,17 @@ export async function runPreflight(): Promise<CheckResult[]> {
         : "delegate=unset (session-key contract not yet deployed/registered)";
       if (!probe.supported) throw new Error(`${probe.detail}; ${delegate}`);
       return `${probe.detail}; ${delegate}`;
+    }),
+  );
+
+  // 6. LLM — non-fatal. Live round-trip through the ACTIVE provider so a silent
+  //    fallback to the deterministic parser (bad key, wrong model, rate limit,
+  //    or LLM_PROVIDER not matching a set key) shows as a visible ❌ with reason.
+  //    When no key is set at all this is an informational ✅ (parser mode).
+  results.push(
+    await check("llm", async () => {
+      if (!llmEnabled) return "no LLM key set — deterministic parser (set GEMINI_API_KEY for free conversational mode)";
+      return await llmSelfTest(registry.knownTokenSymbols());
     }),
   );
 

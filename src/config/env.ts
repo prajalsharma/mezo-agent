@@ -62,14 +62,32 @@ export const env = {
   /** AES-256-GCM master key (hex). Validated to 32 bytes in the keystore. */
   masterEncryptionKey: required("MASTER_ENCRYPTION_KEY"),
 
-  llm: {
-    // "gemini" (Google AI Studio — free tier) or "anthropic" (Claude — paid).
-    provider: optional("LLM_PROVIDER", "anthropic"),
-    anthropicApiKey: optional("ANTHROPIC_API_KEY"),
-    anthropicModel: optional("ANTHROPIC_MODEL", "claude-sonnet-5"),
-    geminiApiKey: optional("GEMINI_API_KEY"),
-    geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash"),
-  },
+  // "gemini" (Google AI Studio — free tier) or "anthropic" (Claude — paid).
+  // Resolution is forgiving on purpose — a casing typo or a set key with the
+  // wrong LLM_PROVIDER used to silently drop the bot to the deterministic parser:
+  //   • LLM_PROVIDER is matched case-insensitively ("Gemini" == "gemini").
+  //   • If the chosen provider has NO key but the other one does, use the one
+  //     that actually has a key.
+  //   • If LLM_PROVIDER is unset/unrecognized, auto-pick whichever key is set
+  //     (Gemini preferred, since it's the free option).
+  llm: (() => {
+    const anthropicApiKey = optional("ANTHROPIC_API_KEY");
+    const geminiApiKey = optional("GEMINI_API_KEY");
+    const hasA = anthropicApiKey !== "";
+    const hasG = geminiApiKey !== "";
+    const wanted = optional("LLM_PROVIDER", "").toLowerCase();
+    let provider: "gemini" | "anthropic" =
+      wanted === "gemini" ? "gemini" : wanted === "anthropic" ? "anthropic" : hasG ? "gemini" : "anthropic";
+    if (provider === "gemini" && !hasG && hasA) provider = "anthropic";
+    if (provider === "anthropic" && !hasA && hasG) provider = "gemini";
+    return {
+      provider,
+      anthropicApiKey,
+      anthropicModel: optional("ANTHROPIC_MODEL", "claude-sonnet-5"),
+      geminiApiKey,
+      geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash"),
+    };
+  })(),
 
   dataDir: optional("DATA_DIR", "./data"),
 

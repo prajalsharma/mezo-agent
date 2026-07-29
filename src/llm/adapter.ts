@@ -57,6 +57,28 @@ export async function parseIntent(
   return parsed.data;
 }
 
+/**
+ * Live LLM self-test for preflight / /diag. Sends one real request through the
+ * active provider and confirms it returns a usable intent. This is what turns a
+ * SILENT fallback ("why is it always using the parser?") into a visible ❌ with
+ * the concrete provider error (bad key, wrong model name, rate limit, etc).
+ * Returns a short human string on success; throws with the reason on failure.
+ */
+export async function llmSelfTest(knownSymbols: string[]): Promise<string> {
+  if (!llmEnabled) throw new Error("no LLM key set — using deterministic parser");
+  const system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
+  const raw =
+    env.llm.provider === "gemini"
+      ? await callGemini(system, "swap 1 MUSD to mUSDC")
+      : await callAnthropic(system, "swap 1 MUSD to mUSDC");
+  const parsed = Intent.safeParse(raw);
+  if (!parsed.success || parsed.data.action !== "swap") {
+    throw new Error("provider replied but did not produce a valid intent");
+  }
+  const model = env.llm.provider === "gemini" ? env.llm.geminiModel : env.llm.anthropicModel;
+  return `${env.llm.provider} (${model}) responding`;
+}
+
 /** Anthropic (Claude) backend. Returns the raw tool input, or undefined. */
 async function callAnthropic(system: string, message: string): Promise<unknown> {
   const client = new Anthropic({ apiKey: env.llm.anthropicApiKey });
