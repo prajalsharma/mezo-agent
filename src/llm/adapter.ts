@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { env, llmEnabled } from "../config/env.js";
 import { log, errMsg } from "../core/log.js";
-import { Intent, INTENT_TOOL_SCHEMA, type Intent as IntentT } from "./intent.js";
+import { Intent, INTENT_TOOL_SCHEMA, normalizeIntentFields, type Intent as IntentT } from "./intent.js";
 
 /**
  * Provider-agnostic reasoning adapter. Exposes ONE capability: turn a natural
@@ -50,7 +50,8 @@ export async function parseIntent(
   }
   // Deterministic validation of the model's proposal — the model does not get
   // the last word; the schema does. (Same Zod schema for every provider.)
-  const parsed = Intent.safeParse(raw);
+  // normalizeIntentFields first remaps loose cross-action field aliases.
+  const parsed = Intent.safeParse(normalizeIntentFields(raw));
   if (!parsed.success) {
     return { action: "clarify", question: "Could you rephrase? e.g. \"swap 100 MUSD to mUSDC\"" };
   }
@@ -76,7 +77,7 @@ export async function llmSelfTest(knownSymbols: string[]): Promise<string> {
   // Any schema-valid intent proves the round-trip works; report the action so a
   // weak/over-cautious reply is visible. Only an OFF-schema reply is a failure,
   // and we surface the raw output so it can be diagnosed at a glance.
-  const parsed = Intent.safeParse(raw);
+  const parsed = Intent.safeParse(normalizeIntentFields(raw));
   if (!parsed.success) {
     throw new Error(`replied off-schema: ${JSON.stringify(raw).slice(0, 140)}`);
   }

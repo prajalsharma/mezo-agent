@@ -155,6 +155,35 @@ export const ClarifyIntent = z.object({
   question: z.string().min(1),
 });
 
+/**
+ * Remap common cross-action field aliases onto the canonical names each Intent
+ * expects, BEFORE Zod validation. The tool schema is one flat object shared by
+ * all actions, so a model will sometimes fill a swap's source with the zap
+ * fields (inputToken/inputAmount) or vice-versa. This deterministic normalizer
+ * makes those loose-but-unambiguous replies parse instead of falling to clarify.
+ * Unknown keys are harmless — Zod strips them.
+ */
+export function normalizeIntentFields(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const o: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  switch (o.action) {
+    case "swap":
+    case "dcaCreate":
+      if (o.fromToken == null && o.inputToken != null) o.fromToken = o.inputToken;
+      if (o.amount == null && o.inputAmount != null) o.amount = o.inputAmount;
+      break;
+    case "zap":
+      if (o.inputToken == null && o.fromToken != null) o.inputToken = o.fromToken;
+      if (o.inputAmount == null && o.amount != null) o.inputAmount = o.amount;
+      break;
+    case "vaultDeposit":
+      if (o.token == null) o.token = o.inputToken ?? o.fromToken ?? o.token;
+      if (o.amount == null && o.inputAmount != null) o.amount = o.inputAmount;
+      break;
+  }
+  return o;
+}
+
 export const Intent = z.discriminatedUnion("action", [
   SwapIntent,
   BorrowIntent,
@@ -220,9 +249,9 @@ export const INTENT_TOOL_SCHEMA = {
     type: "object",
     properties: {
       action: { type: "string" },
-      amount: { type: "string", description: "plain number, no symbol, e.g. \"0.05\"" },
-      fromToken: { type: "string" },
-      toToken: { type: "string" },
+      amount: { type: "string", description: "plain number amount (no symbol) for swap/borrow/repay/lock/vaultDeposit/dca, e.g. \"0.05\"" },
+      fromToken: { type: "string", description: "SWAP/DCA source token symbol (the token being sold)" },
+      toToken: { type: "string", description: "SWAP/DCA destination token symbol (the token being bought)" },
       slippagePct: { type: "number" },
       collateralBTC: { type: "string" },
       mintMUSD: { type: "string" },
@@ -233,8 +262,8 @@ export const INTENT_TOOL_SCHEMA = {
       asset: { type: "string", enum: ["BTC", "MEZO"] },
       lockDays: { type: "number" },
       mode: { type: "string", enum: ["manual", "optimal"] },
-      inputToken: { type: "string" },
-      inputAmount: { type: "string" },
+      inputToken: { type: "string", description: "ZAP only: token supplied into the pool (for a swap use fromToken instead)" },
+      inputAmount: { type: "string", description: "ZAP only: amount supplied into the pool (for a swap use amount instead)" },
       stake: { type: "boolean" },
       op: { type: "string" },
       veBtcId: { type: "number" },
