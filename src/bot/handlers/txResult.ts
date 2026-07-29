@@ -108,6 +108,10 @@ export function friendlyReason(reason: string): string {
     return "You don't have enough of that token for this. Check /portfolio.";
   if (/insufficient allowance|exceeds allowance/i.test(r))
     return "Token approval fell short — please try the action again.";
+  if (/ICR < MCR|MCR is not permitted|collateral ratio|below the minimum collateral|minimum net debt/i.test(r))
+    return "This borrow would be under-collateralized. Add more BTC collateral, or mint less MUSD — your collateral must stay worth at least 110% of the debt.";
+  if (/troveManager|BorrowerOps|does not exist|already active/i.test(r))
+    return "That Trove operation isn't valid for your current position (e.g. no open Trove, or it already exists). Check /portfolio.";
   if (/not confirmed within|reverted on-chain/i.test(r)) return r; // already clear
   if (/user rejected|denied/i.test(r)) return "Cancelled.";
   return r.split("\n")[0]!.slice(0, 180);

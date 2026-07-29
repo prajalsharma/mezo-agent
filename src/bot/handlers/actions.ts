@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { buildActionPlan, ActionUnavailableError } from "../../surfaces/dispatch.js";
 import { executeActionPlan, type ActionPlan } from "../../surfaces/plan.js";
+import { simulateCall } from "../../core/simulator.js";
 import { limitsOf, fmtBtc } from "../../custody/policy.js";
 import { setPending, getPending, clearPending } from "../session.js";
 import type { Intent } from "../../llm/intent.js";
@@ -68,6 +69,18 @@ export async function handleActionIntent(ctx: Context, intent: Intent): Promise<
   const shortfall = await preflightBalances(user.address, plan);
   if (shortfall) {
     await ctx.reply(`⚠️ ${esc(shortfall)}`, { parse_mode: "HTML" });
+    return true;
+  }
+
+  // Preview-simulate the FIRST step. For single-step actions whose primary call
+  // is step 0 (notably borrow's openTrove), this surfaces a protocol revert like
+  // "ICR < MCR" as a plain sentence BEFORE the user signs, instead of after. For
+  // approval-first plans the approval simulates fine and the real check happens
+  // per-step at execution — same as the swap flow.
+  const first = plan.steps[0]!;
+  const sim = await simulateCall({ from: user.address, to: first.to, data: first.data, value: first.value });
+  if (!sim.ok) {
+    await ctx.reply(`⚠️ This can't go through: ${esc(friendlyReason(sim.reason))}`, { parse_mode: "HTML" });
     return true;
   }
 
