@@ -17,8 +17,12 @@ const SYSTEM = [
   "You are the intent parser for a Mezo DeFi Telegram agent.",
   "Output exactly one structured intent via the emit_intent tool.",
   "You never execute anything and never see private keys.",
-  "Only these token symbols are valid — never invent others: {SYMBOLS}.",
-  "If the amount, input token, or output token is missing or ambiguous, return",
+  "Valid token symbols: {SYMBOLS}.",
+  "Users often drop the Mezo 'm' prefix — map USDC->mUSDC, USDT->mUSDT, DAI->mDAI, cbBTC->mcbBTC, etc.",
+  "Never invent tokens that cannot be resolved this way.",
+  "For a SWAP use fields: action=swap, amount, fromToken, toToken.",
+  "Do NOT use inputToken/inputAmount for a swap — those are ONLY for zap.",
+  "If the amount, source, or destination is missing or ambiguous, return",
   "action=clarify with a precise question. Never guess amounts or tokens.",
 ].join(" ");
 
@@ -26,15 +30,21 @@ export async function parseIntent(
   message: string,
   knownSymbols: string[],
 ): Promise<IntentT> {
-  if (!llmEnabled) return fallbackParse(message, knownSymbols);
+  // 1) DETERMINISTIC FIRST. The headline commands (swap/borrow/repay/lock/dca/
+  //    zap/stake/…) are precise and structured, so the rule parser nails them
+  //    instantly, for free, with zero dependence on any model. This is what makes
+  //    "swap 0.0001 BTC to mUSDC" ALWAYS work — no LLM latency, no field-name
+  //    risk, no rate limit. The LLM never even runs for a clear command.
+  const rule = fallbackParse(message, knownSymbols);
+  if (rule.action !== "clarify") return rule;
+
+  // 2) LLM SECOND, only for what the rules couldn't parse — i.e. free-form,
+  //    natural-language phrasing ("what can I do with my btc?", "put half my
+  //    musd to work"). If the LLM is off or fails, we return the deterministic
+  //    clarify (which already carries good, symbol-aware help text).
+  if (!llmEnabled) return rule;
 
   const system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
-
-  // Any LLM-call failure (drained/invalid key, rate limit, network) MUST degrade
-  // to the deterministic parser — never leave the user's message unanswered. An
-  // empty balance surfaces here as a 400/402/429; we catch it and fall back so a
-  // billing lapse or free-tier rate-limit silently downgrades the bot instead of
-  // breaking it.
   let raw: unknown;
   try {
     raw = env.llm.provider === "gemini"
@@ -42,20 +52,55 @@ export async function parseIntent(
       : await callAnthropic(system, message);
   } catch (err) {
     log.warn("llm.call-failed", { provider: env.llm.provider, error: errMsg(err) });
-    return fallbackParse(message, knownSymbols);
+    return rule;
   }
+  if (raw === undefined) return rule;
 
-  if (raw === undefined) {
-    return { action: "clarify", question: "Sorry, I couldn't understand that. Try: swap 100 MUSD to mUSDC" };
-  }
-  // Deterministic validation of the model's proposal — the model does not get
-  // the last word; the schema does. (Same Zod schema for every provider.)
-  // normalizeIntentFields first remaps loose cross-action field aliases.
+  // Deterministic validation — the model does not get the last word; the schema
+  // does. normalizeIntentFields remaps loose cross-action aliases first, then we
+  // canonicalize token symbols (USDC->mUSDC) so a valid intent isn't lost to a
+  // prefix the user omitted.
   const parsed = Intent.safeParse(normalizeIntentFields(raw));
-  if (!parsed.success) {
-    return { action: "clarify", question: "Could you rephrase? e.g. \"swap 100 MUSD to mUSDC\"" };
+  if (!parsed.success) return rule;
+  return canonicalizeIntentSymbols(parsed.data, knownSymbols);
+}
+
+/**
+ * Resolve a user-typed token to a real registry symbol, tolerating the Mezo 'm'
+ * prefix that users routinely omit: USDC->mUSDC, USDT->mUSDT, DAI->mDAI,
+ * cbBTC->mcbBTC. Exact (case-insensitive) match wins; then try adding/removing a
+ * leading 'm'. Returns undefined if nothing plausible matches.
+ */
+export function resolveSymbol(input: string, knownSymbols: string[]): string | undefined {
+  const s = (input ?? "").trim().toLowerCase();
+  if (!s) return undefined;
+  let hit = knownSymbols.find((k) => k.toLowerCase() === s);
+  if (hit) return hit;
+  hit = knownSymbols.find((k) => k.toLowerCase() === "m" + s); // USDC -> mUSDC
+  if (hit) return hit;
+  if (s.startsWith("m")) {
+    hit = knownSymbols.find((k) => k.toLowerCase() === s.slice(1)); // mBTC -> BTC
+    if (hit) return hit;
   }
-  return parsed.data;
+  return undefined;
+}
+
+/** Canonicalize the token-bearing fields of an LLM intent to real symbols. */
+function canonicalizeIntentSymbols(intent: IntentT, knownSymbols: string[]): IntentT {
+  const fix = (s: string) => resolveSymbol(s, knownSymbols) ?? s;
+  switch (intent.action) {
+    case "swap":
+    case "dcaCreate":
+      return { ...intent, fromToken: fix(intent.fromToken), toToken: fix(intent.toToken) };
+    case "zap":
+      return { ...intent, inputToken: fix(intent.inputToken) };
+    case "vaultDeposit":
+      return { ...intent, token: fix(intent.token) };
+    case "autoCompound":
+      return intent.intoToken ? { ...intent, intoToken: fix(intent.intoToken) } : intent;
+    default:
+      return intent;
+  }
 }
 
 /**
@@ -158,7 +203,7 @@ async function callGemini(system: string, message: string): Promise<unknown> {
 export function fallbackParse(message: string, knownSymbols: string[]): IntentT {
   const t = message.trim();
   const lower = t.toLowerCase();
-  const resolve = (s: string) => knownSymbols.find((k) => k.toLowerCase() === s.toLowerCase());
+  const resolve = (s: string) => resolveSymbol(s, knownSymbols);
   const num = "(\\d+(?:\\.\\d+)?)";
 
   // Read-only / meta
