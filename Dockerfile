@@ -21,8 +21,11 @@ COPY scripts ./scripts
 # persistent volume — see the warning in README. On an ephemeral filesystem every
 # redeploy destroys every user's wallet, and because there is no plaintext export
 # path, those funds are unrecoverable.
+#
+# No Docker VOLUME directive here: Railway's builder rejects it outright
+# ("docker VOLUME is not supported, use Railway Volumes"). Attach the volume in
+# the platform UI (Railway: right-click service → Attach volume → /data).
 ENV DATA_DIR=/data
-VOLUME ["/data"]
 
 # tsx runs the TypeScript sources directly, matching `npm start` locally.
 RUN npm install tsx@^4.19.0
