@@ -125,6 +125,7 @@ export function buildBot(): Bot {
     if (feesEnabled) {
       lines.push(
         `• Swaps & zaps: <b>${env.fees.swapBps / 100}%</b> of the input amount, taken in the input token.`,
+        ...(env.fees.txnBps > 0 ? [`• Borrow / vault deposit / lock: <b>${env.fees.txnBps / 100}%</b> of the amount, taken in that token.`] : []),
         `• Shown on every confirmation before you approve — you always see the exact amount.`,
         `• Fee recipient: <code>${env.fees.recipient}</code>`,
         `• Referral share: <b>${env.fees.referralSharePct}%</b> of the fee goes to whoever referred the trader (/referral).`,

@@ -21,6 +21,7 @@ bps (1%) in code** so a misconfiguration can't overcharge.
 | Action | Recommended | Config |
 | --- | --- | --- |
 | Swap **and zap** | **50 bps (0.5%)** — half the 100 bps that Trojan/Maestro charge | `AGENT_FEE_BPS=50` |
+| Borrow / vault-deposit / lock | **10 bps (0.1%)** — Mezo-approved; taken in the action's token | `AGENT_TXN_FEE_BPS=10` |
 
 Enable:
 ```
@@ -29,8 +30,10 @@ AGENT_FEE_RECIPIENT=0x<operator address>
 ```
 
 At 0.5% on $1M daily swap volume ≈ **$5,000/day** gross. The fee applies to
-swaps AND zaps; borrow/lock/vote/claim charge nothing (matching how competitors
-monetize — trades, not positions; comparable bots have no non-trade fee at all).
+swaps and zaps, plus a small 10 bps fee on borrow/vault-deposit/lock (approved
+by the Mezo team). Claims and votes are never charged (collecting your own
+rewards). Each fee is taken in the action's own token and charged only after the
+action confirms.
 
 ### Referral share (growth, funded from the fee)
 

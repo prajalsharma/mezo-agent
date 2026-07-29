@@ -2,6 +2,7 @@ import { encodeFunctionData, parseEther, parseUnits, type Address } from "viem";
 import { registry } from "../registry/registry.js";
 import { votingEscrowAbi } from "../abis/mezo.js";
 import { approveStep } from "./earn.js";
+import { txnFee } from "./fees.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
 import type { LockIntent, ExtendLockIntent } from "../llm/intent.js";
 
@@ -46,19 +47,26 @@ export function buildLock(intent: LockIntent): ActionPlan {
   // precompile (registry.erc20Of("BTC") == 0x7b7C…0000), which mirrors the
   // native balance — so no msg.value is attached and no wrapping step exists.
   const tokenAddr = intent.asset === "BTC" ? registry.erc20Of("BTC")! : registry.erc20Of("MEZO")!;
+  // Agent fee (Mezo-approved) on the locked amount, in the locked asset, AFTER
+  // the lock confirms.
+  const agentFee = txnFee(registry.token(intent.asset), value);
+  if (agentFee.summaryLine) summary.push(agentFee.summaryLine);
   const steps: ActionStep[] = [
     approveStep(tokenAddr, ve, value, intent.asset),
     {
       kind: "createLock", to: ve, value: 0n,
       data: encodeFunctionData({ abi: votingEscrowAbi, functionName: "createLock", args: [value, duration] }),
       describe: `Lock ${intent.amount} ${intent.asset} for ${intent.lockDays}d`,
+      waitForReceipt: agentFee.step !== undefined,
     },
+    ...(agentFee.step ? [agentFee.step] : []),
   ];
   return {
     action: "lock", title: `🔒 Lock ${intent.asset} (ve${intent.asset})`, summary, warnings: [],
-    steps, allowedTargets: steps.map((s) => s.to), executable: true,
-    // Step-up threshold is BTC-denominated; only a BTC lock counts toward it.
-    nativeValue: intent.asset === "BTC" ? value : 0n,
+    steps, allowedTargets: [...steps.filter((s) => s.kind !== "fee").map((s) => s.to), ...(agentFee.target ? [agentFee.target] : [])],
+    executable: true,
+    // Step-up threshold is BTC-denominated; only a BTC lock counts (fee included).
+    nativeValue: intent.asset === "BTC" ? value + (agentFee.step && intent.asset === "BTC" ? agentFee.amount : 0n) : 0n,
   };
 }
 

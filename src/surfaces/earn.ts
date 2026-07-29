@@ -5,6 +5,7 @@ import { gaugeAbi, voterAbi, rewardsDistributorAbi } from "../abis/mezo.js";
 import { ownedVeNftsDetailed, claimableRebase, votingRewardsForPool, earnedAcross } from "../core/veEnumeration.js";
 import { erc20Abi } from "../abis/erc20.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
+import { txnFee } from "./fees.js";
 import type { VaultDepositIntent, StakeLpIntent, UnstakeLpIntent, ClaimIntent } from "../llm/intent.js";
 
 /**
@@ -174,18 +175,24 @@ export function buildVaultDeposit(intent: VaultDepositIntent, owner: Address): A
           functionName: "deposit", args: [amount, owner],
         });
 
+  // Agent fee (Mezo-approved) on the deposit, taken in the deposit token AFTER
+  // the deposit confirms.
+  const agentFee = txnFee(token, amount);
+  if (agentFee.summaryLine) summary.push(agentFee.summaryLine);
   const steps: ActionStep[] = [
     approveStep(token.address, vault.address, amount, token.symbol),
     {
       kind: "vaultDeposit", to: vault.address, value: 0n,
       data: depositData,
       describe: `Deposit ${intent.amount} ${token.symbol} into ${vault.name}`,
+      waitForReceipt: agentFee.step !== undefined,
     },
+    ...(agentFee.step ? [agentFee.step] : []),
   ];
   return {
     action: "vaultDeposit", title: "🏛️ Vault deposit", summary,
     warnings: ["Vault yield is variable; withdrawals can be limited when utilization is high."],
-    steps, allowedTargets: [token.address, vault.address], executable: true, nativeValue: 0n,
+    steps, allowedTargets: [token.address, vault.address, ...(agentFee.target ? [agentFee.target] : [])], executable: true, nativeValue: 0n,
   };
 }
 

@@ -2,6 +2,7 @@ import { encodeFunctionData, parseEther, parseUnits, formatUnits, type Address }
 import { registry } from "../registry/registry.js";
 import { borrowerOperationsAbi } from "../abis/mezo.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
+import { txnFee, musdToken } from "./fees.js";
 import type { BorrowIntent, RepayIntent, AdjustIntent } from "../llm/intent.js";
 
 /**
@@ -59,6 +60,9 @@ export function buildBorrow(intent: BorrowIntent): ActionPlan {
   }
 
   const bo = registry.contract("BorrowerOperations");
+  // Agent fee (Mezo-approved) on the minted MUSD, charged AFTER the Trove opens.
+  const agentFee = txnFee(musdToken(), parseUnits(intent.mintMUSD, 18));
+  if (agentFee.summaryLine) summary.push(agentFee.summaryLine);
   // Hints are placeholders here; the executor refreshes them via HintHelpers just
   // before submit. Zero hints are valid fallbacks (linear scan from head).
   const step: ActionStep = {
@@ -71,10 +75,13 @@ export function buildBorrow(intent: BorrowIntent): ActionPlan {
     }),
     value: parseEther(intent.collateralBTC),
     describe: `Open Trove: ${intent.collateralBTC} BTC → ${intent.mintMUSD} MUSD`,
+    // Wait for the Trove to open (and MUSD to be minted) before charging the fee.
+    waitForReceipt: agentFee.step !== undefined,
   };
+  const steps = agentFee.step ? [step, agentFee.step] : [step];
   return {
     action: "borrow", title: "🏦 Borrow MUSD (open Trove)", summary, warnings,
-    steps: [step], allowedTargets: [bo], executable: true, nativeValue: step.value,
+    steps, allowedTargets: [bo, ...(agentFee.target ? [agentFee.target] : [])], executable: true, nativeValue: step.value,
   };
 }
 

@@ -95,6 +95,13 @@ export const env = {
    */
   fees: {
     swapBps: Math.min(Number(optional("AGENT_FEE_BPS", "0")) || 0, 100),
+    /**
+     * Fee (bps) on non-swap fund-moving actions — borrow (minted MUSD), vault
+     * deposit, and lock — approved by the Mezo team. Taken from the action's
+     * own token, disclosed on the confirmation. Hard-capped at 100 bps. Off (0)
+     * by default. Not applied to claims/votes (collecting your own rewards).
+     */
+    txnBps: Math.min(Number(optional("AGENT_TXN_FEE_BPS", "0")) || 0, 100),
     recipient: optional("AGENT_FEE_RECIPIENT"),
     /** Monthly price for automation (DCA / auto-compound), display-only. */
     automationNote: optional("AGENT_AUTOMATION_NOTE"),
@@ -103,9 +110,12 @@ export const env = {
   },
 } as const;
 
-/** True when a non-zero fee AND a recipient are configured. */
-export const feesEnabled =
-  env.fees.swapBps > 0 && /^0x[0-9a-fA-F]{40}$/.test(env.fees.recipient);
+/** A valid fee recipient is configured. */
+const validRecipient = /^0x[0-9a-fA-F]{40}$/.test(env.fees.recipient);
+/** True when a non-zero swap/zap fee AND a recipient are configured. */
+export const feesEnabled = env.fees.swapBps > 0 && validRecipient;
+/** True when a non-zero borrow/vault/lock fee AND a recipient are configured. */
+export const txnFeesEnabled = env.fees.txnBps > 0 && validRecipient;
 
 /** True when the bot is restricted to a fixed set of Telegram user IDs. */
 export const accessRestricted = env.allowedUserIds.size > 0;
