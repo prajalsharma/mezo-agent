@@ -68,7 +68,14 @@ export async function runPreflight(): Promise<CheckResult[]> {
       });
       const got = store.getUser(probeId);
       if (!got) throw new Error("wrote probe record but could not read it back");
-      return `writable at DATA_DIR=${env.dataDir}`;
+      // PERSISTENCE WARNING: a relative DATA_DIR (e.g. ./data) is almost always
+      // ephemeral in a container — every redeploy wipes user wallets. On
+      // Railway/Fly this MUST be an absolute path backed by a mounted volume.
+      const ephemeral = !env.dataDir.startsWith("/");
+      const note = ephemeral
+        ? ` ⚠️ EPHEMERAL PATH — attach a persistent volume and set DATA_DIR to it (e.g. /data), or user wallets are LOST on every redeploy.`
+        : "";
+      return `writable at DATA_DIR=${env.dataDir}${note}`;
     }),
   );
 

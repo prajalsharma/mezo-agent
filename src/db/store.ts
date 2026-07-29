@@ -205,6 +205,16 @@ class Store {
     this.flush();
   }
 
+  /**
+   * The referrer of a Telegram user, read from their PRIMARY account (account
+   * [0]) so referral crediting is consistent no matter which of their accounts
+   * is active when they trade (Audit R3 F7 — referral is per-user, not
+   * per-account).
+   */
+  referrerOf(telegramId: number): number | undefined {
+    return this.db.accounts[String(telegramId)]?.[0]?.referredBy;
+  }
+
   /** How many distinct users this telegramId has referred (deep-link). */
   countReferrals(telegramId: number): number {
     const seen = new Set<number>();

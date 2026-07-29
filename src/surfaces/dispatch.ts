@@ -33,8 +33,8 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
     case "matchbox": return buildMatchbox(intent);
     case "marketBrowse": return await buildMarketBrowse(intent.query);
     case "marketBuy": return buildMarketBuy(intent);
-    case "veTransfer": return buildVeTransfer(intent, owner);
-    case "veMerge": return buildVeMerge(intent);
+    case "veTransfer": return await buildVeTransfer(intent, owner);
+    case "veMerge": return await buildVeMerge(intent, owner);
     default: return undefined;
   }
 }

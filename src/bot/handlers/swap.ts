@@ -16,11 +16,6 @@ import { b, i, link, esc } from "../format.js";
 
 const DEFAULT_SLIPPAGE_PCT = 0.5;
 
-/** Total native BTC value a plan moves (0 for token↔token swaps). */
-function planNativeValue(plan: SwapPlan): bigint {
-  return plan.steps.reduce((sum, s) => sum + s.value, 0n);
-}
-
 export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
@@ -44,7 +39,8 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
   try {
     // Referral split-at-source: if this trader was referred and a fee is
     // charged, the referrer's share is paid straight to their wallet on-chain.
-    const referrerRec = user.referredBy !== undefined ? getUser(user.referredBy) : undefined;
+    const referrerId = store.referrerOf(telegramId);
+    const referrerRec = referrerId !== undefined ? getUser(referrerId) : undefined;
     const referral = referrerRec
       ? { recipient: referrerRec.address, sharePct: env.fees.referralSharePct }
       : undefined;
@@ -98,7 +94,7 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
   // Confirmation step-up: above the per-user native threshold, require a second,
   // explicit high-value confirmation before signing.
   const threshold = BigInt(limitsOf(user.limits).confirmationThresholdNativeWei);
-  const nativeValue = planNativeValue(plan);
+  const nativeValue = plan.nativeValue;
   const requiresStepUp = nativeValue > threshold;
 
   setPending(telegramId, { kind: "swap", plan, stepUpPending: requiresStepUp });
@@ -161,8 +157,9 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
   // Record the referral reward (paid on-chain in the same tx set) for the
   // referrer's /referral history. Ledger only — settlement already happened.
   const rp = pendingState.plan.referralPaid;
-  if (rp && rp.amount > 0n && user.referredBy !== undefined) {
-    store.recordReferralEarning(user.referredBy, rp.symbol, rp.amount);
+  const referrerId = store.referrerOf(telegramId);
+  if (rp && rp.amount > 0n && referrerId !== undefined) {
+    store.recordReferralEarning(referrerId, rp.symbol, rp.amount);
   }
 
   const hash = result.finalHash!;

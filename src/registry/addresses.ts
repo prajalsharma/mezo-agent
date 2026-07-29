@@ -218,9 +218,8 @@ const MAINNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDC"], address: "0xEd812AEc0Fecc8fD882Ac3eccC43f3aA80A6c356", stable: true },
     { pair: ["MUSD", "mUSDT"], address: "0x10906a9E9215939561597b4C8e4b98F93c02031A", stable: true },
   ],
-  // VotingEscrowMEZO, Matchbox, Market: genuinely unpublished. veMEZO has no
-  // documented contract; Matchbox is a community project (matchbox.markets);
-  // Mezo Market has no published contract address.
+  // All Mezo contracts are now wired + on-chain verified. Only Delegate7702
+  // stays operator-provided (deploy contracts/ then set DELEGATE7702_ADDRESS).
   needsConfirmation: ["Delegate7702"],
   // From docs (vault-notices.md / usdc-lending-vault.md), shapes verified
   // on-chain: sMUSD answers deposit(uint256)+withdraw(uint256) only (savings),

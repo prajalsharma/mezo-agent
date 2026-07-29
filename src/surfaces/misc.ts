@@ -20,22 +20,23 @@ import type { MarketBuyIntent, MatchboxIntent, VeTransferIntent, VeMergeIntent }
  */
 export async function buildMarketBrowse(query?: string): Promise<ActionPlan> {
   const pools = registry.pools();
-  const lines: string[] = ["Mezo Market — live tradeable pairs (swap any of these):"];
   const c = publicClient();
-  for (const p of pools) {
+  // Quote every pool CONCURRENTLY — a sequential await-per-pool loop would block
+  // grammY's single-threaded dispatcher for the whole browse (Audit R3 F4).
+  const quoted = await Promise.all(pools.map(async (p) => {
     const [a, b] = p.pair;
     const tokA = registry.tryToken(a), tokB = registry.tryToken(b);
-    if (!tokA || !tokB) continue;
+    if (!tokA || !tokB) return undefined;
     let priceLine = `${a}/${b} (${p.stable ? "stable" : "volatile"})`;
     try {
-      const oneA = 10n ** BigInt(tokA.decimals);
       const out = (await c.readContract({
-        address: p.address, abi: poolAbi, functionName: "getAmountOut", args: [oneA, registry.routingAddress(tokA)],
+        address: p.address, abi: poolAbi, functionName: "getAmountOut", args: [10n ** BigInt(tokA.decimals), registry.routingAddress(tokA)],
       })) as bigint;
       priceLine += ` — 1 ${a} ≈ ${Number(formatUnits(out, tokB.decimals)).toFixed(4)} ${b}`;
     } catch { /* pool read best-effort */ }
-    lines.push(`• ${priceLine}`);
-  }
+    return `• ${priceLine}`;
+  }));
+  const lines: string[] = ["Mezo Market — live tradeable pairs (swap any of these):", ...quoted.filter((x): x is string => !!x)];
   lines.push("", `To buy: just say e.g. "swap 100 MUSD to mUSDC".`);
   if (query) lines.unshift(`(filter "${query}" — showing all pairs)`);
   // Browsing is read-only; return a non-signable plan carrying the listing.
@@ -121,38 +122,56 @@ export function buildMatchbox(intent: MatchboxIntent): ActionPlan {
   };
 }
 
-export function buildVeTransfer(intent: VeTransferIntent, owner: `0x${string}`): ActionPlan {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(intent.to)) throw new ActionUnavailableError("Recipient must be a valid 0x address.");
-  const summary = [`Transfer veNFT #${intent.tokenId} to ${intent.to}.`, "The lock and its voting power move to the recipient."];
-
-  // veBTC and veMEZO share the VotingEscrow interface; we don't know which
-  // collection this id belongs to without the addresses, so gate on both.
-  if (!registry.hasContract("VotingEscrowBTC") && !registry.hasContract("VotingEscrowMEZO")) {
-    return gatedPlan({ action: "veTransfer", title: "📤 Transfer veNFT", summary,
-      reason: "Preview only — the VotingEscrow address isn't confirmed on this deployment yet." });
+/**
+ * Resolve WHICH escrow (veBTC or veMEZO) actually owns `tokenId`, by reading
+ * ownerOf on each. Both collections number ids from 1 independently, so picking
+ * "veBTC if present" would operate on the same-numbered veBTC lock for a veMEZO
+ * id — a wrong-escrow bug once both are wired (Audit R3 HIGH). Returns the
+ * escrow the caller owns the id on, or throws if neither.
+ */
+async function escrowOwning(owner: `0x${string}`, tokenId: bigint): Promise<{ ve: Address; asset: "BTC" | "MEZO" }> {
+  const c = publicClient();
+  const candidates: [Address, "BTC" | "MEZO"][] = [];
+  if (registry.hasContract("VotingEscrowBTC")) candidates.push([registry.contract("VotingEscrowBTC"), "BTC"]);
+  if (registry.hasContract("VotingEscrowMEZO")) candidates.push([registry.contract("VotingEscrowMEZO"), "MEZO"]);
+  if (candidates.length === 0) throw new ActionUnavailableError("Preview only — no VotingEscrow address is confirmed on this deployment yet.");
+  for (const [ve, asset] of candidates) {
+    try {
+      const nftOwner = (await c.readContract({ address: ve, abi: votingEscrowAbi, functionName: "ownerOf", args: [tokenId] })) as Address;
+      if (nftOwner.toLowerCase() === owner.toLowerCase()) return { ve, asset };
+    } catch { /* ownerOf reverts for a non-existent id — try the other collection */ }
   }
-  const ve = registry.hasContract("VotingEscrowBTC") ? registry.contract("VotingEscrowBTC") : registry.contract("VotingEscrowMEZO");
+  throw new ActionUnavailableError(
+    `Your account doesn't own veNFT #${tokenId} in either veBTC or veMEZO. Check the id (each collection numbers from 1).`,
+  );
+}
+
+export async function buildVeTransfer(intent: VeTransferIntent, owner: `0x${string}`): Promise<ActionPlan> {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(intent.to)) throw new ActionUnavailableError("Recipient must be a valid 0x address.");
+  const { ve, asset } = await escrowOwning(owner, BigInt(intent.tokenId));
+  const summary = [`Transfer ve${asset} #${intent.tokenId} to ${intent.to}.`, "The lock and its voting power move to the recipient."];
   const step: ActionStep = {
     kind: "transfer", to: ve, value: 0n,
     data: encodeFunctionData({ abi: votingEscrowAbi, functionName: "transferFrom", args: [owner, intent.to as `0x${string}`, BigInt(intent.tokenId)] }),
-    describe: `Transfer veNFT #${intent.tokenId} → ${intent.to}`,
+    describe: `Transfer ve${asset} #${intent.tokenId} → ${intent.to}`,
   };
   return { action: "veTransfer", title: "📤 Transfer veNFT", summary, warnings: [], steps: [step], allowedTargets: [ve], executable: true, nativeValue: 0n };
 }
 
-export function buildVeMerge(intent: VeMergeIntent): ActionPlan {
+export async function buildVeMerge(intent: VeMergeIntent, owner: `0x${string}`): Promise<ActionPlan> {
   if (intent.fromTokenId === intent.toTokenId) throw new ActionUnavailableError("Pick two different veNFT ids to merge.");
-  const summary = [`Merge veNFT #${intent.fromTokenId} into #${intent.toTokenId}.`,
-    "The two locks combine; the longer unlock time applies to the merged position."];
-  if (!registry.hasContract("VotingEscrowBTC") && !registry.hasContract("VotingEscrowMEZO")) {
-    return gatedPlan({ action: "veMerge", title: "🔗 Merge veNFTs", summary,
-      reason: "Preview only — the VotingEscrow address isn't confirmed on this deployment yet." });
+  // Both ids must live in the SAME escrow, and the caller must own both.
+  const from = await escrowOwning(owner, BigInt(intent.fromTokenId));
+  const to = await escrowOwning(owner, BigInt(intent.toTokenId));
+  if (from.ve.toLowerCase() !== to.ve.toLowerCase()) {
+    throw new ActionUnavailableError(`Can't merge across collections — #${intent.fromTokenId} is ve${from.asset} but #${intent.toTokenId} is ve${to.asset}.`);
   }
-  const ve = registry.hasContract("VotingEscrowBTC") ? registry.contract("VotingEscrowBTC") : registry.contract("VotingEscrowMEZO");
+  const summary = [`Merge ve${from.asset} #${intent.fromTokenId} into #${intent.toTokenId}.`,
+    "The two locks combine; the longer unlock time applies to the merged position."];
   const step: ActionStep = {
-    kind: "merge", to: ve, value: 0n,
+    kind: "merge", to: from.ve, value: 0n,
     data: encodeFunctionData({ abi: votingEscrowAbi, functionName: "merge", args: [BigInt(intent.fromTokenId), BigInt(intent.toTokenId)] }),
-    describe: `Merge #${intent.fromTokenId} → #${intent.toTokenId}`,
+    describe: `Merge ve${from.asset} #${intent.fromTokenId} → #${intent.toTokenId}`,
   };
-  return { action: "veMerge", title: "🔗 Merge veNFTs", summary, warnings: [], steps: [step], allowedTargets: [ve], executable: true, nativeValue: 0n };
+  return { action: "veMerge", title: "🔗 Merge veNFTs", summary, warnings: [], steps: [step], allowedTargets: [from.ve], executable: true, nativeValue: 0n };
 }

@@ -98,13 +98,21 @@ export async function executeSwap(
     });
     await onProgress?.(`Submitted ${step.kind}: ${hash}`);
 
-    // 3. Wait for steps the swap depends on (fee reduces the balance, approval
-    //    grants the allowance) before continuing.
-    if (step.kind === "approval" || step.kind === "fee") {
-      const receipt = await publicClient().waitForTransactionReceipt({ hash });
+    // 3. Wait for the receipt when a later step depends on this one: the
+    //    approval grants the allowance the swap needs, and the swap must CONFIRM
+    //    before the fee is charged (Audit R3 F1 — no fee on a failed swap). A
+    //    bounded timeout keeps the single-threaded bot responsive (Audit R2 H2).
+    if (step.kind === "approval" || step.kind === "fee" || step.waitForReceipt) {
+      let receipt;
+      try {
+        receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });
+      } catch {
+        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} not confirmed within 90s (tx ${hash}); stopping.` });
+        return { outcomes, aborted: true };
+      }
       store.updateTxByHash(hash, receipt.status === "success" ? "confirmed" : "failed");
       if (receipt.status !== "success") {
-        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} transaction failed` });
+        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} transaction reverted on-chain` });
         return { outcomes, aborted: true };
       }
     } else {

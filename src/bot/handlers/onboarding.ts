@@ -44,15 +44,37 @@ export async function handleStart(ctx: Context): Promise<void> {
   );
 }
 
-/** In-memory pending referral (referrer id) until the wallet is actually created. */
-const pendingReferrals = new Map<number, number>();
+/**
+ * In-memory pending referral (referrer id) until the wallet is created. Entries
+ * carry an expiry so an abandoned onboarding can't leak the map indefinitely
+ * (the bot is publicly reachable unless allowlisted) — Audit R3 F3.
+ */
+const REFERRAL_TTL_MS = 24 * 60 * 60 * 1000;
+const pendingReferrals = new Map<number, { referrer: number; expiresAt: number }>();
 function rememberPendingReferral(newUser: number, referrer: number): void {
-  pendingReferrals.set(newUser, referrer);
+  pendingReferrals.set(newUser, { referrer, expiresAt: Date.now() + REFERRAL_TTL_MS });
+  // Opportunistic sweep of expired entries (bounded, cheap).
+  if (pendingReferrals.size > 1000) {
+    const now = Date.now();
+    for (const [k, v] of pendingReferrals) if (v.expiresAt < now) pendingReferrals.delete(k);
+  }
 }
 export function consumePendingReferral(newUser: number): number | undefined {
-  const r = pendingReferrals.get(newUser);
+  const e = pendingReferrals.get(newUser);
   pendingReferrals.delete(newUser);
-  return r;
+  return e && e.expiresAt >= Date.now() ? e.referrer : undefined;
+}
+
+/** Attribute a pending referral onto a just-created/imported account. */
+export function attributeReferral(telegramId: number): void {
+  const referrer = consumePendingReferral(telegramId);
+  if (referrer === undefined) return;
+  const rec = getUser(telegramId);
+  // Only credit a referrer that actually exists, and never overwrite one.
+  if (rec && rec.referredBy === undefined && getUser(referrer)) {
+    rec.referredBy = referrer;
+    store.saveUser(rec);
+  }
 }
 
 export async function handleCreate(ctx: Context): Promise<void> {
@@ -71,20 +93,21 @@ export async function handleCreate(ctx: Context): Promise<void> {
   const user = await createWallet(telegramId);
 
   // Attribute a pending deep-link referral now that the account exists.
-  const referrer = consumePendingReferral(telegramId);
-  if (referrer !== undefined) {
-    const rec = getUser(telegramId);
-    if (rec && rec.referredBy === undefined) { rec.referredBy = referrer; store.saveUser(rec); }
-  }
+  attributeReferral(telegramId);
 
+  const kb = new InlineKeyboard()
+    .text("🔐 Back up my key now", "wallet:export-confirm")
+    .row()
+    .text("📥 Deposit", "menu:deposit").text("📊 Portfolio", "menu:portfolio");
   await ctx.reply(
     `✅ ${b("Wallet created.")}\n\n` +
       `Your address:\n${code(user.address)}\n\n` +
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}\n\n` +
-      `Fund it with /deposit, then check /portfolio.\n\n` +
-      `🔒 Your key is encrypted at rest and never logged or shared with any AI model.\n` +
-      `You stay in control: /export reveals your private key any time (for MetaMask etc.), behind an explicit warning.`,
-    { parse_mode: "HTML", reply_markup: mainMenu(), link_preview_options: { is_disabled: true } },
+      `⚠️ ${b("Back up your key now")} — tap below or run /export and save it somewhere safe. ` +
+      `Your key lives only on this bot's server; backing it up is the ONLY way to recover this wallet if anything happens to the host.\n\n` +
+      `🔒 It's encrypted at rest and never logged or sent to any AI model.\n\n` +
+      `Then fund it with /deposit.`,
+    { parse_mode: "HTML", reply_markup: kb, link_preview_options: { is_disabled: true } },
   );
 }
 
@@ -173,12 +196,25 @@ export async function handleExportCancel(ctx: Context): Promise<void> {
  */
 export function looksLikeSecret(text: string): boolean {
   const t = text.trim();
-  // Private key: 64 hex chars, optional 0x.
-  if (/^(0x)?[0-9a-fA-F]{64}$/.test(t)) return true;
-  // Seed phrase: 12/15/18/21/24 lowercase alphabetic words.
-  const words = t.split(/\s+/);
-  if ([12, 15, 18, 21, 24].includes(words.length) && words.every((w) => /^[a-z]{3,8}$/.test(w))) {
-    return true;
+
+  // Raw private key: a 64-hex run ANYWHERE (not just as the whole message), so
+  // "import my key 0x<64hex>" is caught too. This bot never legitimately takes a
+  // pasted 64-hex value, so over-matching (e.g. a tx hash) is a safe refusal.
+  if (/\b(?:0x)?[0-9a-fA-F]{64}\b/.test(t)) return true;
+
+  // Seed phrase: normalize first (lowercase, drop list-numbers like "1." / "2)"
+  // and punctuation), then flag any run of ≥12 consecutive alphabetic 3–8-char
+  // tokens. This catches capitalized ("Abandon abandon …"), numbered, and
+  // sentence-embedded phrases the old all-lowercase whole-message test missed.
+  // (Audit R3 — hardening the R2/C3 no-secret-to-LLM guarantee.)
+  const norm = t.toLowerCase().replace(/\d+\s*[.):-]/g, " ").replace(/[^a-z\s]/g, " ");
+  let run = 0;
+  for (const w of norm.split(/\s+/)) {
+    if (/^[a-z]{3,8}$/.test(w)) {
+      if (++run >= 12) return true;
+    } else {
+      run = 0;
+    }
   }
   return false;
 }
@@ -199,6 +235,7 @@ export async function maybeHandleImportKey(ctx: Context): Promise<boolean> {
   try {
     const user = await importWallet(telegramId, text.trim());
     clearPending(telegramId);
+    attributeReferral(telegramId); // referral works via import too, not just Create
     await ctx.reply(
       `✅ ${b("Account imported")} (your key message was deleted).\n\n` +
         `${code(user.address)}\n\nUse /portfolio or /deposit.`,

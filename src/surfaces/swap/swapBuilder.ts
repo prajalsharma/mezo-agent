@@ -62,6 +62,8 @@ export type SwapPlan = {
   fee?: SwapFee;
   /** Referral reward split from the fee to the referrer (instant, on-chain). */
   referralPaid?: { recipient: Address; symbol: string; amount: bigint };
+  /** BTC value the swap moves (gross), for the handler's high-value step-up. */
+  nativeValue: bigint;
   /** Amount actually routed to the DEX after the fee. */
   amountInNet: bigint;
   expectedOut: bigint;
@@ -152,6 +154,11 @@ export async function buildSwap(params: {
     amountInNet,
     fee,
     referralPaid,
+    // BTC value the whole swap moves, for the handler's high-value step-up.
+    // Native BTC travels via the precompile with step.value == 0, so summing
+    // step.value under-counts to ~0 — carry the true gross amount here so the
+    // step-up fires for large BTC swaps (Audit R3 MEDIUM). Token swaps move 0 BTC.
+    nativeValue: tokenIn.native ? amountIn : 0n,
     expectedOut,
     expectedOutFormatted: formatUnits(expectedOut, tokenOut.decimals),
     minOut,
@@ -185,11 +192,51 @@ export async function buildSwap(params: {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
   const steps: PlanStep[] = [];
 
-  // Agent fee: an explicit, visible transfer of the input token, its own step so
-  // it appears on the confirmation and in history. When the trader was referred,
-  // the fee SPLITS AT SOURCE — the referrer's share goes straight to their
-  // wallet on-chain (instant, trustless, no operator-held payout key), the rest
-  // to the operator. Both transfers are shown before signing.
+  // Step order matters (Audit R3 F1): approval → swap → fee. The fee is charged
+  // ONLY AFTER the swap succeeds, so a swap that reverts/aborts never costs the
+  // trader a non-refundable fee, and a retry doesn't double-charge. The swap
+  // step waits for its receipt when a fee follows, so the fee steps run only on
+  // a confirmed swap.
+
+  // 1. Approval on the ROUTING address. Native BTC approves through its ERC-20
+  // precompile (0x7b7C…0000), which mirrors the native balance.
+  const inRouting = route.from;
+  const allowance = (await publicClient().readContract({
+    address: inRouting,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [owner, router],
+  })) as bigint;
+  if (allowance < amountInNet) {
+    steps.push({
+      kind: "approval",
+      to: inRouting,
+      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, amountInNet] }),
+      value: 0n,
+      describe: `Approve ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} for the DEX router`,
+      waitForReceipt: true,
+    });
+  }
+
+  // 2. The swap. Spend cap enforced here (the approval may be skipped when an
+  // allowance already exists): the swap step carries the erc20 descriptor so the
+  // signer prices it — BTC via btcWeiMoved, tokens via the per-token cap.
+  steps.push({
+    kind: "swap", to: router, value: 0n,
+    data: encodeFunctionData({
+      abi: routerAbi,
+      functionName: "swapExactTokensForTokens",
+      args: [amountInNet, minOut, [route], owner, deadline],
+    }),
+    describe: `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol}`,
+    erc20: { symbol: tokenIn.symbol, amount: amountInNet },
+    // Wait for the swap to confirm before charging the fee, so a failed swap
+    // never charges a fee. Only needed when a fee actually follows.
+    waitForReceipt: fee !== undefined,
+  });
+
+  // 3. Agent fee — AFTER the swap. Splits at source: referrer share → referrer
+  // wallet, remainder → operator, both shown before signing.
   if (fee) {
     const referrerCut = referral ? (fee.amount * BigInt(Math.round(referral.sharePct))) / 100n : 0n;
     const operatorCut = fee.amount - referrerCut;
@@ -211,45 +258,6 @@ export async function buildSwap(params: {
     }
     pushFee(fee.recipient, operatorCut, `Agent fee ${formatUnits(operatorCut, tokenIn.decimals)} ${unit} (${fee.bps / 100}%)`);
   }
-
-  // Approval on the ROUTING address. Native BTC approves through its ERC-20
-  // precompile (0x7b7C…0000), which mirrors the native balance — Mezo's design
-  // means there is no wrapping step and no msg.value swap path; the on-chain
-  // veBTC escrow confirmed this pattern (SafeERC20.transferFrom on the
-  // precompile), and the Router exposes no weth()/native entrypoint metadata.
-  const inRouting = route.from;
-  const allowance = (await publicClient().readContract({
-    address: inRouting,
-    abi: erc20Abi,
-    functionName: "allowance",
-    args: [owner, router],
-  })) as bigint;
-  if (allowance < amountInNet) {
-    steps.push({
-      kind: "approval",
-      to: inRouting,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, amountInNet] }),
-      value: 0n,
-      describe: `Approve ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} for the DEX router`,
-      waitForReceipt: true,
-    });
-  }
-
-  // One swap direction for everything: token↔token over routing addresses. The
-  // spend cap is enforced HERE (not on the approval, which may be skipped when
-  // an allowance already exists): the swap step carries the erc20 descriptor so
-  // the signer prices it — BTC via btcWeiMoved's symbol check, tokens via the
-  // per-token cap. (Audit R2 C1/H8.)
-  steps.push({
-    kind: "swap", to: router, value: 0n,
-    data: encodeFunctionData({
-      abi: routerAbi,
-      functionName: "swapExactTokensForTokens",
-      args: [amountInNet, minOut, [route], owner, deadline],
-    }),
-    describe: `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol}`,
-    erc20: { symbol: tokenIn.symbol, amount: amountInNet },
-  });
 
   return { ...base, steps, executable: true, router };
 }

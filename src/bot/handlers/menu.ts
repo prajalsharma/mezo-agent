@@ -2,6 +2,7 @@ import type { Context } from "grammy";
 import { env, feesEnabled } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { store } from "../../db/store.js";
+import { registry } from "../../registry/registry.js";
 import { homeCard, GUIDES, mainMenu } from "../menu.js";
 import { b, i, code } from "../format.js";
 import { handlePortfolio, handleDeposit } from "./portfolio.js";
@@ -39,9 +40,10 @@ export async function handleReferral(ctx: Context): Promise<void> {
   );
 }
 
-const DECIMALS: Record<string, number> = { BTC: 18, MUSD: 18, mUSDC: 6, mUSDT: 6, MEZO: 18 };
 function fmtToken(sym: string, raw: string): string {
-  const d = DECIMALS[sym] ?? 18;
+  // Decimals from the registry (BTC=18, mUSDC/mUSDT=6, bridged BTC variants=8…),
+  // not a hardcoded 18 (Audit R3 F8).
+  const d = registry.tryToken(sym)?.decimals ?? 18;
   const v = Number(BigInt(raw)) / 10 ** d;
   return v < 0.0001 ? v.toExponential(2) : v.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }

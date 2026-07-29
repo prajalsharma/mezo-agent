@@ -27,8 +27,8 @@ import { clearPending } from "./session.js";
 import { store } from "../db/store.js";
 import { runPreflight, formatPreflightText } from "../core/preflight.js";
 import { getUser } from "../wallet/walletService.js";
-import { installBotProfile } from "./menu.js";
-import { handleMenuCallback, handleReferral, setBotUsername } from "./handlers/menu.js";
+import { installBotProfile, homeCard } from "./menu.js";
+import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
 
 export function buildBot(): Bot {
   const bot = new Bot(env.telegramBotToken);
@@ -191,6 +191,28 @@ export function buildBot(): Bot {
 
     if (text.startsWith("/")) return; // unknown command; ignore
 
+    // Plain-language shortcuts for common meta phrases the parser has no intent
+    // for (faucet, help, menu, deposit) — so "access the faucet" or "menu" just
+    // work instead of returning a token-list clarify. (UX fix.)
+    const lower = text.toLowerCase();
+    const uid = ctx.from?.id;
+    const hasAccount = uid ? Boolean(getUser(uid)) : false;
+    if (/\bfaucet\b/.test(lower)) {
+      await ctx.reply(
+        "🚰 Testnet faucet: https://faucet.test.mezo.org/\nPaste your deposit address there to get test BTC. Use /deposit to see your address.",
+        { link_preview_options: { is_disabled: true } },
+      );
+      return;
+    }
+    if (/^\s*(help|commands?|what can you do\??)\s*$/.test(lower)) { await ctx.reply(helpText(), { parse_mode: "HTML" }); return; }
+    if (/^\s*(menu|home|main menu|start over)\s*$/.test(lower)) {
+      const home = uid ? await homeCard(uid) : undefined;
+      if (home) await ctx.reply(home.text, { parse_mode: "HTML", reply_markup: home.menu, link_preview_options: { is_disabled: true } });
+      else await ctx.reply("Send /start to create or import a wallet.");
+      return;
+    }
+    if (/^\s*(deposit|fund|my address)\s*$/.test(lower)) { await handleDeposit(ctx); return; }
+
     const intent = await parseIntent(text, registry.knownTokenSymbols());
     switch (intent.action) {
       case "swap": return void (await handleSwapIntent(ctx, intent));
@@ -199,7 +221,18 @@ export function buildBot(): Bot {
       case "dcaCreate": return void (await handleDcaCreate(ctx, intent));
       case "dcaCancel": return void (await handleDcaCancel(ctx, intent));
       case "autoCompound": return void (await handleAutoCompound(ctx, intent));
-      case "clarify": return void (await ctx.reply(intent.question));
+      case "clarify": {
+        // Account-aware: guide a new user to /start; show a returning user their
+        // menu instead of a bare token list. (UX fix — the bot "remembers" you.)
+        if (!hasAccount) {
+          await ctx.reply(`${intent.question}\n\nNew here? Send /start to create or import a wallet.`);
+        } else {
+          const home = uid ? await homeCard(uid) : undefined;
+          await ctx.reply(intent.question);
+          if (home) await ctx.reply("Or tap an action:", { reply_markup: home.menu });
+        }
+        return;
+      }
       default: {
         // Every fund-moving surface goes through the generic action handler.
         const handled = await handleActionIntent(ctx, intent);
