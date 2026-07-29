@@ -3,11 +3,11 @@ import { env } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { buildActionPlan, ActionUnavailableError } from "../../surfaces/dispatch.js";
 import { executeActionPlan, type ActionPlan } from "../../surfaces/plan.js";
-import { explorerTxUrl } from "../../chain/networks.js";
 import { limitsOf, fmtBtc } from "../../custody/policy.js";
 import { setPending, getPending, clearPending } from "../session.js";
 import type { Intent } from "../../llm/intent.js";
 import { b, i, esc } from "../format.js";
+import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
 
 /**
  * Generic handler for every fund-moving surface (borrow, lock, vote, zap, …).
@@ -62,6 +62,15 @@ export async function handleActionIntent(ctx: Context, intent: Intent): Promise<
     return true;
   }
 
+  // Balance pre-check BEFORE offering Confirm — catches insufficient funds up
+  // front, so the user never signs an approval that spends gas only to hit an
+  // abort on the spend step.
+  const shortfall = await preflightBalances(user.address, plan);
+  if (shortfall) {
+    await ctx.reply(`⚠️ ${esc(shortfall)}`, { parse_mode: "HTML" });
+    return true;
+  }
+
   const threshold = BigInt(limitsOf(user.limits).confirmationThresholdNativeWei);
   const requiresStepUp = plan.nativeValue > threshold;
   setPending(telegramId, { kind: "action", plan, stepUpPending: requiresStepUp });
@@ -103,14 +112,33 @@ export async function handleActionConfirm(ctx: Context): Promise<void> {
   await ctx.reply("⏳ Executing…");
 
   const result = await executeActionPlan(user, pending.plan, async (msg) => { await ctx.reply(msg); });
+
   if (result.aborted) {
     const failed = result.outcomes.find((o) => !o.ok);
-    await ctx.reply(`❌ Aborted: ${failed && !failed.ok ? esc(failed.reason) : "unknown error"}`, { parse_mode: "HTML" });
+    // If the real action landed and only the trailing agent fee failed, the user
+    // DID get what they asked for — report success with a note, not "Aborted".
+    if (failed && !failed.ok && failed.kind === "fee" && actionLanded(result.outcomes)) {
+      const hash = actionHashOf(result.outcomes)!;
+      await ctx.reply(
+        renderSuccess({
+          title: pending.plan.title,
+          lines: pending.plan.summary,
+          hash,
+          network: env.network,
+          note: "The agent fee couldn't be applied, but your action went through.",
+        }),
+        { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+      );
+      return;
+    }
+    const reason = failed && !failed.ok ? friendlyReason(failed.reason) : "unknown error";
+    await ctx.reply(`❌ Couldn't complete that: ${esc(reason)}`, { parse_mode: "HTML" });
     return;
   }
-  const hash = result.finalHash!;
+
+  const hash = actionHashOf(result.outcomes) ?? result.finalHash!;
   await ctx.reply(
-    `✅ ${b("Done.")}\n<a href="${esc(explorerTxUrl(env.network, hash))}">View on explorer</a>`,
+    renderSuccess({ title: pending.plan.title, lines: pending.plan.summary, hash, network: env.network }),
     { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }

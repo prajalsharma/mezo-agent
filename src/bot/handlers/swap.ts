@@ -7,12 +7,12 @@ import { registry } from "../../registry/registry.js";
 import { buildSwap, SwapUnavailableError, type SwapPlan } from "../../surfaces/swap/swapBuilder.js";
 import { executeSwap } from "../../surfaces/swap/swapService.js";
 import { simulateCall } from "../../core/simulator.js";
-import { explorerTxUrl } from "../../chain/networks.js";
 import { setPending, getPending, clearPending } from "../session.js";
 import { limitsOf, fmtBtc } from "../../custody/policy.js";
 import type { SwapIntent } from "../../llm/intent.js";
 import { prettyAmount } from "../../portfolio/portfolioService.js";
-import { b, i, link, esc } from "../format.js";
+import { b, i, esc } from "../format.js";
+import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
 
 const DEFAULT_SLIPPAGE_PCT = 0.5;
 
@@ -81,6 +81,15 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
     return;
   }
 
+  // Balance pre-check BEFORE offering Confirm — for an ERC-20 input the leading
+  // step is an approval that would simulate fine even with no balance, masking a
+  // doomed swap. This reads the actual input-token balance up front.
+  const shortfall = await preflightBalances(user.address, plan);
+  if (shortfall) {
+    await ctx.reply(`⚠️ ${esc(shortfall)}`, { parse_mode: "HTML" });
+    return;
+  }
+
   // Executable path: simulate the leading step so the preview is real.
   const firstStep = plan.steps[0]!;
   const sim = await simulateCall({
@@ -89,7 +98,14 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
     data: firstStep.data,
     value: firstStep.value,
   });
-  const simLine = sim.ok ? "✅ Simulated OK" : `⚠️ Simulation warning: ${sim.reason}`;
+  // A failed simulation means the tx would revert — don't offer Confirm on a
+  // doomed swap; show the friendly reason instead. (Only the leading step is
+  // simulatable pre-signing; the balance pre-check above covers the rest.)
+  if (!sim.ok) {
+    await ctx.reply(`⚠️ This swap can't go through: ${esc(friendlyReason(sim.reason))}`, { parse_mode: "HTML" });
+    return;
+  }
+  const simLine = "✅ Simulated OK";
 
   // Confirmation step-up: above the per-user native threshold, require a second,
   // explicit high-value confirmation before signing.
@@ -148,23 +164,46 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
     await ctx.reply(msg);
   });
 
+  const plan = pendingState.plan;
+  const successLines = [
+    `Sold ${prettyAmount(formatUnits(plan.amountInNet, plan.tokenIn.decimals))} ${plan.tokenIn.symbol}`,
+    `Received ~${prettyAmount(plan.expectedOutFormatted)} ${plan.tokenOut.symbol} (estimated)`,
+  ];
+
   if (result.aborted) {
     const failed = result.outcomes.find((o) => !o.ok);
-    await ctx.reply(`❌ Swap aborted: ${failed && !failed.ok ? failed.reason : "unknown error"}`);
+    // Swap confirmed on-chain but only the trailing fee step failed → the user
+    // got their swap; report success with a note rather than "aborted".
+    if (failed && !failed.ok && failed.kind === "fee" && actionLanded(result.outcomes)) {
+      const hash = actionHashOf(result.outcomes)!;
+      await ctx.reply(
+        renderSuccess({
+          title: "Swap complete",
+          lines: successLines,
+          hash,
+          network: env.network,
+          note: "The agent fee couldn't be applied, but your swap went through.",
+        }),
+        { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+      );
+      return;
+    }
+    const reason = failed && !failed.ok ? friendlyReason(failed.reason) : "unknown error";
+    await ctx.reply(`❌ Swap didn't go through: ${esc(reason)}`, { parse_mode: "HTML" });
     return;
   }
 
   // Record the referral reward (paid on-chain in the same tx set) for the
   // referrer's /referral history. Ledger only — settlement already happened.
-  const rp = pendingState.plan.referralPaid;
+  const rp = plan.referralPaid;
   const referrerId = store.referrerOf(telegramId);
   if (rp && rp.amount > 0n && referrerId !== undefined) {
     store.recordReferralEarning(referrerId, rp.symbol, rp.amount);
   }
 
-  const hash = result.finalHash!;
+  const hash = actionHashOf(result.outcomes) ?? result.finalHash!;
   await ctx.reply(
-    `✅ ${b("Swap submitted.")}\n${link("View on explorer", explorerTxUrl(env.network, hash))}`,
+    renderSuccess({ title: "Swap complete", lines: successLines, hash, network: env.network }),
     { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }
