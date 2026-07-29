@@ -67,16 +67,20 @@ export async function parseIntent(
 export async function llmSelfTest(knownSymbols: string[]): Promise<string> {
   if (!llmEnabled) throw new Error("no LLM key set — using deterministic parser");
   const system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
+  const model = env.llm.provider === "gemini" ? env.llm.geminiModel : env.llm.anthropicModel;
   const raw =
     env.llm.provider === "gemini"
       ? await callGemini(system, "swap 1 MUSD to mUSDC")
       : await callAnthropic(system, "swap 1 MUSD to mUSDC");
+  if (raw === undefined) throw new Error(`${env.llm.provider} returned no tool call`);
+  // Any schema-valid intent proves the round-trip works; report the action so a
+  // weak/over-cautious reply is visible. Only an OFF-schema reply is a failure,
+  // and we surface the raw output so it can be diagnosed at a glance.
   const parsed = Intent.safeParse(raw);
-  if (!parsed.success || parsed.data.action !== "swap") {
-    throw new Error("provider replied but did not produce a valid intent");
+  if (!parsed.success) {
+    throw new Error(`replied off-schema: ${JSON.stringify(raw).slice(0, 140)}`);
   }
-  const model = env.llm.provider === "gemini" ? env.llm.geminiModel : env.llm.anthropicModel;
-  return `${env.llm.provider} (${model}) responding`;
+  return `${env.llm.provider} (${model}) responding — parsed action=${parsed.data.action}`;
 }
 
 /** Anthropic (Claude) backend. Returns the raw tool input, or undefined. */

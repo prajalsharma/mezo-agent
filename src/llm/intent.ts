@@ -10,7 +10,11 @@ import { z } from "zod";
  * bigints/precision tricks; they are parsed with the token's decimals downstream.
  */
 
-const amount = z.string().regex(/^\d+(\.\d+)?$/, "amount must be a plain number");
+// z.coerce so a model that returns a JSON number (1) instead of a string ("1")
+// — Gemini and others do this routinely — is accepted; the regex still enforces
+// a plain decimal shape afterwards. Prevents a valid swap being rejected as
+// off-schema just because of number-vs-string.
+const amount = z.coerce.string().regex(/^\d+(\.\d+)?$/, "amount must be a plain number");
 const symbol = z.string().min(1).max(12);
 const slippage = z.number().min(0.01).max(50).optional();
 
