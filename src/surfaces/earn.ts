@@ -1,7 +1,8 @@
 import { encodeFunctionData, formatUnits, parseUnits, type Address } from "viem";
 import { publicClient } from "../chain/client.js";
 import { registry } from "../registry/registry.js";
-import { gaugeAbi, voterAbi } from "../abis/mezo.js";
+import { gaugeAbi, voterAbi, rewardsDistributorAbi } from "../abis/mezo.js";
+import { ownedVeNfts, claimableRebase, votingRewardsForPool, earnedAcross } from "../core/veEnumeration.js";
 import { erc20Abi } from "../abis/erc20.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
 import type { VaultDepositIntent, StakeLpIntent, UnstakeLpIntent, ClaimIntent } from "../llm/intent.js";
@@ -120,31 +121,70 @@ export async function buildUnstakeLp(intent: UnstakeLpIntent, owner: Address): P
   };
 }
 
-export function buildVaultDeposit(intent: VaultDepositIntent): ActionPlan {
+export function buildVaultDeposit(intent: VaultDepositIntent, owner: Address): ActionPlan {
   const token = registry.tryToken(intent.token);
   if (!token) throw new ActionUnavailableError(`Unknown token "${intent.token}".`);
   if (Number(intent.amount) <= 0) throw new ActionUnavailableError("Amount must be greater than zero.");
-  return gatedPlan({
-    action: "vaultDeposit", title: "🏛️ Vault deposit",
-    summary: [`Deposit ${intent.amount} ${token.symbol} into the Mezo Earn vault.`, `You receive vault shares that accrue yield.`],
-    reason: "Preview only — Earn vault addresses aren't published in the canonical reference yet.",
-  });
+
+  const vault = registry.vaultForAsset(token.symbol);
+  if (!vault) {
+    const avail = registry.vaults().map((v) => `${v.assetSymbol} → ${v.name}`).join("; ") || "none on this network";
+    throw new ActionUnavailableError(
+      `No published vault takes ${token.symbol} deposits. Available: ${avail}.`,
+    );
+  }
+
+  const amount = parseUnits(intent.amount, token.decimals);
+  const summary = [
+    `Deposit ${intent.amount} ${token.symbol} into ${vault.name}.`,
+    `You receive vault shares that accrue yield; withdraw any time (subject to vault liquidity).`,
+  ];
+  // Two deposit shapes, both verified on-chain against the implementation's
+  // selector table (see VaultInfo.kind). Receiver is always the caller — the
+  // agent must never be able to route shares elsewhere.
+  const depositData =
+    vault.kind === "savings"
+      ? encodeFunctionData({
+          abi: [{ type: "function", name: "deposit", stateMutability: "nonpayable", inputs: [{ name: "_amount", type: "uint256" }], outputs: [] }] as const,
+          functionName: "deposit", args: [amount],
+        })
+      : encodeFunctionData({
+          abi: [{ type: "function", name: "deposit", stateMutability: "nonpayable", inputs: [{ name: "assets", type: "uint256" }, { name: "receiver", type: "address" }], outputs: [{ type: "uint256" }] }] as const,
+          functionName: "deposit", args: [amount, owner],
+        });
+
+  const steps: ActionStep[] = [
+    approveStep(token.address, vault.address, amount, token.symbol),
+    {
+      kind: "vaultDeposit", to: vault.address, value: 0n,
+      data: depositData,
+      describe: `Deposit ${intent.amount} ${token.symbol} into ${vault.name}`,
+    },
+  ];
+  return {
+    action: "vaultDeposit", title: "🏛️ Vault deposit", summary,
+    warnings: ["Vault yield is variable; withdrawals can be limited when utilization is high."],
+    steps, allowedTargets: [token.address, vault.address], executable: true, nativeValue: 0n,
+  };
 }
 
 export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<ActionPlan> {
-  const scopeLabel = { all: "all rewards", rebase: "rebases", gauge: "gauge/LP earnings", bribe: "voting bribes" }[intent.scope];
+  const scopeLabel = { all: "all rewards", rebase: "rebases", gauge: "gauge/LP earnings", bribe: "voting bribes + fees" }[intent.scope];
   const summary = [`Claim ${scopeLabel} across your positions.`];
   if (!registry.hasContract("Voter")) {
     return gatedPlan({ action: "claim", title: "🎁 Claim rewards", summary,
       reason: "Preview only — the Voter address isn't confirmed on this deployment yet." });
   }
 
-  // Gauge scope executes live: enumerate the registry's pools, resolve each
-  // gauge from the Voter, and claim wherever `earned(owner) > 0`. Rebase and
-  // bribe scopes need the caller's veNFT ids (indexer/enumeration) and remain
-  // gated — stated per-scope rather than blanket-gating "claim all".
+  // The bounty's "claim everything" flow: one confirmed plan aggregating
+  //   • gauge/LP emissions        — gauge.getReward(owner)
+  //   • rebases                   — RewardsDistributor.claim(tokenId) per veNFT
+  //   • voting bribes + fees      — Voter.claimBribes/claimFees(..., tokenId)
+  // Everything enumerated live; only positive-balance claims become steps, so
+  // the user never signs a no-op.
   const steps: ActionStep[] = [];
   const targets: Address[] = [];
+
   if (intent.scope === "all" || intent.scope === "gauge") {
     for (const p of registry.pools()) {
       const gauge = await gaugeFor(p.address);
@@ -162,23 +202,67 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
     }
   }
 
-  if (steps.length === 0) {
-    if (intent.scope === "gauge" || intent.scope === "all") {
-      const note = intent.scope === "all"
-        ? " (rebase/bribe claims additionally need your veNFT id — say e.g. \"claim rebases for veNFT 3\" once supported)"
-        : "";
-      throw new ActionUnavailableError(`Nothing to claim from gauges right now${note}.`);
+  if (intent.scope === "all" || intent.scope === "rebase" || intent.scope === "bribe") {
+    const veNfts = registry.hasContract("VotingEscrowBTC") ? await ownedVeNfts(owner) : [];
+
+    if ((intent.scope === "all" || intent.scope === "rebase") && registry.hasContract("RewardsDistributor")) {
+      const rd = registry.contract("RewardsDistributor");
+      for (const id of veNfts) {
+        const claimable = await claimableRebase(id);
+        if (claimable <= 0n) continue;
+        steps.push({
+          kind: "claimRebase", to: rd, value: 0n,
+          data: encodeFunctionData({ abi: rewardsDistributorAbi, functionName: "claim", args: [id] }),
+          describe: `Claim ~${formatUnits(claimable, 18)} BTC rebase for veNFT #${id}`,
+        });
+        targets.push(rd);
+      }
     }
-    return gatedPlan({ action: "claim", title: "🎁 Claim rewards", summary,
-      reason: "Preview only — rebase/bribe claim enumeration needs your veNFT ids (indexer); gauge claims are live via \"claim gauge\"." });
+
+    if (intent.scope === "all" || intent.scope === "bribe") {
+      const voter = registry.contract("Voter");
+      // Collect every bribe/fee contract with a positive earned balance per NFT,
+      // then claim each NFT's set in one call per kind.
+      for (const id of veNfts) {
+        const bribes: Address[] = []; const bribeTokens: Address[][] = [];
+        const fees: Address[] = []; const feeTokens: Address[][] = [];
+        for (const p of registry.pools()) {
+          const { bribe, fee } = await votingRewardsForPool(p.address);
+          if (bribe && (await earnedAcross(bribe, id)) > 0n) { bribes.push(bribe.contract); bribeTokens.push(bribe.tokens); }
+          if (fee && (await earnedAcross(fee, id)) > 0n) { fees.push(fee.contract); feeTokens.push(fee.tokens); }
+        }
+        if (bribes.length > 0) {
+          steps.push({
+            kind: "claimBribes", to: voter, value: 0n,
+            data: encodeFunctionData({ abi: voterAbi, functionName: "claimBribes", args: [bribes, bribeTokens, id] }),
+            describe: `Claim voting bribes for veNFT #${id} (${bribes.length} pool${bribes.length > 1 ? "s" : ""})`,
+          });
+          targets.push(voter);
+        }
+        if (fees.length > 0) {
+          steps.push({
+            kind: "claimFees", to: voter, value: 0n,
+            data: encodeFunctionData({ abi: voterAbi, functionName: "claimFees", args: [fees, feeTokens, id] }),
+            describe: `Claim trading-fee share for veNFT #${id} (${fees.length} pool${fees.length > 1 ? "s" : ""})`,
+          });
+          targets.push(voter);
+        }
+      }
+      if (veNfts.length === 0 && intent.scope === "bribe") {
+        throw new ActionUnavailableError("You hold no veNFTs, so there are no voting bribes or fees to claim. Lock BTC first (e.g. \"lock 0.01 BTC for 28 days\").");
+      }
+    }
   }
 
-  if (intent.scope === "all") {
-    summary.push("Rebase/bribe claims need veNFT enumeration (indexer) and are not included yet — this claims all gauge earnings.");
+  if (steps.length === 0) {
+    throw new ActionUnavailableError(
+      `Nothing claimable right now for ${scopeLabel} — all live balances are zero.`,
+    );
   }
+
   return {
     action: "claim", title: "🎁 Claim rewards", summary,
-    warnings: [], steps, allowedTargets: targets, executable: true, nativeValue: 0n,
+    warnings: [], steps, allowedTargets: [...new Set(targets)], executable: true, nativeValue: 0n,
   };
 }
 

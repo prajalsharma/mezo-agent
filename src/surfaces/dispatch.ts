@@ -22,7 +22,7 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
     case "repay": return buildRepay(intent);
     case "adjust": return buildAdjust(intent);
     case "closeTrove": return buildCloseTrove();
-    case "vaultDeposit": return buildVaultDeposit(intent);
+    case "vaultDeposit": return buildVaultDeposit(intent, owner);
     case "stakeLp": return buildStakeLp(intent, owner);
     case "unstakeLp": return buildUnstakeLp(intent, owner);
     case "claim": return buildClaim(intent, owner);

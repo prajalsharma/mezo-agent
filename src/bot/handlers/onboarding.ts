@@ -1,6 +1,6 @@
 import { InlineKeyboard, type Context } from "grammy";
 import { env } from "../../config/env.js";
-import { createWallet, getUser, importWallet, WalletImportError } from "../../wallet/walletService.js";
+import { createWallet, exportPrivateKey, getUser, importWallet, WalletImportError } from "../../wallet/walletService.js";
 import { explorerAddressUrl } from "../../chain/networks.js";
 import { setPending, getPending, clearPending } from "../session.js";
 import { b, i, code, link, esc } from "../format.js";
@@ -56,7 +56,8 @@ export async function handleCreate(ctx: Context): Promise<void> {
       `Your address:\n${code(user.address)}\n\n` +
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}\n\n` +
       `Fund it with /deposit, then check /portfolio.\n\n` +
-      `🔒 Your key is encrypted at rest and never logged or shared with any AI model.`,
+      `🔒 Your key is encrypted at rest and never logged or shared with any AI model.\n` +
+      `You stay in control: /export reveals your private key any time (for MetaMask etc.), behind an explicit warning.`,
     { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }
@@ -76,6 +77,66 @@ export async function handleImportPrompt(ctx: Context): Promise<void> {
       `Send /cancel to abort.`,
     { parse_mode: "HTML" },
   );
+}
+
+/**
+ * /export — two-step, opt-in reveal of the active account's private key.
+ *
+ * Mirrors the bounty's raw-import standard in reverse: explicit opt-in, a
+ * clear risk warning BEFORE anything is revealed, and no plaintext at rest.
+ * The reveal message self-destructs after 60 seconds; Telegram chat history is
+ * the exposure surface, so the key should live there as briefly as possible.
+ */
+export async function handleExportPrompt(ctx: Context): Promise<void> {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+  if (!getUser(telegramId)) {
+    await ctx.reply("No account yet — create one with /start first.");
+    return;
+  }
+  const kb = new InlineKeyboard()
+    .text("🔓 Yes, reveal my key", "wallet:export-confirm")
+    .row()
+    .text("Cancel", "wallet:export-cancel");
+  await ctx.reply(
+    `⚠️ ${b("Export private key?")}\n\n` +
+      `Anyone who sees this key ${b("fully controls your funds")} — no confirmation, no limits, nothing this bot enforces applies to them.\n\n` +
+      `• It will appear in this chat for ${b("60 seconds")}, then auto-delete.\n` +
+      `• Telegram chat history syncs to every device you're logged in on.\n` +
+      `• Best done in private, then imported straight into MetaMask/Rabby.\n\n` +
+      `${i("Note: in-bot wallets are raw keys — there is no 12-word phrase to show. A seed phrase only exists for accounts you imported FROM a phrase.")}`,
+    { parse_mode: "HTML", reply_markup: kb },
+  );
+}
+
+export async function handleExportConfirm(ctx: Context): Promise<void> {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+  await ctx.answerCallbackQuery().catch(() => {});
+  // Remove the warning/buttons so the flow can't be re-triggered from an old card.
+  await ctx.deleteMessage().catch(() => {});
+
+  try {
+    const key = await exportPrivateKey(telegramId);
+    const sent = await ctx.reply(
+      `🔑 ${b("Your private key")} (auto-deletes in 60s):\n\n${code(key)}\n\n` +
+        `Import it into a wallet app now. Delete this message yourself once done.`,
+      { parse_mode: "HTML" },
+    );
+    // Self-destruct. Best-effort: if the bot lacks delete rights the user was
+    // told to delete it manually.
+    setTimeout(() => {
+      ctx.api.deleteMessage(sent.chat.id, sent.message_id).catch(() => {});
+    }, 60_000);
+  } catch (err) {
+    await ctx.reply(`❌ ${esc(err instanceof Error ? err.message : "Export failed.")}`);
+  }
+}
+
+export async function handleExportCancel(ctx: Context): Promise<void> {
+  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.deleteMessage().catch(() => {});
+  await ctx.reply("Export cancelled. Nothing was revealed.");
 }
 
 /** Handles the follow-up message containing a pasted private key. */

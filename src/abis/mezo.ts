@@ -83,6 +83,11 @@ export const votingEscrowAbi = [
   ], outputs: [] },
   { type: "function", name: "balanceOfNFT", stateMutability: "view", inputs: [{ name: "_tokenId", type: "uint256" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "ownerOf", stateMutability: "view", inputs: [{ name: "_tokenId", type: "uint256" }], outputs: [{ type: "address" }] },
+  // Enumeration — verified live: balanceOf(owner) + ownerToNFTokenIdList(owner, i).
+  { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "_owner", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "ownerToNFTokenIdList", stateMutability: "view", inputs: [
+    { name: "_owner", type: "address" }, { name: "_index", type: "uint256" },
+  ], outputs: [{ type: "uint256" }] },
 ] as const;
 
 export const voterAbi = [
@@ -90,6 +95,12 @@ export const voterAbi = [
     { name: "_tokenId", type: "uint256" }, { name: "_poolVote", type: "address[]" }, { name: "_weights", type: "uint256[]" },
   ], outputs: [] },
   { type: "function", name: "gauges", stateMutability: "view", inputs: [{ name: "_pool", type: "address" }], outputs: [{ type: "address" }] },
+  // Per-gauge reward contracts (verified live on the production Voter).
+  { type: "function", name: "gaugeToFees", stateMutability: "view", inputs: [{ name: "_gauge", type: "address" }], outputs: [{ type: "address" }] },
+  { type: "function", name: "gaugeToBribe", stateMutability: "view", inputs: [{ name: "_gauge", type: "address" }], outputs: [{ type: "address" }] },
+  // Weights — for the optimal-vote incentives feed.
+  { type: "function", name: "weights", stateMutability: "view", inputs: [{ name: "_pool", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "totalWeight", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "claimBribes", stateMutability: "nonpayable", inputs: [
     { name: "_bribes", type: "address[]" }, { name: "_tokens", type: "address[][]" }, { name: "_tokenId", type: "uint256" },
   ], outputs: [] },
@@ -136,4 +147,16 @@ export const matchboxAbi = [
     { name: "_veBtcId", type: "uint256" }, { name: "_veMezoId", type: "uint256" },
   ], outputs: [] },
   { type: "function", name: "unpair", stateMutability: "nonpayable", inputs: [{ name: "_veBtcId", type: "uint256" }], outputs: [] },
+] as const;
+
+// Velodrome-style voting-rewards contract (bribes + fees share this shape).
+export const votingRewardAbi = [
+  { type: "function", name: "rewardsListLength", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "rewards", stateMutability: "view", inputs: [{ name: "_index", type: "uint256" }], outputs: [{ type: "address" }] },
+  { type: "function", name: "earned", stateMutability: "view", inputs: [
+    { name: "_token", type: "address" }, { name: "_tokenId", type: "uint256" },
+  ], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "tokenRewardsPerEpoch", stateMutability: "view", inputs: [
+    { name: "_token", type: "address" }, { name: "_epochStart", type: "uint256" },
+  ], outputs: [{ type: "uint256" }] },
 ] as const;

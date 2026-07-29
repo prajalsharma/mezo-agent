@@ -8,6 +8,7 @@ import {
   type NetworkRegistry,
   type PoolInfo,
   type TokenInfo,
+  type VaultInfo,
 } from "./addresses.js";
 
 /**
@@ -103,6 +104,16 @@ class ContractRegistry {
   /** All DEX pools on this network. */
   pools(): PoolInfo[] {
     return this.data.pools;
+  }
+
+  /** Published Mezo Earn vaults on this network. */
+  vaults(): VaultInfo[] {
+    return this.data.vaults;
+  }
+
+  /** The vault whose deposit asset is `symbol` (case-insensitive), if any. */
+  vaultForAsset(symbol: string): VaultInfo | undefined {
+    return this.data.vaults.find((v) => v.assetSymbol.toLowerCase() === symbol.toLowerCase());
   }
 
   /** Find the pool trading two symbols, regardless of order. Undefined if none. */

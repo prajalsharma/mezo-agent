@@ -42,6 +42,8 @@ export type NetworkRegistry = {
   pools: PoolInfo[];
   /** Contracts whose addresses are provisional and must be confirmed on-chain. */
   needsConfirmation: ContractKey[];
+  /** Mezo Earn vaults (empty where none are published). */
+  vaults: VaultInfo[];
 };
 
 /**
@@ -91,6 +93,21 @@ export const ALL_CONTRACT_KEYS = [
   "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "RewardsDistributor",
   "Matchbox", "Market", "Delegate7702",
 ] as const satisfies readonly ContractKey[];
+
+/** A Mezo Earn vault. `kind` selects the deposit ABI shape. */
+export type VaultInfo = {
+  name: string;
+  address: Address;
+  /** Registry symbol of the deposit asset. */
+  assetSymbol: string;
+  /**
+   * "savings"  → deposit(uint256) / withdraw(uint256)   (sMUSD-style)
+   * "erc4626"  → deposit(assets, receiver) / redeem(...)  (Morpho-style)
+   * Shapes verified on-chain by selector extraction from the implementation
+   * (EIP-1967 slot) — the sMUSD vault is NOT 4626 (no asset()/previewDeposit).
+   */
+  kind: "savings" | "erc4626";
+};
 
 /** Sentinel for the native gas asset (BTC on Mezo, 18 decimals). */
 export const NATIVE_TOKEN_ADDRESS =
@@ -179,6 +196,13 @@ const MAINNET: NetworkRegistry = {
   // documented contract; Matchbox is a community project (matchbox.markets);
   // Mezo Market has no published contract address.
   needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market", "Delegate7702"],
+  // From docs (vault-notices.md / usdc-lending-vault.md), shapes verified
+  // on-chain: sMUSD answers deposit(uint256)+withdraw(uint256) only (savings),
+  // the Morpho vault is full ERC-4626 with asset() == mUSDC.
+  vaults: [
+    { name: "MUSD Savings Vault (sMUSD)", address: "0xb4D498029af77680cD1eF828b967f010d06C51CC", assetSymbol: "MUSD", kind: "savings" },
+    { name: "USDC Lending Vault (Morpho)", address: "0x06291b67e3d7660240ab44Afc9a708d82b976a8B", assetSymbol: "mUSDC", kind: "erc4626" },
+  ],
 };
 
 const TESTNET: NetworkRegistry = {
@@ -240,6 +264,8 @@ const TESTNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDT"], address: "0x27414B76CF00E24ed087adb56E26bAeEEe93494e", stable: true },
   ],
   needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market", "Delegate7702"],
+  // No Matsnet vault addresses are published.
+  vaults: [],
 };
 
 export const SEED_REGISTRY: Record<NetworkName, NetworkRegistry> = {

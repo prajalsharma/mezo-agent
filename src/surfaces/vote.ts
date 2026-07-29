@@ -1,7 +1,8 @@
 import { encodeFunctionData, type Address } from "viem";
 import { registry } from "../registry/registry.js";
 import { voterAbi } from "../abis/mezo.js";
-import { optimalAllocation, explainAllocation, type GaugeStat } from "../core/optimalVoting.js";
+import { optimalAllocation, explainAllocation } from "../core/optimalVoting.js";
+import { liveIncentives } from "../core/incentivesFeed.js";
 import { gatedPlan, ActionUnavailableError, type ActionPlan } from "./plan.js";
 import type { VoteIntent } from "../llm/intent.js";
 
@@ -9,21 +10,13 @@ import type { VoteIntent } from "../llm/intent.js";
  * Voting surface. In "optimal" mode we run the transparent water-filling
  * allocator (core/optimalVoting.ts) over live gauge incentives and show the user
  * the exact weights + expected reward BEFORE signing. In "manual" mode the
- * user's weights execute via Voter.vote(tokenId, pools, weights). Optimal-mode
- * SUBMISSION stays gated until a live incentives feed exists — we never
- * fabricate the incentive numbers the optimizer needs.
+ * user's weights execute via Voter.vote(tokenId, pools, weights). Optimal mode
+ * reads live epoch incentives + current vote weights on-chain
+ * (core/incentivesFeed.ts) and submits the computed weights; zero posted
+ * incentives is reported honestly as "nothing to optimize".
  */
 
-/**
- * Live gauge incentives (fees + bribes) + projected votes for the epoch. Sourced
- * from the indexer in production; empty until that + the Voter land, which is why
- * optimal-mode execution is gated (we never fabricate incentive numbers).
- */
-export function gaugeStats(): GaugeStat[] {
-  return []; // indexer-backed; wired alongside the Voter address.
-}
-
-export function buildVote(intent: VoteIntent): ActionPlan {
+export function buildVote(intent: VoteIntent): ActionPlan | Promise<ActionPlan> {
   if (intent.mode === "manual") {
     const weights = intent.weights ?? {};
     const entries = Object.entries(weights);
@@ -70,27 +63,71 @@ export function buildVote(intent: VoteIntent): ActionPlan {
     };
   }
 
-  // Optimal mode: run the allocator over live gauge incentives.
-  const stats = gaugeStats();
-  if (stats.length === 0) {
+  // Optimal mode — async: reads live epoch incentives + current vote weights
+  // straight from the chain (core/incentivesFeed.ts). We never fabricate
+  // incentive numbers; zero posted incentives is reported as exactly that.
+  return buildOptimalVote(intent);
+}
+
+async function buildOptimalVote(intent: VoteIntent): Promise<ActionPlan> {
+  if (!registry.hasContract("Voter")) {
     return gatedPlan({
       action: "vote", title: "🗳️ Vote (optimal)",
-      summary: [
-        "The optimizer will allocate your veBTC to maximize expected fees + bribes per vote this epoch,",
-        "using the transparent water-filling method (equalizing marginal reward-per-vote across gauges).",
-      ],
-      reason: "Preview only — live gauge incentives (indexer) + the Voter address aren't wired on this deployment yet.",
+      summary: ["The optimizer allocates your veBTC to maximize expected fees + bribes per vote this epoch."],
+      reason: "Preview only — the Voter address isn't confirmed on this deployment yet.",
     });
   }
 
-  // votingPower would be read from the user's veBTC balance; normalized to 1 here
-  // for the preview weighting (weights are scale-invariant).
-  const result = optimalAllocation(stats, 1);
+  const snapshot = await liveIncentives(Date.now() / 1000);
+  const totalIncentives = snapshot.stats.reduce((s, g) => s + g.incentives, 0);
+
+  if (totalIncentives <= 0) {
+    // Honest live state — not a gate. There is nothing to optimize against.
+    throw new ActionUnavailableError(
+      "No bribes or fee rewards are posted on the pool gauges for this epoch (checked live just now), " +
+        'so there is no incentive data to optimize. You can still vote manually: e.g. "vote with veNFT 3: 60% MUSD/mUSDC, 40% BTC/MUSD".',
+    );
+  }
+
+  const result = optimalAllocation(snapshot.stats, 1);
   const summary = [
-    "Optimal allocation (maximizes expected reward-per-vote this epoch):",
+    "Optimal allocation (maximizes expected reward-per-vote this epoch, water-filling method):",
     ...explainAllocation(result),
-    `Blended: ~${result.rewardPerVote.toFixed(3)} reward per unit of voting power.`,
+    `Blended: ~${result.rewardPerVote.toFixed(4)} MUSD-equivalent per unit of voting power.`,
   ];
-  return gatedPlan({ action: "vote", title: "🗳️ Vote (optimal)", summary,
-    reason: "Optimizer computed the weights; execution is gated until the Voter address is confirmed." });
+  if (snapshot.unpriced.length > 0) {
+    summary.push(
+      `⚠️ Excluded from optimization (no MUSD price route): ${snapshot.unpriced.map((a) => a.slice(0, 10) + "…").join(", ")}.`,
+    );
+  }
+
+  if (!intent.tokenId) {
+    // The allocation is shown, but we never guess which veNFT casts it.
+    throw new ActionUnavailableError(
+      summary.join("\n") + '\n\nWhich veBTC NFT should cast this vote? Say e.g. "vote optimally with veNFT 3".',
+    );
+  }
+
+  const voter = registry.contract("Voter");
+  const pools: Address[] = [];
+  const bps: bigint[] = [];
+  for (const a of result.allocations) {
+    const p = registry.resolvePool(...(a.pool.split("/") as [string, string]));
+    if (!p) continue;
+    pools.push(p.address);
+    bps.push(BigInt(a.weightBps));
+  }
+  const step = {
+    kind: "vote", to: voter, value: 0n,
+    data: encodeFunctionData({
+      abi: voterAbi, functionName: "vote",
+      args: [BigInt(intent.tokenId), pools, bps],
+    }),
+    describe: `Vote veNFT #${intent.tokenId} optimally: ${result.allocations.map((a) => `${a.pool} ${(a.weightBps / 100).toFixed(0)}%`).join(", ")}`,
+  };
+  return {
+    action: "vote", title: "🗳️ Vote (optimal)", summary,
+    warnings: ["Votes persist across epochs until changed; weights are relative."],
+    steps: [step], allowedTargets: [voter], executable: true, nativeValue: 0n,
+  };
 }

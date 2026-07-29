@@ -125,6 +125,29 @@ function deriveFromSecret(secret: string): { privateKey: Hex; source: "key" | "s
   );
 }
 
+/**
+ * Export the active account's private key — the ONE sanctioned path that
+ * returns plaintext key material, and only to its owner after an explicit
+ * two-step confirmation in the handler.
+ *
+ * Deliberate scope limits:
+ *   • Callable only for the caller's own active account (telegramId-keyed).
+ *   • Refused in watch-only mode — a watch session must not become key access.
+ *   • The key is returned, never logged; the handler is responsible for the
+ *     self-destruct presentation. There is no seed-phrase form: created
+ *     wallets are raw keys (no BIP-39 entropy is ever generated or stored),
+ *     so a "12 words" export would be fabrication.
+ */
+export async function exportPrivateKey(telegramId: number): Promise<Hex> {
+  const user = getUser(telegramId);
+  if (!user) throw new Error("No account to export. Create one with /start first.");
+  if (user.mode === "watch-only") {
+    throw new Error("Account is in watch-only mode; export is disabled. Re-enable with /watch first.");
+  }
+  log.step("wallet.export", "reveal", { user: telegramId, address: user.address }); // metadata only — never the key
+  return keystore().use(user.sealedKey, async (pk) => pk);
+}
+
 export function getUser(telegramId: number): UserRecord | undefined {
   return store.getUser(telegramId);
 }

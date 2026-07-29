@@ -7,6 +7,9 @@ import {
   handleStart,
   handleCreate,
   handleImportPrompt,
+  handleExportPrompt,
+  handleExportConfirm,
+  handleExportCancel,
   maybeHandleImportKey,
 } from "./handlers/onboarding.js";
 import { handlePortfolio, handleDeposit } from "./handlers/portfolio.js";
@@ -72,6 +75,7 @@ export function buildBot(): Bot {
       "Commands:\n" +
         "/start — onboarding · /portfolio · /deposit\n" +
         "/limits — spending caps · /watch — read-only mode\n" +
+        "/export — reveal your private key (warned, self-deleting)\n" +
         "/upgrade — EIP-7702 smart account (scoped session key)\n" +
         "/accounts — multi-account · /dca — DCA schedules · /fees\n" +
         "/pause · /resume — emergency stop for automation\n" +
@@ -91,6 +95,7 @@ export function buildBot(): Bot {
   bot.command("limits", handleLimits);
   bot.command("upgrade", handleUpgrade);
   bot.command("watch", handleWatch);
+  bot.command("export", handleExportPrompt);
   bot.command("accounts", (ctx) => handleAccount(ctx, { action: "account", op: "list" }));
   bot.command("dca", (ctx) => handleDcaCancel(ctx, { action: "dcaCancel" }));
 
@@ -146,6 +151,8 @@ export function buildBot(): Bot {
   // ── Inline buttons ──────────────────────────────────────────────────────────
   bot.callbackQuery("wallet:create", handleCreate);
   bot.callbackQuery("wallet:import", handleImportPrompt);
+  bot.callbackQuery("wallet:export-confirm", handleExportConfirm);
+  bot.callbackQuery("wallet:export-cancel", handleExportCancel);
   bot.callbackQuery("swap:confirm", handleSwapConfirm);
   bot.callbackQuery("swap:cancel", handleSwapCancel);
   bot.callbackQuery("action:confirm", handleActionConfirm);
