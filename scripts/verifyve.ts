@@ -20,12 +20,17 @@ import { WRAPPED_NATIVE_ADDRESS } from "../src/registry/addresses.js";
 const client = publicClient();
 
 const CANDIDATES: Record<string, Record<string, Address>> = {
+  // Mainnet ve(3,3): the LIVE system discovered via the official docs'
+  // ValidatorsVoter (validator-gauge.md), NOT the stale set in mezo-pools.md
+  // (that VeBTC holds 0.00096 BTC and its Voter has zero gauges). The
+  // liveness assertions below (supply > 0, gauges > 0) exist so a ghost
+  // deployment can never pass verification again.
   mainnet: {
     Router: "0x16A76d3cd3C1e3CE843C6680d6B37E9116b5C706",
     PoolFactory: "0x83FE469C636C4081b87bA5b3Ae9991c6Ed104248",
-    VeBTC: "0x7D807e9CE1ef73048FEe9A4214e75e894ea25914",
-    Voter: "0x3A4a6919F70e5b0aA32401747C471eCfe2322C1b",
-    RewardsDistributor: "0x535E01F948458E0b64F9dB2A01Da6F32E240140f",
+    VeBTC: "0x3D4b1b884A7a1E59fE8589a3296EC8f8cBB6f279",
+    Voter: "0x48233cCC97B87Ba93bCA212cbEe48e3210211f03",
+    RewardsDistributor: "0xb58477e074265BdC7F7ca6100eD0f7De264F74A2",
   },
   testnet: {
     Router: "0x9a1ff7FE3a0F69959A3fBa1F1e5ee18e1A9CD7E9",
@@ -82,8 +87,12 @@ async function main() {
   // Voter — ve() must be the escrow; it must know gauges.
   const voterVe = await read(C.Voter!, "ve", "address");
   check(`Voter.ve == VeBTC (${voterVe ?? "no answer"})`, eq(voterVe, C.VeBTC!));
+  // LIVENESS — a correctly-linked but unused deployment is the stale-docs
+  // failure mode; require real locks and real gauges.
   const gaugeCount = await read(C.Voter!, "length", "uint256");
-  check(`Voter.length() answers (gauges: ${gaugeCount ?? "?"})`, gaugeCount !== undefined);
+  check(`Voter has LIVE gauges (length: ${gaugeCount ?? "?"})`, typeof gaugeCount === "bigint" && gaugeCount > 0n);
+  const veSupply = await read(C.VeBTC!, "supply", "uint256");
+  check(`VeBTC has LIVE locked supply (${veSupply ?? "?"} wei)`, typeof veSupply === "bigint" && veSupply > 10n ** 16n);
 
   // RewardsDistributor — ve() must be the escrow.
   const rdVe = await read(C.RewardsDistributor!, "ve", "address");

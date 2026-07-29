@@ -76,15 +76,19 @@ Addresses are read from the canonical reference, never hardcoded from memory:
   is the live, linked deployment".
 - **DEX pools / PoolFactory** — from the contracts reference, verified live
   (`getAmountOut` returns non-zero, `factory()` matches).
-- **Router + ve(3,3) suite** (`Router`, `VotingEscrowBTC` (VeBTC), `Voter`,
-  `RewardsDistributor`) — from `docs/developers/features/mezo-pools.md` in
-  mezo-org/documentation (both networks, including the testnet PoolFactory and
-  pools), then **verified on-chain** by `npm run verifyve`: `Router.factory ==
-  PoolFactory`, `VeBTC.token == BTC precompile`, `VeBTC.voter == Voter`,
-  `Voter.ve == VeBTC`, `RewardsDistributor.ve == VeBTC`, per-pool `factory()`
-  checks, and a live `Voter.gauges(pool)` lookup. Testnet 15/15; mainnet 11/12
-  (the "failure" is `Voter.length() == 0` — no gauges created yet, a protocol
-  state fact, not an address problem).
+- **Router** — from `docs/developers/features/mezo-pools.md`, verified on-chain
+  (`Router.factory == PoolFactory`; `getAmountsOut` answers over our routes).
+- **ve(3,3) suite** (`VotingEscrowBTC`, `Voter`, `RewardsDistributor`) — the
+  docs page lists a deployment that is a **stale ghost on mainnet** (its VeBTC
+  holds 0.00096 BTC; its Voter has zero gauges). The production system was
+  found by following the official docs' ValidatorsVoter (validator-gauge.md):
+  `ValidatorsVoter.ve()` → the live VeBTC (**824.7 BTC locked**) → `voter()` →
+  the live Voter (**26 gauges**, including every registry pool). `npm run
+  verifyve` re-proves the full linkage on every run and now asserts
+  **liveness** (locked supply > 0, gauges > 0) so a ghost deployment can never
+  pass again. Testnet's documented deployment IS the live one (16/16). This is
+  the "do not hardcode stale values" requirement biting in the wild: the doc
+  value itself was stale, and on-chain linkage + usage decided.
 - **VotingEscrowMEZO, Matchbox, Market** — genuinely unpublished: veMEZO has no
   documented contract, Matchbox is an external community project
   (matchbox.markets), and Mezo Market has no published contract. These stay
@@ -126,9 +130,9 @@ network.
 | DCA / auto-compound scheduling | ✅ live — trades land now that the Router is wired | `KEEPER_ENABLED=true` |
 | Multi-account, limits, watch-only, optimal-voting math | ✅ live | — |
 
-¹ Live on **testnet** (4 gauges). The mainnet Voter is deployed but had **zero
-gauges** at wiring time (`Voter.length() == 0`) — staking/claims there activate
-when the protocol creates gauges; the code path is identical.
+¹ Live on **both networks** — testnet Voter has 4 gauges, mainnet Voter has 26
+(gauges exist for all three registry pools; resolved live per action, never
+hardcoded).
 
 ## The core invariant
 

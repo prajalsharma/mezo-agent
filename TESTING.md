@@ -57,7 +57,7 @@ Automated evidence (run locally, no Telegram needed):
 - [ ] `zap 0.01 BTC into MUSD/mUSDC` → multi-hop named refusal (input not a pool token) — asks you to swap first
 - [ ] `stake LP BTC/MUSD` → gauge resolved live from Voter; with no LP → "You hold no BTC/MUSD LP to stake" (live balance read)
 - [ ] `unstake LP BTC/MUSD` → same live checks against the gauge
-- [ ] Mainnet note: Voter has ZERO gauges yet — stake/claim there correctly refuse "no gauge exists"
+- [ ] Mainnet: Voter has 26 live gauges (incl. all three registry pools) — stake/claim fully live there too
 - [ ] `deposit 100 MUSD into vault` → preview + gate reason (ERC-4626 wiring pending)
 
 ## 5 · Claims — ✅ gauge claims EXECUTABLE; 🔒 rebase/bribe (needs veNFT enumeration)
@@ -128,4 +128,4 @@ Automated evidence (run locally, no Telegram needed):
 | Maintenance plan | ✅ in SUBMISSION.md |
 | Video demo | ❌ **to record** — script: onboarding → borrow → zap preview → claim-all preview → lock+vote preview → market preview → DCA live |
 | Live Mainnet deployment | ⏳ after security review (bounty's own ordering) |
-| Full execution of swap/zap/stake/claim/lock/vote | ✅ wired + on-chain verified (testnet end-to-end; mainnet awaits protocol gauges) |
+| Full execution of swap/zap/stake/claim/lock/vote | ✅ wired + on-chain verified, live gauges on BOTH networks |

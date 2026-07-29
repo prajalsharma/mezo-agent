@@ -133,16 +133,25 @@ const MAINNET: NetworkRegistry = {
   contracts: {
     PoolFactory: "0x83FE469C636C4081b87bA5b3Ae9991c6Ed104248",
 
-    // DEX Router + ve(3,3) suite. Source: docs/developers/features/mezo-pools.md
-    // in mezo-org/documentation. Verified on-chain by `npm run verifyve`:
-    // Router.factory == PoolFactory, VeBTC.token == BTC precompile,
-    // VeBTC.voter == Voter, Voter.ve == VeBTC, RewardsDistributor.ve == VeBTC.
-    // NOTE: mainnet Voter has ZERO gauges at time of wiring (Voter.length()==0),
-    // so LP staking is live code but protocol-empty here; testnet has 4 gauges.
+    // DEX Router: docs/developers/features/mezo-pools.md, verified on-chain
+    // (Router.factory == PoolFactory; getAmountsOut answers over our routes).
     Router: "0x16A76d3cd3C1e3CE843C6680d6B37E9116b5C706",
-    VotingEscrowBTC: "0x7D807e9CE1ef73048FEe9A4214e75e894ea25914",
-    Voter: "0x3A4a6919F70e5b0aA32401747C471eCfe2322C1b",
-    RewardsDistributor: "0x535E01F948458E0b64F9dB2A01Da6F32E240140f",
+
+    // ve(3,3) suite — the LIVE deployment, NOT the one in mezo-pools.md.
+    // The docs page lists VeBTC 0x7D80…5914 / Voter 0x3A4a…2C1b, but on-chain
+    // that system is a stale ghost: Voter.length() == 0 gauges and VeBTC
+    // supply == 0.00096 BTC. The production system was discovered from the
+    // official docs' ValidatorsVoter (validator-gauge.md, 0xe99a…515a):
+    // ValidatorsVoter.ve() → this VeBTC (824.7 BTC locked), whose voter() →
+    // this Voter (26 gauges, incl. every pool above), whose splitter routes
+    // MEZO emissions. Full cross-refs re-verified by `npm run verifyve`
+    // (Voter.ve == VeBTC, VeBTC.voter == Voter, Distributor.ve == VeBTC,
+    // live gauges for all three pools). "Read addresses from the canonical
+    // reference; do not hardcode stale values" — here the doc VALUE itself was
+    // stale, so on-chain linkage + usage is the deciding evidence.
+    VotingEscrowBTC: "0x3D4b1b884A7a1E59fE8589a3296EC8f8cBB6f279",
+    Voter: "0x48233cCC97B87Ba93bCA212cbEe48e3210211f03",
+    RewardsDistributor: "0xb58477e074265BdC7F7ca6100eD0f7De264F74A2",
 
     // Mezo Borrow (Liquity-style CDP). Source: the canonical MUSD developer
     // reference, https://mezo.org/docs/developers/musd/musd-redemptions.
