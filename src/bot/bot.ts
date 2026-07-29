@@ -124,8 +124,7 @@ export function buildBot(): Bot {
     const lines = ["<b>💸 Fees</b>", ""];
     if (feesEnabled) {
       lines.push(
-        `• Swaps: <b>${env.fees.swapBps / 100}%</b> of the input amount, taken in the input token.`,
-        `• Zaps currently charge <b>no</b> agent fee (only the pool's own swap fee applies).`,
+        `• Swaps & zaps: <b>${env.fees.swapBps / 100}%</b> of the input amount, taken in the input token.`,
         `• Shown on every confirmation before you approve — you always see the exact amount.`,
         `• Fee recipient: <code>${env.fees.recipient}</code>`,
         `• Referral share: <b>${env.fees.referralSharePct}%</b> of the fee goes to whoever referred the trader (/referral).`,

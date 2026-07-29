@@ -1,9 +1,10 @@
-import { encodeFunctionData, parseUnits, formatUnits } from "viem";
+import { encodeFunctionData, parseUnits, formatUnits, type Address } from "viem";
 import { publicClient } from "../chain/client.js";
 import { registry } from "../registry/registry.js";
 import { poolAbi } from "../abis/pool.js";
 import { routerAbi } from "../abis/router.js";
 import { erc20Abi } from "../abis/erc20.js";
+import { env, feesEnabled } from "../config/env.js";
 import { gatedPlan, ActionUnavailableError, type ActionPlan, type ActionStep } from "./plan.js";
 import type { ZapIntent } from "../llm/intent.js";
 
@@ -39,7 +40,14 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
 
   const otherSym = inSym.toLowerCase() === symA.toLowerCase() ? symB : symA;
   const other = registry.token(otherSym);
-  const half = parseUnits(intent.inputAmount, input.decimals) / 2n;
+
+  // Agent fee on zaps (bounty: "a small fee on swaps/zaps") — taken from the
+  // INPUT before the split, disclosed below, charged only AFTER the zap lands.
+  const grossInput = parseUnits(intent.inputAmount, input.decimals);
+  const zapFee = feesEnabled ? (grossInput * BigInt(env.fees.swapBps)) / 10_000n : 0n;
+  const inputNet = grossInput - zapFee;
+  if (inputNet <= 0n) throw new ActionUnavailableError("Amount is too small to cover the agent fee.");
+  const half = inputNet / 2n;
 
   // Live quote for the half we swap to the other side.
   let otherOut = 0n;
@@ -54,6 +62,7 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
 
   const summary = [
     `Zap ${intent.inputAmount} ${inSym} into ${p.pair.join("/")} (${p.stable ? "stable" : "volatile"}):`,
+    ...(zapFee > 0n ? [`• Agent fee: ${formatUnits(zapFee, input.decimals)} ${inSym} (${env.fees.swapBps / 100}%)`] : []),
     `• Keep ~${formatUnits(half, input.decimals)} ${inSym}`,
     `• Swap ~${formatUnits(half, input.decimals)} ${inSym} → ${otherOut > 0n ? "~" + Number(formatUnits(otherOut, other.decimals)).toFixed(4) : ""} ${otherSym}`,
     `• Add both as liquidity.`,
@@ -141,11 +150,28 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
     },
   ];
 
+  // Agent fee LAST (like swaps, Audit R3 F1): charged only after the zap lands.
+  const feeTargets: Address[] = [];
+  if (zapFee > 0n) {
+    const recipient = env.fees.recipient as Address;
+    feeTargets.push(input.native ? recipient : inAddr);
+    steps.push(
+      input.native
+        ? { kind: "fee", to: recipient, value: zapFee, describe: `Agent fee ${formatUnits(zapFee, input.decimals)} BTC (${env.fees.swapBps / 100}%)`, waitForReceipt: true }
+        : {
+            kind: "fee", to: inAddr, value: 0n,
+            data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipient, zapFee] }),
+            describe: `Agent fee ${formatUnits(zapFee, input.decimals)} ${inSym} (${env.fees.swapBps / 100}%)`,
+            erc20: { symbol: inSym, amount: zapFee }, waitForReceipt: true,
+          },
+    );
+  }
+
   return {
     action: "zap", title: "⚡ Zap into pool", summary,
     warnings: [worstCaseLine, "Multi-tx zap is not atomic; a failed leg halts the remaining steps and may leave a residual allowance."],
-    steps, allowedTargets: [router, inAddr, otherAddr],
-    // Step-up threshold is BTC-denominated: a BTC-input zap moves the full input.
-    executable: true, nativeValue: input.native ? half * 2n : 0n,
+    steps, allowedTargets: [router, inAddr, otherAddr, ...feeTargets],
+    // Step-up threshold is BTC-denominated: a BTC-input zap moves the full gross input.
+    executable: true, nativeValue: input.native ? grossInput : 0n,
   };
 }

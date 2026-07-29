@@ -20,7 +20,7 @@ bps (1%) in code** so a misconfiguration can't overcharge.
 
 | Action | Recommended | Config |
 | --- | --- | --- |
-| Swap / zap | **50 bps (0.5%)** — half the 100 bps that Trojan/Maestro charge | `AGENT_FEE_BPS=50` |
+| Swap **and zap** | **50 bps (0.5%)** — half the 100 bps that Trojan/Maestro charge | `AGENT_FEE_BPS=50` |
 
 Enable:
 ```
@@ -29,8 +29,8 @@ AGENT_FEE_RECIPIENT=0x<operator address>
 ```
 
 At 0.5% on $1M daily swap volume ≈ **$5,000/day** gross. The fee applies to
-swaps today; borrow/lock/vote/claim charge nothing (matching how competitors
-monetize — trades, not positions).
+swaps AND zaps; borrow/lock/vote/claim charge nothing (matching how competitors
+monetize — trades, not positions; comparable bots have no non-trade fee at all).
 
 ### Referral share (growth, funded from the fee)
 
