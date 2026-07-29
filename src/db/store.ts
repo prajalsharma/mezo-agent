@@ -105,6 +105,8 @@ type Db = {
   keeperPaused?: boolean;
   /** Telegram ids that have paused their own automation. */
   pausedUsers?: number[];
+  /** Referral rewards paid to each referrer (split-at-source; history record). */
+  referralEarnings?: Record<string, { trades: number; byToken: Record<string, string> }>;
 };
 
 type LegacyDb = Db & { users?: Record<string, UserRecord> };
@@ -210,6 +212,23 @@ class Store {
       if (list[0]?.referredBy === telegramId) seen.add(Number(id));
     }
     return seen.size;
+  }
+
+  /**
+   * Record a referral reward paid to a referrer (split at source on-chain, so
+   * this ledger is a transparency/history record, not an unsettled liability).
+   * Keyed referrerId → token symbol → cumulative raw amount, plus a trade count.
+   */
+  recordReferralEarning(referrerId: number, symbol: string, rawAmount: bigint): void {
+    const led = (this.db.referralEarnings ??= {});
+    const rec = (led[String(referrerId)] ??= { trades: 0, byToken: {} });
+    rec.trades += 1;
+    rec.byToken[symbol] = (BigInt(rec.byToken[symbol] ?? "0") + rawAmount).toString();
+    this.flush();
+  }
+
+  referralEarnings(referrerId: number): { trades: number; byToken: Record<string, string> } {
+    return this.db.referralEarnings?.[String(referrerId)] ?? { trades: 0, byToken: {} };
   }
 
   addTx(tx: TxRecord): void {

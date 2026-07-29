@@ -18,17 +18,32 @@ export async function handleReferral(ctx: Context): Promise<void> {
   if (!getUser(id)) { await ctx.reply("Create a wallet first with /start."); return; }
   const link = `https://t.me/${botUsername}?start=${id}`;
   const count = store.countReferrals(id);
+  const earnings = store.referralEarnings(id);
   const shareLine = feesEnabled
-    ? `You earn ${b(`${env.fees.referralSharePct ?? 30}%`)} of the agent fee on swaps/zaps by people you refer.`
+    ? `You earn ${b(`${env.fees.referralSharePct}%`)} of the agent fee on swaps by people you refer — paid ${b("instantly to your wallet")} on each of their trades (split on-chain, no claiming needed).`
     : `Referral rewards activate when the agent fee is enabled on this deployment (see /fees).`;
+  const earnedLines = Object.entries(earnings.byToken).length
+    ? "\n" + b("Earned so far:") + "\n" +
+      Object.entries(earnings.byToken)
+        .map(([sym, raw]) => `• ${fmtToken(sym, raw)} ${sym}`).join("\n") +
+      `\n(${earnings.trades} referred trade${earnings.trades === 1 ? "" : "s"})\n`
+    : "";
   await ctx.reply(
     `${b("🎁 Referral")}\n\n` +
       `Share your link — anyone who starts the bot through it is credited to you:\n${code(link)}\n\n` +
       `${shareLine}\n` +
-      `Referred so far: ${b(String(count))}\n\n` +
-      i("Rewards are paid from the agent fee, so they cost your referrals nothing extra."),
+      `Referred so far: ${b(String(count))}\n` +
+      earnedLines +
+      "\n" + i("Rewards are split from the agent fee at the moment of each trade, so they cost your referrals nothing extra and require no claim."),
     { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
+}
+
+const DECIMALS: Record<string, number> = { BTC: 18, MUSD: 18, mUSDC: 6, mUSDT: 6, MEZO: 18 };
+function fmtToken(sym: string, raw: string): string {
+  const d = DECIMALS[sym] ?? 18;
+  const v = Number(BigInt(raw)) / 10 ** d;
+  return v < 0.0001 ? v.toExponential(2) : v.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 /** Router for all `menu:*` inline-button callbacks. */

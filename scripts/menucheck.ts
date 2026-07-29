@@ -8,7 +8,7 @@ const cap: {method:string,payload:any}[] = [];
 bot.api.config.use(async (_p,m,pl)=>{ cap.push({method:m,payload:pl}); return { ok:true, result: m==="sendMessage"?{message_id:cap.length,date:0,chat:{id:7,type:"private"}}:true } as any; });
 await bot.init();
 let fail=0; const ok=(n:string,c:boolean)=>{console.log(`  ${c?"✓":"✗ FAIL"} ${n}`); if(!c)fail++;};
-const msg=(uid:number,id:number,text:string)=>({update_id:id,message:{message_id:id,date:0,chat:{id:uid,type:"private"},from:{id:uid,is_bot:false,first_name:"U"},text,entities:[{type:"bot_command",offset:0,length:text.split(" ")[0].length}]}}) as any;
+const msg=(uid:number,id:number,text:string)=>({update_id:id,message:{message_id:id,date:0,chat:{id:uid,type:"private"},from:{id:uid,is_bot:false,first_name:"U"},text,entities:[{type:"bot_command",offset:0,length:(text.split(" ")[0]??text).length}]}}) as any;
 const tap=(uid:number,id:number,data:string)=>({update_id:id,callback_query:{id:`c${id}`,from:{id:uid,is_bot:false,first_name:"U"},chat_instance:"ci",message:{message_id:id,date:0,chat:{id:uid,type:"private"},from:bot.botInfo,text:"x"},data}}) as any;
 
 // Referral deep-link: user 200 starts via ?start=100

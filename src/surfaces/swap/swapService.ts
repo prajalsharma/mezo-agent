@@ -48,6 +48,8 @@ export async function executeSwap(
     plan.router,
     registry.routingAddress(plan.tokenIn),
     ...(plan.fee ? [plan.fee.recipient] : []),
+    // Native-BTC referral reward transfers directly to the referrer's wallet.
+    ...(plan.referralPaid ? [plan.referralPaid.recipient] : []),
   ];
 
   for (const step of plan.steps) {

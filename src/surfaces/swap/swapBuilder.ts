@@ -60,6 +60,8 @@ export type SwapPlan = {
   amountInFormatted: string;
   /** Agent fee taken from the input token, or undefined when no fee applies. */
   fee?: SwapFee;
+  /** Referral reward split from the fee to the referrer (instant, on-chain). */
+  referralPaid?: { recipient: Address; symbol: string; amount: bigint };
   /** Amount actually routed to the DEX after the fee. */
   amountInNet: bigint;
   expectedOut: bigint;
@@ -89,8 +91,10 @@ export async function buildSwap(params: {
   tokenOut: TokenInfo;
   humanAmountIn: string;
   slippagePct: number;
+  /** When the trader was referred, split the fee: sharePct → recipient, rest → operator. */
+  referral?: { recipient: Address; sharePct: number };
 }): Promise<SwapPlan> {
-  const { owner, tokenIn, tokenOut, humanAmountIn, slippagePct } = params;
+  const { owner, tokenIn, tokenOut, humanAmountIn, slippagePct, referral } = params;
 
   if (tokenIn.symbol === tokenOut.symbol) {
     throw new SwapUnavailableError("Input and output tokens are the same.");
@@ -131,6 +135,15 @@ export async function buildSwap(params: {
   }
   const minOut = applySlippage(expectedOut, slippagePct);
 
+  const referralPaid =
+    fee && referral && referral.sharePct > 0
+      ? {
+          recipient: referral.recipient,
+          symbol: tokenIn.native ? "BTC" : tokenIn.symbol,
+          amount: (fee.amount * BigInt(Math.round(referral.sharePct))) / 100n,
+        }
+      : undefined;
+
   const base = {
     tokenIn,
     tokenOut,
@@ -138,6 +151,7 @@ export async function buildSwap(params: {
     amountInFormatted: humanAmountIn,
     amountInNet,
     fee,
+    referralPaid,
     expectedOut,
     expectedOutFormatted: formatUnits(expectedOut, tokenOut.decimals),
     minOut,
@@ -171,23 +185,31 @@ export async function buildSwap(params: {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
   const steps: PlanStep[] = [];
 
-  // Agent fee: an explicit, visible transfer of the input token. It is its own
-  // step so it appears in the confirmation and in transaction history. Native
-  // input pays the fee as a plain value transfer.
+  // Agent fee: an explicit, visible transfer of the input token, its own step so
+  // it appears on the confirmation and in history. When the trader was referred,
+  // the fee SPLITS AT SOURCE — the referrer's share goes straight to their
+  // wallet on-chain (instant, trustless, no operator-held payout key), the rest
+  // to the operator. Both transfers are shown before signing.
   if (fee) {
-    steps.push(
-      tokenIn.native
-        ? {
-            kind: "fee", to: fee.recipient, data: undefined, value: fee.amount,
-            describe: `Agent fee ${fee.amountFormatted} BTC (${fee.bps / 100}%)`,
-          }
-        : {
-            kind: "fee", to: tokenIn.address, value: 0n,
-            data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [fee.recipient, fee.amount] }),
-            describe: `Agent fee ${fee.amountFormatted} ${tokenIn.symbol} (${fee.bps / 100}%)`,
-            erc20: { symbol: tokenIn.symbol, amount: fee.amount },
-          },
-    );
+    const referrerCut = referral ? (fee.amount * BigInt(Math.round(referral.sharePct))) / 100n : 0n;
+    const operatorCut = fee.amount - referrerCut;
+    const pushFee = (to: Address, amount: bigint, label: string) => {
+      if (amount <= 0n) return;
+      steps.push(
+        tokenIn.native
+          ? { kind: "fee", to, data: undefined, value: amount, describe: label }
+          : {
+              kind: "fee", to: tokenIn.address, value: 0n,
+              data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, amount] }),
+              describe: label, erc20: { symbol: tokenIn.symbol, amount },
+            },
+      );
+    };
+    const unit = tokenIn.native ? "BTC" : tokenIn.symbol;
+    if (referrerCut > 0n && referral) {
+      pushFee(referral.recipient, referrerCut, `Referral reward ${formatUnits(referrerCut, tokenIn.decimals)} ${unit} → your referrer`);
+    }
+    pushFee(fee.recipient, operatorCut, `Agent fee ${formatUnits(operatorCut, tokenIn.decimals)} ${unit} (${fee.bps / 100}%)`);
   }
 
   // Approval on the ROUTING address. Native BTC approves through its ERC-20

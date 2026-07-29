@@ -2,6 +2,7 @@ import { InlineKeyboard, type Context } from "grammy";
 import { formatUnits } from "viem";
 import { env } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
+import { store } from "../../db/store.js";
 import { registry } from "../../registry/registry.js";
 import { buildSwap, SwapUnavailableError, type SwapPlan } from "../../surfaces/swap/swapBuilder.js";
 import { executeSwap } from "../../surfaces/swap/swapService.js";
@@ -41,12 +42,19 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
 
   let plan: SwapPlan;
   try {
+    // Referral split-at-source: if this trader was referred and a fee is
+    // charged, the referrer's share is paid straight to their wallet on-chain.
+    const referrerRec = user.referredBy !== undefined ? getUser(user.referredBy) : undefined;
+    const referral = referrerRec
+      ? { recipient: referrerRec.address, sharePct: env.fees.referralSharePct }
+      : undefined;
     plan = await buildSwap({
       owner: user.address,
       tokenIn,
       tokenOut,
       humanAmountIn: intent.amount,
       slippagePct: slippage,
+      referral,
     });
   } catch (err) {
     if (err instanceof SwapUnavailableError) {
@@ -148,6 +156,13 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
     const failed = result.outcomes.find((o) => !o.ok);
     await ctx.reply(`❌ Swap aborted: ${failed && !failed.ok ? failed.reason : "unknown error"}`);
     return;
+  }
+
+  // Record the referral reward (paid on-chain in the same tx set) for the
+  // referrer's /referral history. Ledger only — settlement already happened.
+  const rp = pendingState.plan.referralPaid;
+  if (rp && rp.amount > 0n && user.referredBy !== undefined) {
+    store.recordReferralEarning(user.referredBy, rp.symbol, rp.amount);
   }
 
   const hash = result.finalHash!;
