@@ -170,6 +170,12 @@ const MAINNET: NetworkRegistry = {
     Voter: "0x48233cCC97B87Ba93bCA212cbEe48e3210211f03",
     RewardsDistributor: "0xb58477e074265BdC7F7ca6100eD0f7De264F74A2",
 
+    // veMEZO escrow — from newtmex/mezo-abi deployments (whose mainnet VeBTC +
+    // Voter match ours exactly, validating the source). Verified on-chain by
+    // `npm run verifyve`: token() == MEZO, symbol "veMEZO", 372M supply,
+    // voter() == the BoostVoter, RewardsDistributor.ve() == this escrow.
+    VotingEscrowMEZO: "0xb90fdAd3DFD180458D62Cc6acedc983D78E20122",
+
     // Mezo Borrow (Liquity-style CDP). Source: the canonical MUSD developer
     // reference, https://mezo.org/docs/developers/musd/musd-redemptions.
     // Verified on-chain by `npm run verifyaddrs` — each has code, answers its
@@ -195,7 +201,7 @@ const MAINNET: NetworkRegistry = {
   // VotingEscrowMEZO, Matchbox, Market: genuinely unpublished. veMEZO has no
   // documented contract; Matchbox is a community project (matchbox.markets);
   // Mezo Market has no published contract address.
-  needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market", "Delegate7702"],
+  needsConfirmation: ["Matchbox", "Market", "Delegate7702"],
   // From docs (vault-notices.md / usdc-lending-vault.md), shapes verified
   // on-chain: sMUSD answers deposit(uint256)+withdraw(uint256) only (savings),
   // the Morpho vault is full ERC-4626 with asset() == mUSDC.
@@ -234,6 +240,13 @@ const TESTNET: NetworkRegistry = {
       address: "0x629320719a6190bd145C277226fd45e7648F950A",
       decimals: 6,
     },
+    // MEZO governance token (precompile-style ERC-20; same address both nets).
+    MEZO: {
+      symbol: "MEZO",
+      name: "Mezo (Matsnet)",
+      address: "0x7B7c000000000000000000000000000000000001",
+      decimals: 18,
+    },
   },
   contracts: {
     // DEX Router + ve(3,3) on Matsnet. Same source and verification as mainnet
@@ -244,6 +257,10 @@ const TESTNET: NetworkRegistry = {
     VotingEscrowBTC: "0xB63fcCd03521Cf21907627bd7fA465C129479231",
     Voter: "0x72F8dd7F44fFa19E45955aa20A5486E8EB255738",
     RewardsDistributor: "0x10B0E7b3411F4A38ca2F6BB697aA28D607924729",
+
+    // veMEZO escrow on Matsnet (newtmex/mezo-abi). Verified on-chain via
+    // `npm run verifyve` — token() == MEZO, symbol "veMEZO", 7.97M supply.
+    VotingEscrowMEZO: "0xace816ca2bcc9b12c59799dcc5a959fb9b98111b",
 
     // EIP-7702 session-key delegate — deployed by this project on Matsnet and
     // bytecode-verified (deployed runtime == compiled artifact, exact match; the
@@ -270,7 +287,7 @@ const TESTNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDC"], address: "0x525F049A4494dA0a6c87E3C4df55f9929765Dc3e", stable: true },
     { pair: ["MUSD", "mUSDT"], address: "0x27414B76CF00E24ed087adb56E26bAeEEe93494e", stable: true },
   ],
-  needsConfirmation: ["VotingEscrowMEZO", "Matchbox", "Market"],
+  needsConfirmation: ["Matchbox", "Market"],
   // No Matsnet vault addresses are published.
   vaults: [],
 };

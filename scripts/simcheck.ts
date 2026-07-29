@@ -27,6 +27,7 @@ const CASES: [string, any, Expect][] = [
   ["closeTrove", { action: "closeTrove" }, "protocol-revert"], // no Trove
   // ve(3,3) — createLock must simulate clean; vote reverts (we don't own veNFT 1).
   ["lock/createLock(veBTC)", { action: "lock", asset: "BTC", amount: "0.2", lockDays: 28 }, "protocol-revert"], // no allowance in isolated call
+  ["lock/createLock(veMEZO)", { action: "lock", asset: "MEZO", amount: "1000", lockDays: 365 }, "any-revert"], // no allowance in isolated call
   ["vote/manual", { action: "vote", mode: "manual", tokenId: "1", weights: { "MUSD/mUSDC": 10_000 } }, "any-revert"], // custom error: not owner of veNFT 1
   // Zap — simulate the router swap leg (approvals are trivial ERC-20 calls).
   ["zap/swap-leg", { action: "zap", inputToken: "BTC", inputAmount: "0.01", pool: "BTC/MUSD", stake: false }, "any-revert"], // custom error: no allowance in isolated call

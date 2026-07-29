@@ -98,6 +98,16 @@ async function main() {
   const rdVe = await read(C.RewardsDistributor!, "ve", "address");
   check(`RewardsDistributor.ve == VeBTC (${rdVe ?? "no answer"})`, eq(rdVe, C.VeBTC!));
 
+  // veMEZO escrow (newtmex/mezo-abi): token() must be MEZO, with live supply.
+  const veMezo = netName === "mainnet"
+    ? "0xb90fdAd3DFD180458D62Cc6acedc983D78E20122"
+    : "0xace816ca2bcc9b12c59799dcc5a959fb9b98111b";
+  const MEZO = "0x7B7c000000000000000000000000000000000001";
+  const vmToken = await read(veMezo as Address, "token", "address");
+  check(`VeMEZO.token == MEZO (${vmToken ?? "no answer"})`, eq(vmToken, MEZO));
+  const vmSupply = await read(veMezo as Address, "supply", "uint256");
+  check(`VeMEZO has LIVE locked supply (${vmSupply ?? "?"} wei)`, typeof vmSupply === "bigint" && vmSupply > 10n ** 18n);
+
   // Testnet pools: factory() must match the testnet PoolFactory and quote.
   if (netName === "testnet") {
     for (const [pair, addr] of Object.entries(TESTNET_POOLS)) {
