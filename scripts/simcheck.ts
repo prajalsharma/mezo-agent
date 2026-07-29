@@ -29,6 +29,8 @@ const CASES: [string, any, Expect][] = [
   ["lock/createLock(veBTC)", { action: "lock", asset: "BTC", amount: "0.2", lockDays: 28 }, "protocol-revert"], // no allowance in isolated call
   ["lock/createLock(veMEZO)", { action: "lock", asset: "MEZO", amount: "1000", lockDays: 365 }, "any-revert"], // no allowance in isolated call
   ["vote/manual", { action: "vote", mode: "manual", tokenId: "1", weights: { "MUSD/mUSDC": 10_000 } }, "any-revert"], // custom error: not owner of veNFT 1
+  ["matchbox/reset(BoostVoter)", { action: "matchbox", op: "unpair", veMezoId: 5 }, "any-revert"], // not owner of veMEZO 5
+  ["matchbox/vote(BoostVoter)", { action: "matchbox", op: "pair", veMezoId: 5, weights: { "BTC/MUSD": 10_000 } }, "any-revert"],
   // Zap — simulate the router swap leg (approvals are trivial ERC-20 calls).
   ["zap/swap-leg", { action: "zap", inputToken: "BTC", inputAmount: "0.01", pool: "BTC/MUSD", stake: false }, "any-revert"], // custom error: no allowance in isolated call
   // Vault deposit — the deposit step (mainnet only; sMUSD savings shape).

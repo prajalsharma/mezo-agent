@@ -1,6 +1,6 @@
-import { encodeFunctionData } from "viem";
+import { encodeFunctionData, type Address } from "viem";
 import { registry } from "../registry/registry.js";
-import { votingEscrowAbi } from "../abis/mezo.js";
+import { votingEscrowAbi, boostVoterAbi } from "../abis/mezo.js";
 import { gatedPlan, ActionUnavailableError, type ActionPlan, type ActionStep } from "./plan.js";
 import type { MarketBuyIntent, MatchboxIntent, VeTransferIntent, VeMergeIntent } from "../llm/intent.js";
 
@@ -28,15 +28,69 @@ export function buildMarketBuy(intent: MarketBuyIntent): ActionPlan {
 }
 
 export function buildMatchbox(intent: MatchboxIntent): ActionPlan {
-  const summary =
-    intent.op === "pair"
-      ? [`Pair veBTC #${intent.veBtcId}${intent.veMezoId !== undefined ? ` with veMEZO #${intent.veMezoId}` : ""} via Matchbox.`,
-         "Pairing boosts the veBTC position's fees + bribes per unit of voting power (up to 5×)."]
-      : [`Unpair veBTC #${intent.veBtcId} from its Matchbox match.`];
-  return gatedPlan({
-    action: "matchbox", title: "🧩 Matchbox pairing", summary,
-    reason: "Preview only — the Matchbox contract address isn't published in the canonical reference yet.",
-  });
+  if (!registry.hasContract("Matchbox")) {
+    return gatedPlan({
+      action: "matchbox", title: "🧩 Matchbox (boost)",
+      summary: ["Direct your veMEZO boost onto veBTC gauges."],
+      reason: "Preview only — the BoostVoter address isn't confirmed on this deployment yet.",
+    });
+  }
+  const boostVoter = registry.contract("Matchbox");
+
+  // Unpair = clear the veMEZO's boost votes. Fully specified: reset(veMezoId).
+  if (intent.op === "unpair") {
+    if (intent.veMezoId === undefined) {
+      throw new ActionUnavailableError('Which veMEZO NFT should I clear? Say e.g. "unpair veMEZO 5".');
+    }
+    const step: ActionStep = {
+      kind: "matchboxReset", to: boostVoter, value: 0n,
+      data: encodeFunctionData({ abi: boostVoterAbi, functionName: "reset", args: [BigInt(intent.veMezoId)] }),
+      describe: `Clear veMEZO #${intent.veMezoId} boost votes`,
+    };
+    return {
+      action: "matchbox", title: "🧩 Matchbox — unpair", warnings: [],
+      summary: [`Clear all boost votes from veMEZO #${intent.veMezoId}.`],
+      steps: [step], allowedTargets: [boostVoter], executable: true, nativeValue: 0n,
+    };
+  }
+
+  // Pair/boost = veMEZO votes on pool boost-gauges via BoostVoter.vote. Requires
+  // the boosting veMEZO id and explicit pool weights (bps summing to 10000) — we
+  // never guess which gauge to boost. Gauge addresses are the registry pools;
+  // simulation before signing catches any boost-gauge resolution mismatch.
+  if (intent.veMezoId === undefined) {
+    throw new ActionUnavailableError(
+      'Boosting needs your veMEZO NFT and where to point it, e.g. "pair veMEZO 5: 100% BTC/MUSD".',
+    );
+  }
+  const weights = intent.weights ?? {};
+  const entries = Object.entries(weights);
+  if (entries.length === 0) {
+    throw new ActionUnavailableError('Say which pool(s) to boost, e.g. "pair veMEZO 5: 60% BTC/MUSD, 40% MUSD/mUSDC".');
+  }
+  const total = entries.reduce((s, [, w]) => s + w, 0);
+  if (total !== 10_000) throw new ActionUnavailableError(`Boost weights must sum to 10000 bps (got ${total}).`);
+  const gauges: Address[] = [];
+  const bps: bigint[] = [];
+  for (const [poolName, w] of entries) {
+    const p = registry.resolvePool(...(poolName.split("/") as [string, string]));
+    if (!p) throw new ActionUnavailableError(`Unknown pool "${poolName}". Available: ${registry.pools().map((x) => x.pair.join("/")).join(", ")}.`);
+    gauges.push(p.address);
+    bps.push(BigInt(w));
+  }
+  const step: ActionStep = {
+    kind: "matchboxVote", to: boostVoter, value: 0n,
+    data: encodeFunctionData({ abi: boostVoterAbi, functionName: "vote", args: [BigInt(intent.veMezoId), gauges, bps] }),
+    describe: `Boost with veMEZO #${intent.veMezoId}: ${entries.map(([p, w]) => `${p} ${(w / 100).toFixed(0)}%`).join(", ")}`,
+  };
+  return {
+    action: "matchbox", title: "🧩 Matchbox — boost", warnings: ["Boost votes persist across epochs until changed or reset."],
+    summary: [
+      `Point veMEZO #${intent.veMezoId} boost at: ${entries.map(([p, w]) => `${p} ${(w / 100).toFixed(0)}%`).join(", ")}.`,
+      "Boosting raises a veBTC voter's fees + bribes per vote (up to 5×).",
+    ],
+    steps: [step], allowedTargets: [boostVoter], executable: true, nativeValue: 0n,
+  };
 }
 
 export function buildVeTransfer(intent: VeTransferIntent, owner: `0x${string}`): ActionPlan {

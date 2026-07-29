@@ -104,8 +104,10 @@ export const ZapIntent = z.object({
 export const MatchboxIntent = z.object({
   action: z.literal("matchbox"),
   op: z.enum(["pair", "unpair"]).default("pair"),
-  veBtcId: z.number().int().nonnegative(),
+  veBtcId: z.number().int().nonnegative().optional(),
   veMezoId: z.number().int().nonnegative().optional(),
+  /** Pool → boost weight in basis points (pair mode; must sum to 10000). */
+  weights: z.record(z.string(), z.number().int().min(0).max(10_000)).optional(),
 });
 export const VeTransferIntent = z.object({
   action: z.literal("veTransfer"),

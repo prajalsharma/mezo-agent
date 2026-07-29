@@ -109,6 +109,19 @@ export const voterAbi = [
   ], outputs: [] },
 ] as const;
 
+/**
+ * BoostVoter — the on-chain veBTC/veMEZO matching primitive (what Matchbox.markets
+ * is a UI over). A veMEZO holder directs their boost with vote(veMezoId, gauges,
+ * weights); reset(veMezoId) clears it. Signatures verified against the
+ * newtmex/mezo-abi deployment ABI; ve() == VeMEZO confirmed on-chain.
+ */
+export const boostVoterAbi = [
+  { type: "function", name: "vote", stateMutability: "nonpayable", inputs: [
+    { name: "_tokenId", type: "uint256" }, { name: "_gaugeVote", type: "address[]" }, { name: "_weights", type: "uint256[]" },
+  ], outputs: [] },
+  { type: "function", name: "reset", stateMutability: "nonpayable", inputs: [{ name: "_tokenId", type: "uint256" }], outputs: [] },
+] as const;
+
 export const gaugeAbi = [
   // stakingToken() must equal the pool address — the identity check that stops a
   // spoofed Voter.gauges() return from becoming an approval spender (Audit R2 H7).

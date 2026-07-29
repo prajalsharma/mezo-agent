@@ -176,6 +176,11 @@ const MAINNET: NetworkRegistry = {
     // voter() == the BoostVoter, RewardsDistributor.ve() == this escrow.
     VotingEscrowMEZO: "0xb90fdAd3DFD180458D62Cc6acedc983D78E20122",
 
+    // Matchbox on-chain primitive = the BoostVoter (Matchbox.markets is a UI on
+    // top). Verified: BoostVoter.ve() == VeMEZO, 697 boost gauges, 53M weight.
+    // vote(veMezoId, gauges, weights) / reset(veMezoId) — from the deployment ABI.
+    Matchbox: "0x2Ba614a598Cffa5a19d683cDCA97bac3a49313d1",
+
     // Mezo Borrow (Liquity-style CDP). Source: the canonical MUSD developer
     // reference, https://mezo.org/docs/developers/musd/musd-redemptions.
     // Verified on-chain by `npm run verifyaddrs` — each has code, answers its
@@ -201,7 +206,7 @@ const MAINNET: NetworkRegistry = {
   // VotingEscrowMEZO, Matchbox, Market: genuinely unpublished. veMEZO has no
   // documented contract; Matchbox is a community project (matchbox.markets);
   // Mezo Market has no published contract address.
-  needsConfirmation: ["Matchbox", "Market", "Delegate7702"],
+  needsConfirmation: ["Market", "Delegate7702"],
   // From docs (vault-notices.md / usdc-lending-vault.md), shapes verified
   // on-chain: sMUSD answers deposit(uint256)+withdraw(uint256) only (savings),
   // the Morpho vault is full ERC-4626 with asset() == mUSDC.
@@ -262,6 +267,9 @@ const TESTNET: NetworkRegistry = {
     // `npm run verifyve` — token() == MEZO, symbol "veMEZO", 7.97M supply.
     VotingEscrowMEZO: "0xace816ca2bcc9b12c59799dcc5a959fb9b98111b",
 
+    // Matchbox on-chain primitive = BoostVoter (Matsnet). BoostVoter.ve()==VeMEZO.
+    Matchbox: "0x21d7bDF5a5929AD179F8cA0c9014A0B62ae6Bfd1",
+
     // EIP-7702 session-key delegate — deployed by this project on Matsnet and
     // bytecode-verified (deployed runtime == compiled artifact, exact match; the
     // same artifact the 25 SessionKeyDelegate tests pass against). Enables the
@@ -287,7 +295,7 @@ const TESTNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDC"], address: "0x525F049A4494dA0a6c87E3C4df55f9929765Dc3e", stable: true },
     { pair: ["MUSD", "mUSDT"], address: "0x27414B76CF00E24ed087adb56E26bAeEEe93494e", stable: true },
   ],
-  needsConfirmation: ["Matchbox", "Market"],
+  needsConfirmation: ["Market"],
   // No Matsnet vault addresses are published.
   vaults: [],
 };
