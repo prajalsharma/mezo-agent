@@ -31,7 +31,7 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
     case "vote": return buildVote(intent);
     case "zap": return buildZap(intent, owner);
     case "matchbox": return buildMatchbox(intent);
-    case "marketBrowse": return buildMarketBrowse(intent.query);
+    case "marketBrowse": return await buildMarketBrowse(intent.query);
     case "marketBuy": return buildMarketBuy(intent);
     case "veTransfer": return buildVeTransfer(intent, owner);
     case "veMerge": return buildVeMerge(intent);

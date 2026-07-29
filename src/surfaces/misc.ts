@@ -1,30 +1,58 @@
-import { encodeFunctionData, type Address } from "viem";
+import { encodeFunctionData, formatUnits, type Address } from "viem";
+import { publicClient } from "../chain/client.js";
+import { poolAbi } from "../abis/pool.js";
 import { registry } from "../registry/registry.js";
 import { votingEscrowAbi, boostVoterAbi } from "../abis/mezo.js";
 import { gatedPlan, ActionUnavailableError, type ActionPlan, type ActionStep } from "./plan.js";
 import type { MarketBuyIntent, MatchboxIntent, VeTransferIntent, VeMergeIntent } from "../llm/intent.js";
 
 /**
- * Market, Matchbox and veNFT ops. Market/Matchbox ABIs are best-effort pending
- * Mezo's published interfaces, so those stay gated. veNFT transfer/merge use the
- * standard VotingEscrow interface and execute once its address is confirmed.
+ * Market, Matchbox and veNFT ops. Mezo Market = Router-based token swaps (browse
+ * lists live pairs, buy routes to a swap). Matchbox = the BoostVoter. veNFT
+ * transfer/merge use the standard VotingEscrow interface. All wired + verified.
  */
 
-export function buildMarketBrowse(query?: string): ActionPlan {
-  return gatedPlan({
-    action: "marketBrowse", title: "🛍️ Mezo Market",
-    summary: [query ? `Browsing Market for “${query}”.` : "Browsing Mezo Market listings.",
-      "Listings are read from the Market contract / indexer."],
-    reason: "Preview only — the Market address/indexer isn't confirmed on this deployment yet.",
-  });
+/**
+ * Mezo Market. Per the canonical glossary, "Mezo Market" is the token-swap
+ * marketplace in the Mezo App, powered by the Router over the DEX pools — NOT a
+ * separate NFT/goods marketplace. So "browse" = the live tradeable pools + their
+ * prices, and "purchase" = a swap (which the swap surface already executes).
+ */
+export async function buildMarketBrowse(query?: string): Promise<ActionPlan> {
+  const pools = registry.pools();
+  const lines: string[] = ["Mezo Market — live tradeable pairs (swap any of these):"];
+  const c = publicClient();
+  for (const p of pools) {
+    const [a, b] = p.pair;
+    const tokA = registry.tryToken(a), tokB = registry.tryToken(b);
+    if (!tokA || !tokB) continue;
+    let priceLine = `${a}/${b} (${p.stable ? "stable" : "volatile"})`;
+    try {
+      const oneA = 10n ** BigInt(tokA.decimals);
+      const out = (await c.readContract({
+        address: p.address, abi: poolAbi, functionName: "getAmountOut", args: [oneA, registry.routingAddress(tokA)],
+      })) as bigint;
+      priceLine += ` — 1 ${a} ≈ ${Number(formatUnits(out, tokB.decimals)).toFixed(4)} ${b}`;
+    } catch { /* pool read best-effort */ }
+    lines.push(`• ${priceLine}`);
+  }
+  lines.push("", `To buy: just say e.g. "swap 100 MUSD to mUSDC".`);
+  if (query) lines.unshift(`(filter "${query}" — showing all pairs)`);
+  // Browsing is read-only; return a non-signable plan carrying the listing.
+  return {
+    action: "marketBrowse", title: "🛍️ Mezo Market", summary: lines,
+    warnings: [], steps: [], allowedTargets: [], executable: false, nativeValue: 0n,
+    gatedReason: "Browsing is read-only — pick a pair and swap to purchase.",
+  };
 }
 
 export function buildMarketBuy(intent: MarketBuyIntent): ActionPlan {
-  return gatedPlan({
-    action: "marketBuy", title: "🛒 Buy from Market",
-    summary: [`Purchase listing ${intent.listingId}.`, "Price + item details are shown from the Market contract before you confirm."],
-    reason: "Preview only — the Market address isn't published in the canonical reference yet.",
-  });
+  // A Market purchase IS a token swap through the Router (per the Mezo glossary).
+  // Route the user to the swap surface, which is fully live.
+  throw new ActionUnavailableError(
+    `Mezo Market purchases are token swaps. Say what you want to buy, e.g. ` +
+      `"swap 100 MUSD to mUSDC" or "swap 0.01 BTC to MUSD". (You asked for listing "${intent.listingId}".)`,
+  );
 }
 
 export function buildMatchbox(intent: MatchboxIntent): ActionPlan {

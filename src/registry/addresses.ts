@@ -192,6 +192,10 @@ const MAINNET: NetworkRegistry = {
     // vote(veMezoId, gauges, weights) / reset(veMezoId) — from the deployment ABI.
     Matchbox: "0x2Ba614a598Cffa5a19d683cDCA97bac3a49313d1",
 
+    // "Mezo Market" = the token-swap marketplace, powered by the Router (per the
+    // canonical glossary). Same address as Router; browse lists pools, buy=swap.
+    Market: "0x16A76d3cd3C1e3CE843C6680d6B37E9116b5C706",
+
     // Mezo Borrow (Liquity-style CDP). Source: the canonical MUSD developer
     // reference, https://mezo.org/docs/developers/musd/musd-redemptions.
     // Verified on-chain by `npm run verifyaddrs` — each has code, answers its
@@ -217,7 +221,7 @@ const MAINNET: NetworkRegistry = {
   // VotingEscrowMEZO, Matchbox, Market: genuinely unpublished. veMEZO has no
   // documented contract; Matchbox is a community project (matchbox.markets);
   // Mezo Market has no published contract address.
-  needsConfirmation: ["Market", "Delegate7702"],
+  needsConfirmation: ["Delegate7702"],
   // From docs (vault-notices.md / usdc-lending-vault.md), shapes verified
   // on-chain: sMUSD answers deposit(uint256)+withdraw(uint256) only (savings),
   // the Morpho vault is full ERC-4626 with asset() == mUSDC.
@@ -280,6 +284,7 @@ const TESTNET: NetworkRegistry = {
 
     // Matchbox on-chain primitive = BoostVoter (Matsnet). BoostVoter.ve()==VeMEZO.
     Matchbox: "0x21d7bDF5a5929AD179F8cA0c9014A0B62ae6Bfd1",
+    Market: "0x9a1ff7FE3a0F69959A3fBa1F1e5ee18e1A9CD7E9",
 
     // EIP-7702 session-key delegate — deployed by this project on Matsnet and
     // bytecode-verified (deployed runtime == compiled artifact, exact match; the
@@ -306,7 +311,7 @@ const TESTNET: NetworkRegistry = {
     { pair: ["MUSD", "mUSDC"], address: "0x525F049A4494dA0a6c87E3C4df55f9929765Dc3e", stable: true },
     { pair: ["MUSD", "mUSDT"], address: "0x27414B76CF00E24ed087adb56E26bAeEEe93494e", stable: true },
   ],
-  needsConfirmation: ["Market"],
+  needsConfirmation: [],
   // No Matsnet vault addresses are published.
   vaults: [],
 };
