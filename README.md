@@ -87,13 +87,36 @@ Addresses are read from the canonical reference, never hardcoded from memory:
 > problem. Simulation caught it: a correct selector produces a decoded protocol
 > revert. `npm run simcheck` is the regression guard.
 
-### Enabling gated surfaces
+### Enabling gated surfaces — feature → env key
 
-Each gated surface activates by adding its confirmed address to the registry
-(`src/registry/addresses.ts`) or via env — no code change. For example, set
-`MEZO_ROUTER_ADDRESS` for swap/zap execution, or add `BorrowerOperations`,
-`HintHelpers`, `SortedTroves`, `PriceFeed` for live Borrow. The bot refuses to
-act against an unconfirmed address rather than invent one.
+Every surface activates by supplying its confirmed contract address via env —
+no code change. The bot refuses to act against an unconfirmed address rather
+than invent one. `npm run phaseaudit` prints this table live for the configured
+network.
+
+| Feature | Status today | Env key that unlocks it |
+| --- | --- | --- |
+| Wallet / portfolio / deposit QR | ✅ live | — (none needed) |
+| Borrow / Repay / Adjust / Close Trove | ✅ **executable** (addresses seeded + on-chain verified) | — (override: `MEZO_ADDR_BORROWEROPERATIONS` etc.) |
+| Swap quotes | ✅ live (pool-direct) | — |
+| Swap **execution** | 🔒 preview | `MEZO_ROUTER_ADDRESS` (or `MEZO_ADDR_ROUTER`) |
+| Zap into pool | 🔒 preview | `MEZO_ROUTER_ADDRESS` |
+| Stake / Unstake LP | 🔒 preview | `MEZO_ADDR_VOTER` |
+| Claim rewards (gauge/bribe) | 🔒 preview | `MEZO_ADDR_VOTER` |
+| Claim rebases | 🔒 preview | `MEZO_ADDR_REWARDSDISTRIBUTOR` |
+| Vote (optimal/manual) | 🔒 preview | `MEZO_ADDR_VOTER` (+ incentives indexer) |
+| Lock veBTC / extend / veNFT transfer & merge | 🔒 preview | `MEZO_ADDR_VOTINGESCROWBTC` |
+| Lock veMEZO | 🔒 preview | `MEZO_ADDR_VOTINGESCROWMEZO` |
+| Matchbox pairing | 🔒 preview | `MEZO_ADDR_MATCHBOX` |
+| Mezo Market browse / buy | 🔒 preview | `MEZO_ADDR_MARKET` |
+| Vault deposits | 🔒 preview | vault addresses (unpublished; registry edit) |
+| EIP-7702 `/upgrade` (session keys) | 🔒 preview | `DELEGATE7702_ADDRESS` (deploy `contracts/` first) |
+| DCA / auto-compound scheduling | ✅ live (`KEEPER_ENABLED=true`) | trades land once the swap Router is set |
+| Multi-account, limits, watch-only, optimal-voting math | ✅ live | — |
+
+The 🔒 addresses are **not published** in Mezo's canonical contracts reference
+and are not derivable on-chain (see "Address provenance"). Ask the Mezo team
+(#developers on Discord); the moment you have one, set the env var and restart.
 
 ## The core invariant
 
