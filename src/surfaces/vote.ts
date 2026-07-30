@@ -17,7 +17,7 @@ import type { VoteIntent } from "../llm/intent.js";
  * incentives is reported honestly as "nothing to optimize".
  */
 
-export function buildVote(intent: VoteIntent): ActionPlan | Promise<ActionPlan> {
+export async function buildVote(intent: VoteIntent): Promise<ActionPlan> {
   if (intent.mode === "manual") {
     const weights = intent.weights ?? {};
     const entries = Object.entries(weights);
@@ -36,6 +36,24 @@ export function buildVote(intent: VoteIntent): ActionPlan | Promise<ActionPlan> 
       throw new ActionUnavailableError(
         'Which veBTC NFT should cast this vote? Say e.g. "vote with veNFT 3: 60% MUSD/mUSDC, 40% BTC/MUSD".',
       );
+    }
+    // Pre-check the veNFT actually carries voting power BEFORE building the tx —
+    // same guard optimal mode already has, so a wrong/expired id gives a plain
+    // message instead of a raw on-chain revert. (Fail-open if the escrow isn't
+    // wired; the pre-Confirm simulation still backstops it.)
+    if (registry.hasContract("VotingEscrowBTC")) {
+      try {
+        const power = (await publicClient().readContract({
+          address: registry.contract("VotingEscrowBTC"),
+          abi: votingEscrowAbi, functionName: "balanceOfNFT", args: [BigInt(intent.tokenId)],
+        })) as bigint;
+        if (power <= 0n) {
+          throw new ActionUnavailableError(`veNFT #${intent.tokenId} has no voting power (expired or not yours). Check the id.`);
+        }
+      } catch (err) {
+        if (err instanceof ActionUnavailableError) throw err; // real "no power" — surface it
+        // otherwise a read hiccup — fail open, let simulation catch a bad id
+      }
     }
     const pools: Address[] = [];
     const bps: bigint[] = [];
@@ -67,7 +85,7 @@ export function buildVote(intent: VoteIntent): ActionPlan | Promise<ActionPlan> 
   // Optimal mode — async: reads live epoch incentives + current vote weights
   // straight from the chain (core/incentivesFeed.ts). We never fabricate
   // incentive numbers; zero posted incentives is reported as exactly that.
-  return buildOptimalVote(intent);
+  return await buildOptimalVote(intent);
 }
 
 /** Minimum total priced incentive (MUSD) before an optimal vote is executable. */

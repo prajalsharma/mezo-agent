@@ -20,7 +20,7 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
   switch (intent.action) {
     case "borrow": return await buildBorrow(intent);
     case "repay": return buildRepay(intent);
-    case "adjust": return buildAdjust(intent);
+    case "adjust": return await buildAdjust(intent, owner);
     case "closeTrove": return buildCloseTrove();
     case "vaultDeposit": return buildVaultDeposit(intent, owner);
     case "stakeLp": return buildStakeLp(intent, owner);
@@ -28,7 +28,7 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
     case "claim": return buildClaim(intent, owner);
     case "lock": return buildLock(intent);
     case "extendLock": return buildExtendLock(intent, owner);
-    case "vote": return buildVote(intent);
+    case "vote": return await buildVote(intent);
     case "zap": return buildZap(intent, owner);
     case "matchbox": return buildMatchbox(intent);
     case "marketBrowse": return await buildMarketBrowse(intent.query);

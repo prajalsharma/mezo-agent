@@ -1,6 +1,6 @@
 import { encodeFunctionData, parseEther, parseUnits, formatUnits, type Address } from "viem";
 import { registry } from "../registry/registry.js";
-import { borrowerOperationsAbi } from "../abis/mezo.js";
+import { borrowerOperationsAbi, troveManagerAbi } from "../abis/mezo.js";
 import { publicClient } from "../chain/client.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
 import { txnFee, musdToken } from "./fees.js";
@@ -23,6 +23,21 @@ async function readBtcPriceUsd(): Promise<number | undefined> {
     })) as bigint;
     const price = Number(formatUnits(raw, 18));
     return price > 0 ? price : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Current Trove collateral (BTC) and debt (MUSD) for an owner. undefined if unreadable. */
+async function readTrove(owner: Address): Promise<{ collBTC: number; debtMUSD: number } | undefined> {
+  if (!registry.hasContract("TroveManager")) return undefined;
+  try {
+    const tm = registry.contract("TroveManager");
+    const [coll, debt] = await Promise.all([
+      publicClient().readContract({ address: tm, abi: troveManagerAbi, functionName: "getTroveColl", args: [owner] }) as Promise<bigint>,
+      publicClient().readContract({ address: tm, abi: troveManagerAbi, functionName: "getTroveDebt", args: [owner] }) as Promise<bigint>,
+    ]);
+    return { collBTC: Number(formatUnits(coll, 18)), debtMUSD: Number(formatUnits(debt, 18)) };
   } catch {
     return undefined;
   }
@@ -164,7 +179,7 @@ export function buildRepay(intent: RepayIntent): ActionPlan {
   return { action: "repay", title: "💵 Repay MUSD", summary, warnings: [], steps, allowedTargets: [bo, ...(musd ? [musd] : [])], executable: true, nativeValue: 0n };
 }
 
-export function buildAdjust(intent: AdjustIntent): ActionPlan {
+export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise<ActionPlan> {
   const addColl = intent.addCollateralBTC ? Number(intent.addCollateralBTC) : 0;
   const withdrawColl = intent.withdrawCollateralBTC ? Number(intent.withdrawCollateralBTC) : 0;
   const mint = intent.mintMUSD ? Number(intent.mintMUSD) : 0;
@@ -184,6 +199,31 @@ export function buildAdjust(intent: AdjustIntent): ActionPlan {
 
   if (NEEDED.some((k) => !registry.hasContract(k))) {
     return borrowGated("🔧 Adjust Trove", "adjust", summary, warnings);
+  }
+
+  // Resulting collateral-ratio check. The generic pre-Confirm simulation can't
+  // catch this: adjust runs ratio-IMPROVING steps first, so the ratio-lowering
+  // step (mint/withdraw) is last and step-0 simulation looks fine. Read the
+  // current Trove + price, apply the delta, and block if it would drop below MCR
+  // — with real numbers. Fail-open on any unreadable read.
+  const trove = await readTrove(owner);
+  const price = await readBtcPriceUsd();
+  if (trove && price !== undefined) {
+    if (trove.debtMUSD <= 0) {
+      throw new ActionUnavailableError("You don't have an open Trove to adjust. Use borrow to open one first.");
+    }
+    const newColl = trove.collBTC + addColl - withdrawColl;
+    const newDebt = trove.debtMUSD + mint * 1.01 - repay; // new mint carries ~1% borrow fee
+    if (newColl <= 0) throw new ActionUnavailableError("That withdrawal would remove more collateral than the Trove holds.");
+    const newIcr = (newColl * price) / newDebt;
+    const ok = newDebt <= 0 || newIcr >= MCR;
+    summary.push(`Resulting collateral ratio: ~${(newIcr * 100).toFixed(0)}% ${ok ? "✅" : "❌"} (min ${(MCR * 100).toFixed(0)}%)`);
+    if (!ok) {
+      throw new ActionUnavailableError(
+        `That adjustment would drop your collateral ratio to ~${(newIcr * 100).toFixed(0)}% — below the ${(MCR * 100).toFixed(0)}% minimum, which the protocol rejects. ` +
+          `Add more BTC, mint less, or repay some MUSD first. (Current: ${trove.collBTC.toFixed(4)} BTC / ${Math.round(trove.debtMUSD).toLocaleString()} MUSD.)`,
+      );
+    }
   }
 
   const bo = registry.contract("BorrowerOperations");
