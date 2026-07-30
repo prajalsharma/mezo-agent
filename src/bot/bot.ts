@@ -30,6 +30,9 @@ import { getUser } from "../wallet/walletService.js";
 import { installBotProfile, homeCard, screenCard } from "./menu.js";
 import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
 
+/** Last free-text message per user, for one-turn conversational context. */
+const lastUserMessage = new Map<number, string>();
+
 export function buildBot(): Bot {
   const bot = new Bot(env.telegramBotToken);
 
@@ -232,7 +235,11 @@ export function buildBot(): Bot {
     }
     if (/^\s*(deposit|fund|my address)\s*$/.test(lower)) { await handleDeposit(ctx); return; }
 
-    const intent = await parseIntent(text, registry.knownTokenSymbols());
+    // Conversational context: remember the last message per user so a follow-up
+    // like "do it to MUSD then" can inherit the amount/tokens from it.
+    const prior = uid ? lastUserMessage.get(uid) : undefined;
+    if (uid) lastUserMessage.set(uid, text);
+    const intent = await parseIntent(text, registry.knownTokenSymbols(), prior);
     switch (intent.action) {
       case "swap": return void (await handleSwapIntent(ctx, intent));
       case "portfolio": return void (await handlePortfolio(ctx));

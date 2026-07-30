@@ -29,6 +29,7 @@ const SYSTEM = [
 export async function parseIntent(
   message: string,
   knownSymbols: string[],
+  prior?: string,
 ): Promise<IntentT> {
   // 1) DETERMINISTIC FIRST. The headline commands (swap/borrow/repay/lock/dca/
   //    zap/stake/…) are precise and structured, so the rule parser nails them
@@ -44,7 +45,18 @@ export async function parseIntent(
   //    clarify (which already carries good, symbol-aware help text).
   if (!llmEnabled) return rule;
 
-  const system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
+  let system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
+  // Conversational context: give the model the user's PREVIOUS message so a short
+  // follow-up that references it ("do it to MUSD then", "same but 0.02", "make it
+  // BTC") can inherit the missing amount/tokens. Only used on the LLM fallback
+  // path (self-contained commands already parsed deterministically above).
+  if (prior) {
+    system +=
+      ` For context, the user's previous message was: "${prior}". ` +
+      `If the current message is a short follow-up that refers to it (e.g. "do it to MUSD then", ` +
+      `"same but 0.02", "make it BTC"), carry over the missing amount and tokens from that previous ` +
+      `message. If the current message is self-contained, ignore the previous one.`;
+  }
   let raw: unknown;
   try {
     raw = env.llm.provider === "gemini"

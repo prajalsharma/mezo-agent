@@ -174,8 +174,18 @@ export function swapToCard(from: string): Card {
 export async function swapAmountCard(from: string, to: string, telegramId: number): Promise<Card> {
   const user = getUser(telegramId);
   let bal = "—";
+  // A realistic custom-amount example derived from the ACTUAL balance (25%), so
+  // it never suggests an amount the user doesn't have (e.g. "swap 12.5 BTC").
+  let example = from === "BTC" ? "0.01" : "100";
   if (user) {
-    try { const h = (await getPortfolio(user.address)).find((x) => x.token.symbol === from); if (h) bal = prettyAmount(h.formatted); } catch { /* keep — */ }
+    try {
+      const h = (await getPortfolio(user.address)).find((x) => x.token.symbol === from);
+      if (h && h.raw > 0n) {
+        bal = prettyAmount(h.formatted);
+        const quarter = prettyAmount(formatUnits(h.raw / 4n, h.token.decimals));
+        if (quarter && quarter !== "0") example = quarter;
+      }
+    } catch { /* keep defaults */ }
   }
   const kb = new InlineKeyboard()
     .text("25%", `menu:swapx:${from}:${to}:25`)
@@ -183,7 +193,7 @@ export async function swapAmountCard(from: string, to: string, telegramId: numbe
     .text("Max", `menu:swapx:${from}:${to}:100`);
   const text =
     `${b(`💱 Swap ${from} → ${to}`)}\nYour ${from}: ${b(bal)}\n\n` +
-    `Pick an amount, or type a custom one:\n${code(`swap 12.5 ${from} to ${to}`)}`;
+    `Pick an amount above, or type a custom one:\n${code(`swap ${example} ${from} to ${to}`)}`;
   return { text, keyboard: chrome(kb, "swap") };
 }
 

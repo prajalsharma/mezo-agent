@@ -9,6 +9,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { env } from "../config/env.js";
 import { chainFor } from "../chain/networks.js";
+import { publicClient } from "../chain/client.js";
 import { store, type UserRecord, type SessionKey } from "../db/store.js";
 import { sessionKeyDelegateAbi } from "../abis/delegate.js";
 import { LocalKeyStore } from "./localKeystore.js";
@@ -142,6 +143,23 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
   }
 }
 
+// Mezo is a Cosmos-EVM chain whose `eth_estimateGas` frequently returns an opaque
+// "rpc error: code = Unknown" even for transactions that pass `eth_call` and would
+// execute fine. viem runs estimateGas inside sendTransaction, so the send dies
+// there. We estimate with a buffer and, on failure, fall back to a generous fixed
+// limit — safe because every caller has ALREADY eth_call-simulated the step before
+// signing, so a reached tx is known-valid. Gas is near-free on Mezo, so an
+// over-estimate costs almost nothing (you pay for gas USED, not the limit).
+const FALLBACK_GAS = 3_000_000n;
+async function resolveGas(from: Address, to: Address, data?: Hex, value?: bigint): Promise<bigint> {
+  try {
+    const est = await publicClient().estimateGas({ account: from, to, data, value });
+    return (est * 12n) / 10n; // +20% headroom
+  } catch {
+    return FALLBACK_GAS;
+  }
+}
+
 /** Legacy path: the root EOA signs and submits the transaction directly. */
 async function submitDirect(user: UserRecord, plan: SignablePlan): Promise<Hex> {
   const chain = chainFor(env.network);
@@ -155,12 +173,14 @@ async function submitDirect(user: UserRecord, plan: SignablePlan): Promise<Hex> 
       chain,
       transport: http(chain.rpcUrls.default.http[0]),
     });
+    const gas = await resolveGas(account.address, plan.to, plan.data, plan.value);
     const request: TransactionRequest = {
       to: plan.to,
       data: plan.data,
       value: plan.value,
+      gas,
     };
-    // viem estimates gas / fees; native BTC is the gas asset on Mezo.
+    // Explicit gas so viem skips its flaky estimateGas; native BTC pays gas on Mezo.
     return wallet.sendTransaction(request as never);
   });
 }
@@ -192,7 +212,8 @@ async function submitViaSession(
       transport: http(chain.rpcUrls.default.http[0]),
     });
     // Target the account (root EOA); the delegate forwards to plan.to.
-    const request: TransactionRequest = { to: user.address, data };
+    const gas = await resolveGas(account.address, user.address, data, undefined);
+    const request: TransactionRequest = { to: user.address, data, gas };
     return wallet.sendTransaction(request as never);
   });
 }

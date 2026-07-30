@@ -116,6 +116,8 @@ export function friendlyReason(reason: string): string {
   if (/user rejected|denied/i.test(r)) return "Cancelled.";
   if (/missing or invalid parameters|invalid parameters|-32602|underpriced|fee too low/i.test(r))
     return "The network rejected the transaction (often a temporary node hiccup or a fee that's too low). Please try again in a moment.";
+  if (/code = unknown|unknown reason|rpc error|execution reverted with reason:\s*\.?\s*$/i.test(r))
+    return "The transaction reverted on-chain — this can be a Mezo testnet node hiccup, or the amount being too large for the pool's liquidity. Please try again, or use a smaller amount.";
   return r.split("\n")[0]!.slice(0, 180);
 }
 
