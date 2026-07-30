@@ -134,3 +134,35 @@ export const routerAbi = [
     outputs: [{ name: "amounts", type: "uint256[]" }],
   },
 ] as const;
+
+/**
+ * FeeRouter (contracts/src/FeeRouter.sol) — the operator-deployed atomic
+ * swap+fee wrapper. Same Route tuple as the Router it forwards to.
+ */
+export const feeRouterAbi = [
+  {
+    type: "function",
+    name: "swapWithFee",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amountIn", type: "uint256" },
+      { name: "amountOutMin", type: "uint256" },
+      {
+        name: "routes",
+        type: "tuple[]",
+        components: [
+          { name: "from", type: "address" },
+          { name: "to", type: "address" },
+          { name: "stable", type: "bool" },
+          { name: "factory", type: "address" },
+        ],
+      },
+      { name: "deadline", type: "uint256" },
+      { name: "referrer", type: "address" },
+      { name: "referralShareBps", type: "uint16" },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+  { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;

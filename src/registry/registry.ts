@@ -42,6 +42,7 @@ class ContractRegistry {
     // deployments and docs do not break.
     if (env.contracts.router) contracts.Router = env.contracts.router as Address;
     if (env.contracts.delegate7702) contracts.Delegate7702 = env.contracts.delegate7702 as Address;
+    if (env.contracts.feeRouter) contracts.FeeRouter = env.contracts.feeRouter as Address;
 
     // A key that now has an address is, by definition, no longer awaiting
     // confirmation — otherwise `needsConfirmation` would keep reporting a

@@ -8,7 +8,9 @@ import {
 import { publicClient } from "../../chain/client.js";
 import { registry } from "../../registry/registry.js";
 import { erc20Abi } from "../../abis/erc20.js";
-import { routerAbi } from "../../abis/router.js";
+import { routerAbi, feeRouterAbi } from "../../abis/router.js";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 import { poolAbi } from "../../abis/pool.js";
 import { env, feesEnabled } from "../../config/env.js";
 import type { PoolInfo, TokenInfo } from "../../registry/addresses.js";
@@ -213,16 +215,53 @@ export async function buildSwap(params: {
   };
   const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
   const steps: PlanStep[] = [];
+  const inRouting = route.from;
 
-  // Step order matters (Audit R3 F1): approval → swap → fee. The fee is charged
-  // ONLY AFTER the swap succeeds, so a swap that reverts/aborts never costs the
-  // trader a non-refundable fee, and a retry doesn't double-charge. The swap
-  // step waits for its receipt when a fee follows, so the fee steps run only on
-  // a confirmed swap.
+  // ── ATOMIC PATH: FeeRouter deployed + fee applies ──────────────────────────
+  // Swap and fee execute in ONE transaction via the operator's FeeRouter
+  // (contracts/src/FeeRouter.sol): a failed swap charges nothing, a successful
+  // swap has already collected the fee — revenue can't be lost to a failed
+  // follow-up tx. Referral split happens inside the same tx.
+  // NOTE: the on-chain feeBps must match AGENT_FEE_BPS (deployfeerouter wires it
+  // from the same env; change both via setConfig). A mismatch only fails SAFE:
+  // if the contract takes more than we quoted for, minOut reverts the swap.
+  if (fee && registry.hasContract("FeeRouter")) {
+    const feeRouter = registry.contract("FeeRouter");
+    const frAllowance = (await publicClient().readContract({
+      address: inRouting, abi: erc20Abi, functionName: "allowance", args: [owner, feeRouter],
+    })) as bigint;
+    if (frAllowance < amountIn) {
+      steps.push({
+        kind: "approval", to: inRouting, value: 0n,
+        data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [feeRouter, amountIn] }),
+        describe: `Approve ${formatUnits(amountIn, tokenIn.decimals)} ${tokenIn.symbol} for the fee router`,
+        waitForReceipt: true,
+      });
+    }
+    const referralShareBps = referral ? Math.min(Math.round(referral.sharePct), 100) * 100 : 0;
+    steps.push({
+      kind: "swap", to: feeRouter, value: 0n,
+      data: encodeFunctionData({
+        abi: feeRouterAbi,
+        functionName: "swapWithFee",
+        args: [amountIn, minOut, [route], deadline, (referral?.recipient ?? ZERO_ADDRESS) as Address, referralShareBps],
+      }),
+      describe:
+        `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol} ` +
+        `(fee ${fee.bps / 100}% collected in the same tx)`,
+      erc20: { symbol: tokenIn.symbol, amount: amountIn },
+    });
+    // plan.router doubles as the primary allowlist target for execution.
+    return { ...base, steps, executable: true, router: feeRouter };
+  }
+
+  // ── LEGACY PATH: approval → swap → fee as separate txs ─────────────────────
+  // Step order matters (Audit R3 F1): the fee is charged ONLY AFTER the swap
+  // succeeds, so a reverted swap never costs the trader a non-refundable fee.
+  // The fee tx itself is retried by the executor and ledgered if it still fails.
 
   // 1. Approval on the ROUTING address. Native BTC approves through its ERC-20
   // precompile (0x7b7C…0000), which mirrors the native balance.
-  const inRouting = route.from;
   const allowance = (await publicClient().readContract({
     address: inRouting,
     abi: erc20Abi,

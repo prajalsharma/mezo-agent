@@ -39,6 +39,7 @@ export const env = {
   contracts: {
     router: optional("MEZO_ROUTER_ADDRESS"),
     delegate7702: optional("DELEGATE7702_ADDRESS"),
+    feeRouter: optional("FEE_ROUTER_ADDRESS"),
   },
 
   /**

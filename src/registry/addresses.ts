@@ -79,7 +79,16 @@ export type ContractKey =
    * MUST be verified on-chain before use — and MUST NOT sit in the precompile
    * range (Mezo rejects authorizations whose target is a precompile).
    */
-  | "Delegate7702";
+  | "Delegate7702"
+  /**
+   * Operator-deployed atomic swap+fee wrapper (contracts/src/FeeRouter.sol).
+   * When configured, swaps route through it so the agent fee is collected in
+   * the SAME transaction as the swap — revenue can't be lost to a failed
+   * follow-up fee tx, and a failed swap charges nothing. Escrowless; output
+   * goes straight to the user. Set via FEE_ROUTER_ADDRESS after deploying
+   * with scripts/deployfeerouter.ts.
+   */
+  | "FeeRouter";
 
 /**
  * Every ContractKey, for the generic MEZO_ADDR_<KEY> env override. Declared as a
@@ -91,7 +100,7 @@ export const ALL_CONTRACT_KEYS = [
   "PoolFactory", "Router",
   "BorrowerOperations", "TroveManager", "SortedTroves", "HintHelpers", "PriceFeed",
   "Voter", "VotingEscrowBTC", "VotingEscrowMEZO", "RewardsDistributor",
-  "Matchbox", "Market", "Delegate7702",
+  "Matchbox", "Market", "Delegate7702", "FeeRouter",
 ] as const satisfies readonly ContractKey[];
 
 /** A Mezo Earn vault. `kind` selects the deposit ABI shape. */

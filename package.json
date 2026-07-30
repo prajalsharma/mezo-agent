@@ -28,7 +28,9 @@
     "e2e": "MEZO_NETWORK=testnet tsx scripts/e2e.ts",
     "menucheck": "tsx scripts/menucheck.ts",
     "referralcheck": "AGENT_FEE_BPS=50 AGENT_FEE_RECIPIENT=0x00000000000000000000000000000000000000fe AGENT_REFERRAL_SHARE_PCT=30 MEZO_NETWORK=mainnet tsx scripts/referralcheck.ts",
-    "parsecheck": "node --import tsx scripts/parsecheck.ts"
+    "parsecheck": "node --import tsx scripts/parsecheck.ts",
+    "deployfeerouter": "tsx scripts/deployfeerouter.ts",
+    "feeroutercheck": "tsx scripts/feeroutercheck.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
