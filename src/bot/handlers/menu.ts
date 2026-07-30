@@ -1,12 +1,16 @@
-import type { Context } from "grammy";
+import { InlineKeyboard, type Context } from "grammy";
 import { env, feesEnabled } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { store } from "../../db/store.js";
 import { registry } from "../../registry/registry.js";
-import { homeCard, GUIDES, mainMenu } from "../menu.js";
+import { homeCard, screenCard, tipCard, feesText, helpText, type Card } from "../menu.js";
 import { b, i, code } from "../format.js";
 import { handlePortfolio, handleDeposit } from "./portfolio.js";
 import { handleLimits } from "./limits.js";
+import { handleActionIntent } from "./actions.js";
+import { handleAutoCompound, handleDcaCancel, handleAccount } from "./automation.js";
+
+export { helpText };
 
 /** Bot username, cached after the first call (for referral links). */
 let botUsername = "MezoAgentBot";
@@ -48,40 +52,81 @@ function fmtToken(sym: string, raw: string): string {
   return v < 0.0001 ? v.toExponential(2) : v.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-/** Router for all `menu:*` inline-button callbacks. */
+/**
+ * Router for all `menu:*` inline-button callbacks. Navigation (home / nav / tip)
+ * is EDITED IN PLACE on the same message; actions (do:*) and info handlers
+ * (act:*) run the existing handlers.
+ */
 export async function handleMenuCallback(ctx: Context): Promise<void> {
-  const data = ctx.callbackQuery?.data ?? "";
-  const action = data.slice("menu:".length);
+  const rest = (ctx.callbackQuery?.data ?? "").slice("menu:".length);
   await ctx.answerCallbackQuery().catch(() => {});
+  const uid = ctx.from?.id;
+  if (!uid) return;
 
-  if (action === "portfolio") return void (await handlePortfolio(ctx));
-  if (action === "deposit") return void (await handleDeposit(ctx));
-  if (action === "limits") return void (await handleLimits(ctx));
-  if (action === "referral") return void (await handleReferral(ctx));
-  if (action === "help") return void (await ctx.reply(helpText(), { parse_mode: "HTML" }));
-  if (action === "refresh") {
-    const home = ctx.from?.id ? await homeCard(ctx.from.id) : undefined;
-    if (home) await ctx.reply(home.text, { parse_mode: "HTML", reply_markup: home.menu, link_preview_options: { is_disabled: true } });
+  // Edit the current message into a new card; fall back to a fresh reply if the
+  // message can't be edited (e.g. it's a photo, or already identical).
+  const edit = async (card: Card | { text: string; keyboard: InlineKeyboard }) => {
+    const opts = { parse_mode: "HTML" as const, reply_markup: card.keyboard, link_preview_options: { is_disabled: true } };
+    try { await ctx.editMessageText(card.text, opts); }
+    catch { await ctx.reply(card.text, opts); }
+  };
+
+  // Home / refresh → the wallet+balance home card.
+  if (rest === "home" || rest === "refresh") {
+    const home = await homeCard(uid);
+    if (home) await edit({ text: home.text, keyboard: home.menu });
     else await ctx.reply("Create a wallet first with /start.");
     return;
   }
-  if (action.startsWith("guide:")) {
-    const key = action.slice("guide:".length);
-    await ctx.reply(GUIDES[key] ?? "Type what you want in plain language.", { parse_mode: "HTML" });
+
+  // Navigate to a submenu card.
+  if (rest.startsWith("nav:")) {
+    const card = await screenCard(rest.slice("nav:".length), uid);
+    if (card) await edit(card);
+    else await ctx.reply("That screen isn't available.");
     return;
   }
-}
 
-export function helpText(): string {
-  return (
-    `${b("How to use Mezo Agent")}\n\n` +
-    `Just type what you want — I turn it into a simulated, confirmable transaction:\n` +
-    `• swap 100 MUSD to mUSDC\n• borrow 2000 MUSD against 0.1 BTC\n` +
-    `• zap 0.01 BTC into BTC/MUSD · stake LP BTC/MUSD\n` +
-    `• lock 0.2 BTC for 28 days · vote optimally with veNFT 3 · claim all\n` +
-    `• dca 50 MUSD to BTC every 24h · auto-compound on\n\n` +
-    `${b("Commands")}: /portfolio /deposit /limits /referral /export /upgrade /accounts /dca /fees /pause /diag\n\n` +
-    i("Every fund-moving action is simulated and shown for confirmation before it signs.") +
-    "\n" + i("Set spending caps with /limits; go read-only with /watch on.")
-  );
+  // Guidance sub-card for a parameterized action.
+  if (rest.startsWith("tip:")) {
+    const card = tipCard(rest.slice("tip:".length));
+    if (card) await edit(card);
+    return;
+  }
+
+  // Parameter-free actions — run through the normal intent handlers (which
+  // simulate + show a confirm card as needed).
+  if (rest.startsWith("do:")) {
+    const a = rest.slice("do:".length);
+    switch (a) {
+      case "closeTrove": await handleActionIntent(ctx, { action: "closeTrove" }); return;
+      case "claim": await handleActionIntent(ctx, { action: "claim", scope: "all" }); return;
+      case "dcalist": await handleDcaCancel(ctx, { action: "dcaCancel" }); return;
+      case "newaccount": await handleAccount(ctx, { action: "account", op: "new" }); return;
+      case "autocompound_on": await handleAutoCompound(ctx, { action: "autoCompound", enabled: true }); return;
+      case "autocompound_off": await handleAutoCompound(ctx, { action: "autoCompound", enabled: false }); return;
+    }
+    return;
+  }
+
+  // Info handlers that render their own message.
+  if (rest.startsWith("act:")) {
+    const a = rest.slice("act:".length);
+    switch (a) {
+      case "portfolio": await handlePortfolio(ctx); return;
+      case "deposit": await handleDeposit(ctx); return;
+      case "limits": await handleLimits(ctx); return;
+      case "referral": await handleReferral(ctx); return;
+      case "fees": await ctx.reply(feesText(), { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("🏠 Menu", "menu:home") }); return;
+    }
+    return;
+  }
+
+  // Legacy callback names (older messages still in a chat).
+  if (rest === "portfolio") { await handlePortfolio(ctx); return; }
+  if (rest === "deposit") { await handleDeposit(ctx); return; }
+  if (rest === "limits") { await handleLimits(ctx); return; }
+  if (rest === "referral") { await handleReferral(ctx); return; }
+  if (rest === "help") { const c = await screenCard("help", uid); if (c) await edit(c); return; }
+  if (rest.startsWith("guide:")) { const c = await screenCard(rest.slice("guide:".length), uid); if (c) await edit(c); return; }
 }

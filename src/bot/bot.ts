@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import { Bot, type Context } from "grammy";
 import { env, llmEnabled, feesEnabled, accessRestricted } from "../config/env.js";
 import { log } from "../core/log.js";
 import { registry } from "../registry/registry.js";
@@ -27,7 +27,7 @@ import { clearPending } from "./session.js";
 import { store } from "../db/store.js";
 import { runPreflight, formatPreflightText } from "../core/preflight.js";
 import { getUser } from "../wallet/walletService.js";
-import { installBotProfile, homeCard } from "./menu.js";
+import { installBotProfile, homeCard, screenCard } from "./menu.js";
 import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
 
 export function buildBot(): Bot {
@@ -102,6 +102,22 @@ export function buildBot(): Bot {
   bot.command("accounts", (ctx) => handleAccount(ctx, { action: "account", op: "list" }));
   bot.command("dca", (ctx) => handleDcaCancel(ctx, { action: "dcaCancel" }));
   bot.command("referral", handleReferral);
+
+  // Feature commands that MIRROR the home tiles — each opens its submenu card, so
+  // buttons and slash commands cover the same features (navigation consistency).
+  const openScreen = (screen: string) => async (ctx: Context) => {
+    const uid = ctx.from?.id;
+    if (!uid) return;
+    const card = await screenCard(screen, uid);
+    if (card) await ctx.reply(card.text, { parse_mode: "HTML", reply_markup: card.keyboard, link_preview_options: { is_disabled: true } });
+    else await ctx.reply("Send /start to create a wallet first.");
+  };
+  bot.command("swap", openScreen("swap"));
+  bot.command("borrow", openScreen("borrow"));
+  bot.command("earn", openScreen("earn"));
+  bot.command("vote", openScreen("lockvote"));
+  bot.command("automate", openScreen("automate"));
+  bot.command("settings", openScreen("settings"));
 
   // Emergency stop for scheduled automation (bounty: access controls / kill-switch).
   bot.command("pause", async (ctx) => {
