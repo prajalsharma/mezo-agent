@@ -1,6 +1,7 @@
 import { encodeFunctionData, parseEther, parseUnits, formatUnits, type Address } from "viem";
 import { registry } from "../registry/registry.js";
 import { borrowerOperationsAbi, troveManagerAbi } from "../abis/mezo.js";
+import { erc20Abi } from "../abis/erc20.js";
 import { publicClient } from "../chain/client.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
 import { txnFee, musdToken } from "./fees.js";
@@ -153,7 +154,7 @@ export async function buildBorrow(intent: BorrowIntent): Promise<ActionPlan> {
   };
 }
 
-export function buildRepay(intent: RepayIntent): ActionPlan {
+export async function buildRepay(intent: RepayIntent, owner: Address): Promise<ActionPlan> {
   const repay = Number(intent.repayMUSD);
   if (repay <= 0) throw new ActionUnavailableError("Repay amount must be greater than zero.");
   const summary = [`Repay: ${intent.repayMUSD} MUSD`, `Reduces your Trove debt and improves your collateral ratio.`];
@@ -161,6 +162,34 @@ export function buildRepay(intent: RepayIntent): ActionPlan {
   if (!registry.hasContract("BorrowerOperations")) {
     return borrowGated("💵 Repay MUSD", "repay", summary);
   }
+
+  // Trove-existence + amount sanity check BEFORE building an approval the user
+  // would otherwise sign for nothing. Without an open Trove there is nothing to
+  // repay — the protocol reverts with "Trove does not exist", which is exactly
+  // the confusing path a user with no loan hits. Fail-open if unreadable.
+  const trove = await readTrove(owner);
+  if (trove) {
+    if (trove.debtMUSD <= 0) {
+      throw new ActionUnavailableError(
+        "You don't have an open Trove, so there's nothing to repay. (You'd open one with a borrow first.)",
+      );
+    }
+    if (repay > trove.debtMUSD) {
+      throw new ActionUnavailableError(
+        `You asked to repay ${intent.repayMUSD} MUSD but your Trove debt is only ~${Math.round(trove.debtMUSD).toLocaleString()} MUSD. ` +
+          `To clear it all and get your collateral back, use "close trove".`,
+      );
+    }
+    const remaining = trove.debtMUSD - repay;
+    if (remaining > 0 && remaining < MIN_NET_DEBT_MUSD) {
+      throw new ActionUnavailableError(
+        `Repaying ${intent.repayMUSD} MUSD would leave ~${Math.round(remaining).toLocaleString()} MUSD debt, below the ${MIN_NET_DEBT_MUSD.toLocaleString()} MUSD minimum. ` +
+          `Repay less, or use "close trove" to repay it all at once.`,
+      );
+    }
+    summary.push(`Trove debt after: ~${Math.round(remaining).toLocaleString()} MUSD`);
+  }
+
   const bo = registry.contract("BorrowerOperations");
   const musd = registry.erc20Of("MUSD");
   const steps: ActionStep[] = [];
@@ -282,7 +311,7 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
   };
 }
 
-export function buildCloseTrove(): ActionPlan {
+export async function buildCloseTrove(owner: Address): Promise<ActionPlan> {
   const summary = [
     "Repays the full MUSD debt and returns your BTC collateral.",
     "You must hold enough MUSD to cover the outstanding debt.",
@@ -290,6 +319,35 @@ export function buildCloseTrove(): ActionPlan {
 
   if (!registry.hasContract("BorrowerOperations")) {
     return borrowGated("🔒 Close Trove", "closeTrove", summary);
+  }
+
+  // Pre-check: an open Trove must exist, and the user must hold enough MUSD to
+  // cover the full debt (closeTrove burns the debt from their balance). Both
+  // surfaced as plain messages before signing. Fail-open if unreadable.
+  const trove = await readTrove(owner);
+  if (trove) {
+    if (trove.debtMUSD <= 0) {
+      throw new ActionUnavailableError("You don't have an open Trove to close.");
+    }
+    summary.push(`Outstanding debt to repay: ~${Math.round(trove.debtMUSD).toLocaleString()} MUSD`);
+    const musd = registry.erc20Of("MUSD");
+    if (musd) {
+      try {
+        const bal = (await publicClient().readContract({
+          address: musd, abi: erc20Abi, functionName: "balanceOf", args: [owner],
+        })) as bigint;
+        const musdHeld = Number(formatUnits(bal, 18));
+        if (musdHeld < trove.debtMUSD) {
+          throw new ActionUnavailableError(
+            `Closing needs ~${Math.round(trove.debtMUSD).toLocaleString()} MUSD to clear the debt, but you hold ~${Math.round(musdHeld).toLocaleString()} MUSD. ` +
+              `Acquire the difference (e.g. swap into MUSD) or repay down first.`,
+          );
+        }
+      } catch (err) {
+        if (err instanceof ActionUnavailableError) throw err;
+        // read hiccup — fail open, simulation backstops it
+      }
+    }
   }
 
   const bo = registry.contract("BorrowerOperations");

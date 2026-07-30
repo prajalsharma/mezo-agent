@@ -114,6 +114,8 @@ export function friendlyReason(reason: string): string {
     return "That Trove operation isn't valid for your current position (e.g. no open Trove, or it already exists). Check /portfolio.";
   if (/not confirmed within|reverted on-chain/i.test(r)) return r; // already clear
   if (/user rejected|denied/i.test(r)) return "Cancelled.";
+  if (/missing or invalid parameters|invalid parameters|-32602|underpriced|fee too low/i.test(r))
+    return "The network rejected the transaction (often a temporary node hiccup or a fee that's too low). Please try again in a moment.";
   return r.split("\n")[0]!.slice(0, 180);
 }
 

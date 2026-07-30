@@ -19,9 +19,9 @@ import { buildMarketBrowse, buildMarketBuy, buildMatchbox, buildVeTransfer, buil
 export async function buildActionPlan(intent: Intent, owner: Address): Promise<ActionPlan | undefined> {
   switch (intent.action) {
     case "borrow": return await buildBorrow(intent);
-    case "repay": return buildRepay(intent);
+    case "repay": return await buildRepay(intent, owner);
     case "adjust": return await buildAdjust(intent, owner);
-    case "closeTrove": return buildCloseTrove();
+    case "closeTrove": return await buildCloseTrove(owner);
     case "vaultDeposit": return buildVaultDeposit(intent, owner);
     case "stakeLp": return buildStakeLp(intent, owner);
     case "unstakeLp": return buildUnstakeLp(intent, owner);
