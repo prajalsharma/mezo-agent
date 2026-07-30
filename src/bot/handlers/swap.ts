@@ -182,7 +182,7 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
           lines: successLines,
           hash,
           network: env.network,
-          note: "The agent fee couldn't be applied, but your swap went through.",
+          note: `The agent fee couldn't be applied (${friendlyReason(failed.reason)}), but your swap went through.`,
         }),
         { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
       );

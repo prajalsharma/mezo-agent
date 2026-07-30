@@ -138,7 +138,7 @@ export async function handleActionConfirm(ctx: Context): Promise<void> {
           lines: pending.plan.summary,
           hash,
           network: env.network,
-          note: "The agent fee couldn't be applied, but your action went through.",
+          note: `The agent fee couldn't be applied (${friendlyReason(failed.reason)}), but your action went through.`,
         }),
         { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
       );
