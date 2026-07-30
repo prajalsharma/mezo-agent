@@ -3,7 +3,7 @@ import { env } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { enableSmartAccount, isSmartAccount, DelegationError } from "../../custody/delegation.js";
 import { registry } from "../../registry/registry.js";
-import { explorerTxUrl } from "../../chain/networks.js";
+import { explorerAddressUrl } from "../../chain/networks.js";
 import { limitsOf, fmtBtc } from "../../custody/policy.js";
 import { b, i, code, link } from "../format.js";
 
@@ -56,9 +56,11 @@ export async function handleUpgrade(ctx: Context): Promise<void> {
     await ctx.reply(
       `✅ ${b("Smart account enabled.")}\n\n` +
         `Session key: ${code(upgraded.session!.address)}\n` +
-        (hash
-          ? `${link("Set-code tx on explorer", explorerTxUrl(env.network, hash))}\n\n`
-          : "\n") +
+        // Link the ACCOUNT (its delegation status is reliably indexed); the
+        // set-code (type-0x04) tx itself is not rendered by the Mezo explorer yet,
+        // so linking it 404s. Keep the tx hash as copyable text for reference.
+        `${link("View your smart account", explorerAddressUrl(env.network, user.address))}\n` +
+        (hash ? `Set-code tx: ${code(hash)}\n\n` : "\n") +
         `Routine ops are now signed by the session key and enforced on-chain. ` +
         `Your root key stays cold except for upgrades and revocation.`,
       { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
