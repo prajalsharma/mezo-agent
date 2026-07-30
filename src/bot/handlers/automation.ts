@@ -65,7 +65,21 @@ export async function handleDcaCancel(ctx: Context, intent: DcaCancelIntent): Pr
   if (!id) return;
   const schedules = store.listSchedules(id).filter((s) => s.active);
   if (!intent.scheduleId) {
-    if (schedules.length === 0) { await ctx.reply("You have no active DCA schedules."); return; }
+    if (schedules.length === 0) {
+      await ctx.reply(
+        [
+          b("You have no active DCA schedules yet."),
+          "",
+          "Create one in plain language, e.g.:",
+          code("dca 50 MUSD to BTC every 24h"),
+          code("dca 100 MUSD to mUSDC every 7 days for 4 times"),
+          "",
+          i("DCA buys a fixed amount on a repeating schedule, each run scoped by your spending limits."),
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
     const lines = schedules.map((s) => `• ${code(s.id.slice(0, 8))} — ${s.amount} ${s.fromToken}→${s.toToken} every ${s.everyHours}h`);
     await ctx.reply([b("Active DCA schedules"), ...lines, "", i("Cancel one: \"cancel dca <id>\".")].join("\n"), { parse_mode: "HTML" });
     return;
