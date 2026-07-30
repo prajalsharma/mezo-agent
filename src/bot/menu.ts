@@ -51,7 +51,7 @@ export async function homeCard(telegramId: number): Promise<{ text: string; menu
   const text =
     `${b(`Mezo Agent — ${netLabel}`)}\n${code(user.address)}\n\n` +
     `${balLine}\n\n` +
-    i("Tap a button, or just type what you want — e.g. \"swap 100 MUSD to mUSDC\".");
+    i(`Tap a button, or just type what you want — e.g. "${swapExample()}".`);
   return { text, menu: mainMenu() };
 }
 
@@ -123,27 +123,65 @@ function settingsCard(): Card {
   };
 }
 
+// ── Live capability copy — built from the registry, never hardcoded ──────────
+// Every example the bot shows must reflect what is ACTUALLY deployed on this
+// network (pools, tokens, vaults), so users are never taught a command that
+// can't work here.
+
+/** A sensible example amount for a token symbol. */
+function exAmt(sym: string): string {
+  return sym.toUpperCase().includes("BTC") ? "0.01" : "100";
+}
+
+/** Human list of live swap routes, e.g. "BTC ⇄ MUSD · MUSD ⇄ mUSDC (stable)". */
+export function routeList(): string {
+  return registry.pools().map((p) => `${p.pair[0]} ⇄ ${p.pair[1]}${p.stable ? " (stable)" : ""}`).join("\n• ");
+}
+
+/** Tokens that actually have at least one live pool (i.e. are swappable). */
+function swappableSymbols(): Set<string> {
+  const s = new Set<string>();
+  for (const p of registry.pools()) { s.add(p.pair[0]); s.add(p.pair[1]); }
+  return s;
+}
+
+/** A real, working swap example from the first live pool. */
+export function swapExample(): string {
+  const p = registry.pools()[0];
+  if (!p) return "swap 100 MUSD to BTC";
+  return `swap ${exAmt(p.pair[1]!)} ${p.pair[1]} to ${p.pair[0]}`;
+}
+
 // ── Swap picker flow: source token → destination → preset amount ─────────────
 // Sniper-bot-style tap-to-swap. Amounts are % of the on-chain balance; the
 // existing quote/confirm card takes over once an amount is chosen.
 
 const NATIVE_GAS_BUFFER_WEI = 500_000_000_000_000n; // 0.0005 BTC kept for gas on Max
 
-/** Step 1 — pick the token to sell (from non-zero balances). */
+/** Step 1 — pick the token to sell (from non-zero, SWAPPABLE balances). */
 async function swapFromCard(telegramId: number): Promise<Card> {
   const user = getUser(telegramId);
   if (!user) return noWalletCard();
-  let nonzero: Awaited<ReturnType<typeof getPortfolio>> = [];
-  try { nonzero = (await getPortfolio(user.address)).filter((h) => h.raw > 0n); } catch { /* empty */ }
+  const pooled = swappableSymbols();
+  let holdings: Awaited<ReturnType<typeof getPortfolio>> = [];
+  try { holdings = (await getPortfolio(user.address)).filter((h) => h.raw > 0n); } catch { /* empty */ }
+  const sellable = holdings.filter((h) => pooled.has(h.token.symbol));
+  const unpooled = holdings.filter((h) => !pooled.has(h.token.symbol));
   const kb = new InlineKeyboard();
-  nonzero.forEach((h, idx) => {
+  sellable.forEach((h, idx) => {
     kb.text(`${h.token.symbol} · ${prettyAmount(h.formatted)}`, `menu:swapfrom:${h.token.symbol}`);
     if (idx % 2 === 1) kb.row();
   });
-  if (nonzero.length % 2 === 1) kb.row();
-  const text = nonzero.length
-    ? `${b("💱 Swap — pick the token to sell:")}\n\n${i("Or just type it, e.g. \"swap 100 MUSD to mUSDC\".")}`
-    : `${b("💱 Swap")}\n\n${i("No balance to swap yet — tap Deposit to fund your wallet, then come back.")}`;
+  if (sellable.length % 2 === 1) kb.row();
+  const header =
+    `${b("💱 Swap")} — ${registry.pools().length} live route${registry.pools().length === 1 ? "" : "s"} on ${netLabel}:\n` +
+    `• ${routeList()}\n\n`;
+  const text = sellable.length
+    ? header +
+      `${b("Pick the token to sell:")}\n\n` +
+      (unpooled.length ? i(`(${unpooled.map((h) => h.token.symbol).join(", ")} — no swap pool on this network yet.)`) + "\n" : "") +
+      i(`Or just type it, e.g. "${swapExample()}".`)
+    : header + i("No swappable balance yet — tap Deposit to fund your wallet, then come back.");
   return { text, keyboard: chrome(kb) };
 }
 
@@ -226,13 +264,18 @@ function borrowCard(): Card {
 }
 
 function earnCard(): Card {
-  const kb = new InlineKeyboard()
-    .text("🌊 Stake LP", "menu:tip:earn_stake").text("🏛️ Vault", "menu:tip:earn_vault")
-    .row()
-    .text("⚡ Zap in", "menu:tip:earn_zap").text("🌾 Claim", "menu:do:claim");
+  const vaults = registry.vaults();
+  const kb = new InlineKeyboard().text("⚡ Zap in", "menu:tip:earn_zap").text("🌊 Stake LP", "menu:tip:earn_stake").row();
+  if (vaults.length) kb.text("🏛️ Vault", "menu:tip:earn_vault");
+  kb.text("🌾 Claim", "menu:do:claim");
+  const vaultLine = vaults.length
+    ? `${b("Vaults:")}\n• ${vaults.map((v) => `${v.name} — deposit ${v.assetSymbol}`).join("\n• ")}`
+    : i(`No vaults are published on ${netLabel} yet — LP staking and zaps are live.`);
   return {
     text: `${b("🌱 Earn — yield on your assets")}\n\n` +
-      `Provide liquidity, deposit into a vault, or zap one asset straight into an LP position.`,
+      `${b("LP pools you can enter:")}\n• ${routeList()}\n\n` +
+      `${vaultLine}\n\n` +
+      i("Zap turns ONE asset into a staked LP position in a single flow — the easiest way in."),
     keyboard: chrome(kb),
   };
 }
@@ -282,25 +325,42 @@ export async function screenCard(screen: string, telegramId: number): Promise<Ca
 
 // ── Tip (guidance) sub-cards for parameterized actions ───────────────────────
 
-const TIPS: Record<string, { parent: string; text: string }> = {
-  borrow_open: { parent: "borrow", text: `${b("➕ Open Trove")}\nType, e.g.:\n${code("borrow 2000 MUSD against 0.1 BTC")}\n\n${i("You'll see the live collateral ratio and confirm before signing.")}` },
-  borrow_repay: { parent: "borrow", text: `${b("💵 Repay")}\nType:\n${code("repay 500 MUSD")}` },
-  borrow_adjust: { parent: "borrow", text: `${b("🔧 Adjust Trove")}\nType any of:\n${code("add 0.05 BTC collateral")}\n${code("withdraw 0.02 BTC")}\n${code("mint 500 MUSD")}` },
-  earn_stake: { parent: "earn", text: `${b("🌊 Stake LP")}\nType:\n${code("stake LP BTC/MUSD")}` },
-  earn_vault: { parent: "earn", text: `${b("🏛️ Vault deposit")}\nType:\n${code("deposit 100 MUSD into vault")}` },
-  earn_zap: { parent: "earn", text: `${b("⚡ Zap into a pool")}\nType:\n${code("zap 0.01 BTC into BTC/MUSD")}\n\n${i("Splits one asset into an LP position in a single flow.")}` },
-  lock: { parent: "lockvote", text: `${b("🔒 Lock")}\nType:\n${code("lock 0.2 BTC for 28 days")}\n${code("lock 1000 MEZO for 2 years")}` },
-  extendlock: { parent: "lockvote", text: `${b("⏫ Extend a lock")}\nType:\n${code("extend lock 3 by 30 days")}` },
-  vote: { parent: "lockvote", text: `${b("🗳️ Vote")}\nType:\n${code("vote optimally with veNFT 3")}\n${code("vote with veNFT 3: 60% BTC/MUSD, 40% MUSD/mUSDC")}` },
-  dca: { parent: "automate", text: `${b("➕ New DCA schedule")}\nType:\n${code("dca 50 MUSD to BTC every 24h")}\n${code("dca 100 MUSD to mUSDC every 7 days for 4 times")}` },
-  switch: { parent: "accounts", text: `${b("🔀 Switch account")}\nType:\n${code("switch to account 2")}\n\n${i("Indices are shown in the account list.")}` },
-  export: { parent: "accounts", text: `${b("🔑 Export private key")}\n${i("This reveals your key — anyone who sees it controls your funds. Only in a private chat.")}\n\nSend ${code("/export")} to start the guarded reveal.` },
-  upgrade: { parent: "settings", text: `${b("🔐 Smart-account upgrade (EIP-7702)")}\n${i("A scoped, revocable session key signs routine ops within on-chain caps, so your root key stays cold.")}\n\nSend ${code("/upgrade")} to enable it.` },
-};
+function poolNames(): string[] {
+  return registry.pools().map((p) => p.pair.join("/"));
+}
+
+/**
+ * Tip cards, built LAZILY so every example reflects the live registry (pools,
+ * vaults) for the active network instead of a hardcoded pair that may not exist.
+ */
+function tipContent(key: string): { parent: string; text: string } | undefined {
+  const pools = poolNames();
+  const pool0 = pools[0] ?? "BTC/MUSD";
+  switch (key) {
+    case "borrow_open": return { parent: "borrow", text: `${b("➕ Open Trove")}\nType, e.g.:\n${code("borrow 2000 MUSD against 0.1 BTC")}\n\n${i("Minimum debt 1,800 MUSD. You'll see the live collateral ratio and confirm before signing.")}` };
+    case "borrow_repay": return { parent: "borrow", text: `${b("💵 Repay")}\nType:\n${code("repay 500 MUSD")}\n\n${i("Repaying below the 1,800 MUSD minimum debt isn't allowed — use \"close trove\" to repay everything.")}` };
+    case "borrow_adjust": return { parent: "borrow", text: `${b("🔧 Adjust Trove")}\nType any of:\n${code("add 0.05 BTC collateral")}\n${code("withdraw 0.02 BTC")}\n${code("mint 500 MUSD")}` };
+    case "earn_stake": return { parent: "earn", text: `${b("🌊 Stake LP")}\nPools: ${pools.join(", ")}\n\nType:\n${code(`stake LP ${pool0}`)}\n\n${i("You need LP tokens first — get them with a zap or by adding liquidity.")}` };
+    case "earn_vault": {
+      const vaults = registry.vaults();
+      if (!vaults.length) return { parent: "earn", text: `${b("🏛️ Vaults")}\n\n${i(`No vaults are published on ${netLabel} yet. LP staking and zaps are live — try those instead.`)}` };
+      return { parent: "earn", text: `${b("🏛️ Vault deposit")}\n${vaults.map((v) => `• ${v.name} — deposit ${v.assetSymbol}`).join("\n")}\n\nType:\n${code(`deposit ${exAmt(vaults[0]!.assetSymbol)} ${vaults[0]!.assetSymbol} into vault`)}` };
+    }
+    case "earn_zap": return { parent: "earn", text: `${b("⚡ Zap into a pool")}\nPools: ${pools.join(", ")}\n\nType:\n${code(`zap 0.01 BTC into ${pool0}`)}\n\n${i("Splits one asset into a staked LP position in a single flow.")}` };
+    case "lock": return { parent: "lockvote", text: `${b("🔒 Lock")}\nType:\n${code("lock 0.2 BTC for 28 days")}\n${code("lock 1000 MEZO for 2 years")}\n\n${i("veBTC locks run up to 28 days; veMEZO up to 4 years. Longer lock = more voting power.")}` };
+    case "extendlock": return { parent: "lockvote", text: `${b("⏫ Extend a lock")}\nType:\n${code("extend lock 3 by 30 days")}` };
+    case "vote": return { parent: "lockvote", text: `${b("🗳️ Vote")}\nType:\n${code("vote optimally with veNFT 3")}\n${code(`vote with veNFT 3: 60% ${pool0}${pools[1] ? `, 40% ${pools[1]}` : ""}`)}\n\n${i("\"optimally\" splits your votes across gauges to maximize expected rewards, using live incentive data.")}` };
+    case "dca": return { parent: "automate", text: `${b("➕ New DCA schedule")}\nType:\n${code("dca 50 MUSD to BTC every 24h")}\n${code("dca 100 MUSD to mUSDC every 7 days for 4 times")}` };
+    case "switch": return { parent: "accounts", text: `${b("🔀 Switch account")}\nType:\n${code("switch to account 2")}\n\n${i("Indices are shown in the account list.")}` };
+    case "export": return { parent: "accounts", text: `${b("🔑 Export private key")}\n${i("This reveals your key — anyone who sees it controls your funds. Only in a private chat.")}\n\nSend ${code("/export")} to start the guarded reveal.` };
+    case "upgrade": return { parent: "settings", text: `${b("🔐 Smart-account upgrade (EIP-7702)")}\n${i("A scoped, revocable session key signs routine ops within on-chain caps, so your root key stays cold.")}\n\nSend ${code("/upgrade")} to enable it.` };
+    default: return undefined;
+  }
+}
 
 /** Build a tip/guidance sub-card by key. */
 export function tipCard(key: string): Card | undefined {
-  const t = TIPS[key];
+  const t = tipContent(key);
   if (!t) return undefined;
   return { text: t.text, keyboard: chrome(new InlineKeyboard(), t.parent) };
 }
@@ -324,13 +384,19 @@ export function feesText(): string {
   return lines.join("\n");
 }
 
-/** How-to / help card body. */
+/** How-to / help card body — examples built from the live registry. */
 export function helpText(): string {
+  const pools = poolNames();
+  const pool0 = pools[0] ?? "BTC/MUSD";
+  const vaults = registry.vaults();
   return (
     `${b("❓ How to use Mezo Agent")}\n\n` +
+    `${b("On this network")} (${netLabel}): ${registry.knownTokenSymbols().length} tokens ` +
+    `(${registry.knownTokenSymbols().join(", ")}), ${pools.length} swap route${pools.length === 1 ? "" : "s"} ` +
+    `(${pools.join(", ")})${vaults.length ? `, ${vaults.length} vault${vaults.length === 1 ? "" : "s"}` : ""}.\n\n` +
     `Tap a menu button, or just type what you want — I turn it into a simulated, confirmable transaction:\n` +
-    `• swap 100 MUSD to mUSDC\n• borrow 2000 MUSD against 0.1 BTC\n` +
-    `• zap 0.01 BTC into BTC/MUSD · stake LP BTC/MUSD\n` +
+    `• ${swapExample()}\n• borrow 2000 MUSD against 0.1 BTC\n` +
+    `• zap 0.01 BTC into ${pool0} · stake LP ${pool0}\n` +
     `• lock 0.2 BTC for 28 days · vote optimally with veNFT 3 · claim all\n` +
     `• dca 50 MUSD to BTC every 24h · auto-compound on\n\n` +
     i("Every fund-moving action is simulated and shown for confirmation before it signs. Set spending caps in Settings → Limits.")

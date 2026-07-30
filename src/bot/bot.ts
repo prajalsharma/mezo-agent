@@ -76,25 +76,10 @@ export function buildBot(): Bot {
 
   // ── Commands ───────────────────────────────────────────────────────────────
   bot.command("start", handleStart);
+  // Single source of truth for help copy: helpText() builds its examples from
+  // the live registry (real pools/tokens/vaults on this network).
   bot.command("help", async (ctx) => {
-    await ctx.reply(
-      "Commands:\n" +
-        "/start — onboarding · /portfolio · /deposit\n" +
-        "/limits — spending caps · /watch — read-only mode\n" +
-        "/export — reveal your private key (warned, self-deleting)\n" +
-        "/upgrade — EIP-7702 smart account (scoped session key)\n" +
-        "/accounts — multi-account · /dca — DCA schedules · /fees\n" +
-        "/pause · /resume — emergency stop for automation\n" +
-        "/cancel · /diag — health self-test\n\n" +
-        "Natural language — I understand:\n" +
-        "• swap 100 MUSD to mUSDC · zap 0.01 BTC into MUSD/mUSDC\n" +
-        "• borrow 5000 MUSD against 0.1 BTC · repay 1000 MUSD\n" +
-        "• lock 0.2 BTC for 28 days · vote optimally · claim all\n" +
-        "• stake LP MUSD/mUSDC · buy listing 42\n" +
-        "• DCA 50 MUSD to BTC every 24h · auto-compound on\n" +
-        "• new account · switch to account 1\n\n" +
-        "Every fund-moving action is simulated and shown for confirmation before signing.",
-    );
+    await ctx.reply(helpText(), { parse_mode: "HTML" });
   });
   bot.command("portfolio", handlePortfolio);
   bot.command("deposit", handleDeposit);
