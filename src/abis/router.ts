@@ -160,6 +160,7 @@ export const feeRouterAbi = [
       { name: "deadline", type: "uint256" },
       { name: "referrer", type: "address" },
       { name: "referralShareBps", type: "uint16" },
+      { name: "feeBpsOverride", type: "uint16" },
     ],
     outputs: [{ name: "amountOut", type: "uint256" }],
   },

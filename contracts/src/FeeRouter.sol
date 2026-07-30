@@ -101,6 +101,9 @@ contract FeeRouter {
      *
      * @param referralShareBps referrer's share of the fee, in bps of the fee;
      *        clamped to `maxReferralShareBps`. Ignored when referrer is zero.
+     * @param feeBpsOverride optional per-call fee rate; 0 uses the default
+     *        `feeBps`. Still hard-capped at MAX_FEE_BPS. Lets a zap collect its
+     *        WHOLE fee on the swapped half (2× bps on half == bps on gross).
      */
     function swapWithFee(
         uint256 amountIn,
@@ -108,13 +111,15 @@ contract FeeRouter {
         Route[] calldata routes,
         uint256 deadline,
         address referrer,
-        uint16 referralShareBps
+        uint16 referralShareBps,
+        uint16 feeBpsOverride
     ) external nonReentrant returns (uint256 amountOut) {
         if (routes.length == 0) revert EmptyRoute();
+        if (feeBpsOverride > MAX_FEE_BPS) revert FeeTooHigh();
         address tokenIn = routes[0].from;
 
         _pull(tokenIn, msg.sender, amountIn);
-        uint256 fee = _takeFee(tokenIn, amountIn, referrer, referralShareBps);
+        uint256 fee = _takeFee(tokenIn, amountIn, referrer, referralShareBps, feeBpsOverride);
 
         _approve(tokenIn, address(router), amountIn - fee);
         uint256[] memory amounts =
@@ -123,11 +128,11 @@ contract FeeRouter {
     }
 
     /// @dev Split the fee between referrer (clamped share) and the operator.
-    function _takeFee(address tokenIn, uint256 amountIn, address referrer, uint16 referralShareBps)
+    function _takeFee(address tokenIn, uint256 amountIn, address referrer, uint16 referralShareBps, uint16 bpsOverride)
         private
         returns (uint256 fee)
     {
-        fee = (amountIn * feeBps) / BPS;
+        fee = (amountIn * (bpsOverride > 0 ? bpsOverride : feeBps)) / BPS;
         uint256 referrerShare = 0;
         if (fee > 0) {
             if (referrer != address(0) && referralShareBps > 0) {

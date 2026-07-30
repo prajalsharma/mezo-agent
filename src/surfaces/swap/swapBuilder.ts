@@ -244,7 +244,7 @@ export async function buildSwap(params: {
       data: encodeFunctionData({
         abi: feeRouterAbi,
         functionName: "swapWithFee",
-        args: [amountIn, minOut, [route], deadline, (referral?.recipient ?? ZERO_ADDRESS) as Address, referralShareBps],
+        args: [amountIn, minOut, [route], deadline, (referral?.recipient ?? ZERO_ADDRESS) as Address, referralShareBps, 0],
       }),
       describe:
         `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol} ` +

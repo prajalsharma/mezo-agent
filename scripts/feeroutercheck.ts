@@ -11,8 +11,9 @@ const { erc20Abi } = await import('../src/abis/erc20.js');
 
 // E2E check: swaps 0.0005 BTC → MUSD through the FeeRouter with the DEPLOYER
 // key and verifies the fee event + escrowless invariant. Testnet only.
-// Proven live 2026-07-30: tx 0x24c69868d8d7e146638edd34566337bc2c57e3a520163d8020e09b5490cb5472
-const FEE_ROUTER = (process.env.FEE_ROUTER_ADDRESS ?? '0x854831a2b485ea5e4c0bdd0dfe9384421f9d439c') as Hex;
+// v1 proven live 2026-07-30: tx 0x24c69868d8d7e146638edd34566337bc2c57e3a520163d8020e09b5490cb5472
+// v2 (adds feeBpsOverride for atomic zap fees) deployed at the address below.
+const FEE_ROUTER = (process.env.FEE_ROUTER_ADDRESS ?? '0x16340c6a09d0383fe84f623f6c06885d5ce746a8') as Hex;
 const pk = readFileSync(join(homedir(), '.mezo-agent-deploy/deployer.key'), 'utf8').trim() as Hex;
 const account = privateKeyToAccount(pk);
 const c = publicClient();
@@ -37,7 +38,7 @@ await c.waitForTransactionReceipt({ hash: h1, timeout: 120000, retryCount: 8 });
 console.log('approve mined:', h1);
 
 // 2. swapWithFee — atomic swap + fee in ONE tx
-const data = encodeFunctionData({ abi: feeRouterAbi, functionName: 'swapWithFee', args: [amountIn, 0n, [route], BigInt(Math.floor(Date.now()/1000)+600), '0x0000000000000000000000000000000000000000', 0] });
+const data = encodeFunctionData({ abi: feeRouterAbi, functionName: 'swapWithFee', args: [amountIn, 0n, [route], BigInt(Math.floor(Date.now()/1000)+600), '0x0000000000000000000000000000000000000000', 0, 0] });
 const simErr = await c.call({ account: account.address, to: FEE_ROUTER, data }).then(() => undefined, (e: Error & { shortMessage?: string }) => e.shortMessage || e.message);
 if (simErr) { console.log('SIM FAILED:', simErr); process.exit(1); }
 console.log('sim OK');

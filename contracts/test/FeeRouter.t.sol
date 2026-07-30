@@ -71,7 +71,7 @@ contract FeeRouterTest is Test {
 
     function test_feeCollectedAtomically() public {
         vm.prank(user);
-        uint256 out = fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0);
+        uint256 out = fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 0);
         // fee = 0.5% of 100 = 0.5; net = 99.5 swapped at 2x
         assertEq(tokenIn.balanceOf(operator), 0.5e18, "operator fee");
         assertEq(out, 199e18, "amountOut");
@@ -81,14 +81,14 @@ contract FeeRouterTest is Test {
 
     function test_referralSplitAtSource() public {
         vm.prank(user);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
         assertEq(tokenIn.balanceOf(referrer), 0.15e18, "referrer 30% of fee");
         assertEq(tokenIn.balanceOf(operator), 0.35e18, "operator 70% of fee");
     }
 
     function test_referralShareClampedToMax() public {
         vm.prank(user);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 9000); // asks 90%
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 9000, 0); // asks 90%
         assertEq(tokenIn.balanceOf(referrer), 0.15e18, "clamped to 30% max");
     }
 
@@ -97,7 +97,7 @@ contract FeeRouterTest is Test {
         router.setRevert(true);
         vm.prank(user);
         vm.expectRevert(bytes("router: revert"));
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 0);
         assertEq(tokenIn.balanceOf(operator), 0, "NO fee on failed swap");
         assertEq(tokenIn.balanceOf(user), 1_000e18, "user made whole");
     }
@@ -105,14 +105,14 @@ contract FeeRouterTest is Test {
     function test_atomic_noFeeOnSlippageRevert() public {
         vm.prank(user);
         vm.expectRevert(bytes("slippage"));
-        fr.swapWithFee(100e18, 500e18, _routes(), block.timestamp + 600, address(0), 0);
+        fr.swapWithFee(100e18, 500e18, _routes(), block.timestamp + 600, address(0), 0, 0);
         assertEq(tokenIn.balanceOf(operator), 0, "no fee when minOut not met");
     }
 
     function test_zeroFeeConfigPassesEverything() public {
         fr.setConfig(operator, 0, 3000);
         vm.prank(user);
-        uint256 out = fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0);
+        uint256 out = fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 0);
         assertEq(tokenIn.balanceOf(operator), 0);
         assertEq(out, 200e18, "full amount swapped");
     }
@@ -140,6 +140,19 @@ contract FeeRouterTest is Test {
     function test_insufficientBalanceReverts() public {
         vm.prank(user);
         vm.expectRevert();
-        fr.swapWithFee(2_000e18, 0, _routes(), block.timestamp + 600, address(0), 0);
+        fr.swapWithFee(2_000e18, 0, _routes(), block.timestamp + 600, address(0), 0, 0);
+    }
+
+    /// Zap path: 2× bps on the swapped half == configured bps on the gross.
+    function test_feeBpsOverrideForZapLeg() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 100); // 1% override
+        assertEq(tokenIn.balanceOf(operator), 1e18, "override 1% applied instead of default 0.5%");
+    }
+
+    function test_feeBpsOverrideCappedAtMax() public {
+        vm.prank(user);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 101); // >1% rejected
     }
 }
