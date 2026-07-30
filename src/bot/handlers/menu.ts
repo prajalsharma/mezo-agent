@@ -97,7 +97,7 @@ export async function handleMenuCallback(ctx: Context): Promise<void> {
 
   // Swap picker flow: source → destination → preset amount → quote/confirm.
   if (rest.startsWith("swapfrom:")) {
-    await edit(swapToCard(rest.slice("swapfrom:".length)));
+    await edit(await swapToCard(rest.slice("swapfrom:".length)));
     return;
   }
   if (rest.startsWith("swapto:")) {

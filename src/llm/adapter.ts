@@ -267,6 +267,15 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
   if (/\bbrowse market\b|\bmarket\b/.test(lower) && !/buy/.test(lower)) return { action: "marketBrowse" };
   { const m = t.match(/buy\s+(?:listing\s+)?([a-z0-9]+)/i); if (m) return { action: "marketBuy", listingId: m[1]! }; }
 
+  // Last-chance swap: "<amount> <token> to <token>" ANYWHERE in the message, no
+  // verb required — catches follow-ups like "then do 300 musd to musdt". Runs
+  // AFTER every other rule so borrow/lock/dca/zap phrasings keep their shot, and
+  // it only fires when BOTH symbols resolve, so it can't misread durations or
+  // pool names.
+  { const m = t.match(new RegExp(`${num}\\s+([a-z0-9]+)\\s+(?:to|for|into|->)\\s+([a-z0-9]+)`, "i"));
+    if (m) { const f = resolve(m[2]!), to = resolve(m[3]!);
+      if (f && to && f !== to) return { action: "swap", amount: m[1]!, fromToken: f, toToken: to }; } }
+
   return { action: "clarify", question: clarifyHelp(knownSymbols, t) };
 }
 

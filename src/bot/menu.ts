@@ -4,6 +4,7 @@ import { env, feesEnabled } from "../config/env.js";
 import { getUser, listAccounts, activeIndex } from "../wallet/walletService.js";
 import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
 import { registry } from "../registry/registry.js";
+import { publicClient } from "../chain/client.js";
 import { b, i, code } from "./format.js";
 
 /**
@@ -133,15 +134,49 @@ function exAmt(sym: string): string {
   return sym.toUpperCase().includes("BTC") ? "0.01" : "100";
 }
 
-/** Human list of live swap routes, e.g. "BTC ⇄ MUSD · MUSD ⇄ mUSDC (stable)". */
+// Live pool-liquidity check (a registered pool can still be EMPTY — on testnet
+// MUSD/mUSDT has zero reserves, so offering it as a route is a dead end). Reads
+// getReserves per pool, cached for 60s; a read failure counts as live (fail
+// open) so an RPC blip never hides a real route.
+const RESERVES_ABI = [{
+  type: "function", name: "getReserves", stateMutability: "view", inputs: [],
+  outputs: [{ name: "_reserve0", type: "uint256" }, { name: "_reserve1", type: "uint256" }, { name: "_blockTimestampLast", type: "uint256" }],
+}] as const;
+let liquidityCache: { at: number; empty: Set<string> } | undefined;
+async function emptyPoolAddresses(): Promise<Set<string>> {
+  if (liquidityCache && Date.now() - liquidityCache.at < 60_000) return liquidityCache.empty;
+  const empty = new Set<string>();
+  await Promise.all(registry.pools().map(async (p) => {
+    try {
+      const [r0, r1] = (await publicClient().readContract({ address: p.address, abi: RESERVES_ABI, functionName: "getReserves" })) as [bigint, bigint, bigint];
+      if (r0 === 0n || r1 === 0n) empty.add(p.address.toLowerCase());
+    } catch { /* fail open */ }
+  }));
+  liquidityCache = { at: Date.now(), empty };
+  return empty;
+}
+
+/** Route list marking empty pools, e.g. "BTC ⇄ MUSD · MUSD ⇄ mUSDT (no liquidity yet)". */
+export async function routeListLive(): Promise<string> {
+  const empty = await emptyPoolAddresses();
+  return registry.pools()
+    .map((p) => `${p.pair[0]} ⇄ ${p.pair[1]}${empty.has(p.address.toLowerCase()) ? " — ⚠️ no liquidity yet" : p.stable ? " (stable)" : ""}`)
+    .join("\n• ");
+}
+
+/** Static route list (no RPC) for sync contexts like helpText. */
 export function routeList(): string {
   return registry.pools().map((p) => `${p.pair[0]} ⇄ ${p.pair[1]}${p.stable ? " (stable)" : ""}`).join("\n• ");
 }
 
-/** Tokens that actually have at least one live pool (i.e. are swappable). */
-function swappableSymbols(): Set<string> {
+/** Tokens with at least one FUNDED pool (i.e. actually swappable right now). */
+async function swappableSymbols(): Promise<Set<string>> {
+  const empty = await emptyPoolAddresses();
   const s = new Set<string>();
-  for (const p of registry.pools()) { s.add(p.pair[0]); s.add(p.pair[1]); }
+  for (const p of registry.pools()) {
+    if (empty.has(p.address.toLowerCase())) continue;
+    s.add(p.pair[0]); s.add(p.pair[1]);
+  }
   return s;
 }
 
@@ -162,7 +197,7 @@ const NATIVE_GAS_BUFFER_WEI = 500_000_000_000_000n; // 0.0005 BTC kept for gas o
 async function swapFromCard(telegramId: number): Promise<Card> {
   const user = getUser(telegramId);
   if (!user) return noWalletCard();
-  const pooled = swappableSymbols();
+  const [pooled, routes] = await Promise.all([swappableSymbols(), routeListLive()]);
   let holdings: Awaited<ReturnType<typeof getPortfolio>> = [];
   try { holdings = (await getPortfolio(user.address)).filter((h) => h.raw > 0n); } catch { /* empty */ }
   const sellable = holdings.filter((h) => pooled.has(h.token.symbol));
@@ -173,22 +208,22 @@ async function swapFromCard(telegramId: number): Promise<Card> {
     if (idx % 2 === 1) kb.row();
   });
   if (sellable.length % 2 === 1) kb.row();
-  const header =
-    `${b("💱 Swap")} — ${registry.pools().length} live route${registry.pools().length === 1 ? "" : "s"} on ${netLabel}:\n` +
-    `• ${routeList()}\n\n`;
+  const header = `${b("💱 Swap")} — routes on ${netLabel}:\n• ${routes}\n\n`;
   const text = sellable.length
     ? header +
       `${b("Pick the token to sell:")}\n\n` +
-      (unpooled.length ? i(`(${unpooled.map((h) => h.token.symbol).join(", ")} — no swap pool on this network yet.)`) + "\n" : "") +
+      (unpooled.length ? i(`(${unpooled.map((h) => h.token.symbol).join(", ")} — no funded swap pool on this network yet.)`) + "\n" : "") +
       i(`Or just type it, e.g. "${swapExample()}".`)
     : header + i("No swappable balance yet — tap Deposit to fund your wallet, then come back.");
   return { text, keyboard: chrome(kb) };
 }
 
-/** Token symbols that share a live pool with `from`. */
-function swapDestinations(from: string): string[] {
+/** Token symbols sharing a FUNDED pool with `from`. */
+async function swapDestinations(from: string): Promise<string[]> {
+  const empty = await emptyPoolAddresses();
   const dests = new Set<string>();
   for (const p of registry.pools()) {
+    if (empty.has(p.address.toLowerCase())) continue;
     const [a, c] = p.pair;
     if (a === from) dests.add(c);
     else if (c === from) dests.add(a);
@@ -196,15 +231,15 @@ function swapDestinations(from: string): string[] {
   return [...dests];
 }
 
-/** Step 2 — pick what to buy (only tokens with a direct pool). */
-export function swapToCard(from: string): Card {
-  const dests = swapDestinations(from);
+/** Step 2 — pick what to buy (only tokens with a direct FUNDED pool). */
+export async function swapToCard(from: string): Promise<Card> {
+  const dests = await swapDestinations(from);
   const kb = new InlineKeyboard();
   dests.forEach((d, idx) => { kb.text(d, `menu:swapto:${from}:${d}`); if (idx % 2 === 1) kb.row(); });
   if (dests.length % 2 === 1) kb.row();
   const text = dests.length
     ? `${b(`💱 Swap ${from} → pick what to buy:`)}`
-    : `${b(`💱 Swap ${from}`)}\n\n${i(`No direct pool from ${from} yet. Try a different token.`)}`;
+    : `${b(`💱 Swap ${from}`)}\n\n${i(`No funded pool from ${from} on this network yet. Try a different token.`)}`;
   return { text, keyboard: chrome(kb, "swap") };
 }
 
@@ -263,7 +298,7 @@ function borrowCard(): Card {
   };
 }
 
-function earnCard(): Card {
+async function earnCard(): Promise<Card> {
   const vaults = registry.vaults();
   const kb = new InlineKeyboard().text("⚡ Zap in", "menu:tip:earn_zap").text("🌊 Stake LP", "menu:tip:earn_stake").row();
   if (vaults.length) kb.text("🏛️ Vault", "menu:tip:earn_vault");
@@ -273,7 +308,7 @@ function earnCard(): Card {
     : i(`No vaults are published on ${netLabel} yet — LP staking and zaps are live.`);
   return {
     text: `${b("🌱 Earn — yield on your assets")}\n\n` +
-      `${b("LP pools you can enter:")}\n• ${routeList()}\n\n` +
+      `${b("LP pools you can enter:")}\n• ${await routeListLive()}\n\n` +
       `${vaultLine}\n\n` +
       i("Zap turns ONE asset into a staked LP position in a single flow — the easiest way in."),
     keyboard: chrome(kb),

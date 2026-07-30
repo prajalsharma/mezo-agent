@@ -131,8 +131,30 @@ export async function buildSwap(params: {
   //    NET amount so the displayed output is what the user actually receives.
   const expectedOut = await quoteFromPool(pool, amountInNet, tokenIn);
   if (expectedOut <= 0n) {
+    // Distinguish "pool is EMPTY" (nothing will ever swap; say so and point at
+    // funded routes) from "amount too small" — a zero quote alone is ambiguous
+    // and users read it as their mistake.
+    let emptyPool = false;
+    const alternatives: string[] = [];
+    try {
+      const reservesAbi = [{ type: "function", name: "getReserves", stateMutability: "view", inputs: [], outputs: [{ name: "_r0", type: "uint256" }, { name: "_r1", type: "uint256" }, { name: "_ts", type: "uint256" }] }] as const;
+      const [r0, r1] = (await publicClient().readContract({ address: pool.address, abi: reservesAbi, functionName: "getReserves" })) as unknown as [bigint, bigint, bigint];
+      emptyPool = r0 === 0n || r1 === 0n;
+      if (emptyPool) {
+        for (const p of registry.pools()) {
+          if (p.address === pool.address) continue;
+          try {
+            const [a0, a1] = (await publicClient().readContract({ address: p.address, abi: reservesAbi, functionName: "getReserves" })) as unknown as [bigint, bigint, bigint];
+            if (a0 > 0n && a1 > 0n) alternatives.push(`${p.pair[0]} ⇄ ${p.pair[1]}`);
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* fall through to generic message */ }
     throw new SwapUnavailableError(
-      `The pool returned a zero quote for ${tokenIn.symbol} → ${tokenOut.symbol} (amount too small or no liquidity).`,
+      emptyPool
+        ? `The ${tokenIn.symbol}/${tokenOut.symbol} pool has NO liquidity on ${env.network} yet — no amount can swap there until someone seeds it. ` +
+          (alternatives.length ? `Routes that work right now: ${alternatives.join(", ")}.` : "")
+        : `The pool returned a zero quote for ${tokenIn.symbol} → ${tokenOut.symbol} (amount too small for the pool's liquidity — try a larger amount).`,
     );
   }
   const minOut = applySlippage(expectedOut, slippagePct);
