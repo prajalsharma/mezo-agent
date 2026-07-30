@@ -107,6 +107,19 @@ type Db = {
   pausedUsers?: number[];
   /** Referral rewards paid to each referrer (split-at-source; history record). */
   referralEarnings?: Record<string, { trades: number; byToken: Record<string, string> }>;
+  /** Agent fees whose fee-tx failed after the main action succeeded (uncollected revenue). */
+  owedFees?: OwedFee[];
+};
+
+export type OwedFee = {
+  telegramId: number;
+  symbol: string;
+  /** Raw base-unit amount as a decimal string. */
+  amountRaw: string;
+  /** What the fee was for, e.g. "swap MUSD→mUSDC". */
+  context: string;
+  reason: string;
+  at: string;
 };
 
 type LegacyDb = Db & { users?: Record<string, UserRecord> };
@@ -142,6 +155,9 @@ class Store {
         autoCompound: loaded.autoCompound ?? [],
         keeperPaused: loaded.keeperPaused ?? false,
         pausedUsers: loaded.pausedUsers ?? [],
+        // These two were previously dropped here, wiping them on every restart.
+        referralEarnings: loaded.referralEarnings ?? {},
+        owedFees: loaded.owedFees ?? [],
       };
     } else {
       this.flush();
@@ -239,6 +255,16 @@ class Store {
 
   referralEarnings(referrerId: number): { trades: number; byToken: Record<string, string> } {
     return this.db.referralEarnings?.[String(referrerId)] ?? { trades: 0, byToken: {} };
+  }
+
+  /** Log an agent fee that failed to collect after the main action succeeded. */
+  recordOwedFee(f: OwedFee): void {
+    (this.db.owedFees ??= []).push(f);
+    this.flush();
+  }
+
+  owedFees(): OwedFee[] {
+    return this.db.owedFees ?? [];
   }
 
   addTx(tx: TxRecord): void {

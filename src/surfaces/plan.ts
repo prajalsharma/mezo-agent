@@ -1,7 +1,7 @@
 import type { Address, Hex } from "viem";
 import { publicClient } from "../chain/client.js";
 import { simulateCall } from "../core/simulator.js";
-import { signAndSubmit } from "../custody/signer.js";
+import { signAndSubmit, PolicyViolationError } from "../custody/signer.js";
 import { store, type UserRecord } from "../db/store.js";
 
 /**
@@ -69,6 +69,52 @@ export type StepOutcome =
   | { kind: string; ok: true; hash: Hex }
   | { kind: string; ok: false; reason: string };
 
+/**
+ * Simulate + sign one step, with retries for FEE steps: the fee is the agent's
+ * revenue and its dominant failure mode is a transient Mezo RPC flake, so losing
+ * it to one hiccup is pure revenue leakage. Non-fee steps get a single attempt
+ * (their failures are surfaced to the user, who can retry the whole action).
+ * PolicyViolation is deterministic — never retried.
+ */
+export async function trySignStep(
+  user: UserRecord,
+  step: { kind: string; to: Address; data?: Hex; value: bigint; erc20?: { symbol: string; amount: bigint } },
+  allowedTargets: Address[],
+): Promise<{ ok: true; hash: Hex } | { ok: false; reason: string }> {
+  const attempts = step.kind === "fee" ? 3 : 1;
+  let lastReason = "unknown error";
+  for (let n = 0; n < attempts; n++) {
+    if (n > 0) await new Promise((r) => setTimeout(r, 1500));
+    const sim = await simulateCall({ from: user.address, to: step.to, data: step.data, value: step.value });
+    if (!sim.ok) { lastReason = sim.reason; continue; }
+    try {
+      const hash = await signAndSubmit(user, {
+        to: step.to,
+        data: step.data,
+        value: step.value,
+        policy: { allowedTargets, ...(step.erc20 ? { erc20: step.erc20 } : {}) },
+      });
+      return { ok: true, hash };
+    } catch (err) {
+      lastReason = err instanceof Error ? err.message : "signing failed";
+      if (err instanceof PolicyViolationError) break;
+    }
+  }
+  return { ok: false, reason: lastReason };
+}
+
+/** Persist an uncollected fee so a failed fee-tx is logged revenue, not lost. */
+export function recordFeeLoss(user: UserRecord, step: { value: bigint; erc20?: { symbol: string; amount: bigint } }, context: string, reason: string): void {
+  store.recordOwedFee({
+    telegramId: user.telegramId,
+    symbol: step.erc20?.symbol ?? "BTC",
+    amountRaw: (step.erc20?.amount ?? step.value).toString(),
+    context,
+    reason,
+    at: new Date().toISOString(),
+  });
+}
+
 export type ActionExecution = {
   outcomes: StepOutcome[];
   finalHash?: Hex;
@@ -96,26 +142,15 @@ export async function executeActionPlan(
   }
 
   for (const step of plan.steps) {
-    // 1. Simulate immediately before signing this exact step.
-    const sim = await simulateCall({ from: user.address, to: step.to, data: step.data, value: step.value });
-    if (!sim.ok) {
-      outcomes.push({ kind: step.kind, ok: false, reason: sim.reason });
+    // Simulate-then-sign, with retries + owed-fee logging for fee steps (revenue
+    // must survive a transient RPC flake, and a lost fee must be recorded).
+    const attempt = await trySignStep(user, step, plan.allowedTargets);
+    if (!attempt.ok) {
+      if (step.kind === "fee") recordFeeLoss(user, step, plan.action, attempt.reason);
+      outcomes.push({ kind: step.kind, ok: false, reason: attempt.reason });
       return { outcomes, aborted: true };
     }
-
-    // 2. Sign & submit within policy — signer only allowed to touch these targets.
-    let hash: Hex;
-    try {
-      hash = await signAndSubmit(user, {
-        to: step.to,
-        data: step.data,
-        value: step.value,
-        policy: { allowedTargets: plan.allowedTargets, ...(step.erc20 ? { erc20: step.erc20 } : {}) },
-      });
-    } catch (err) {
-      outcomes.push({ kind: step.kind, ok: false, reason: err instanceof Error ? err.message : "signing failed" });
-      return { outcomes, aborted: true };
-    }
+    const hash: Hex = attempt.hash;
 
     outcomes.push({ kind: step.kind, ok: true, hash });
     store.addTx({

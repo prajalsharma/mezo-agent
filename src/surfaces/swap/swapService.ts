@@ -1,7 +1,6 @@
 import type { Hex } from "viem";
 import { publicClient } from "../../chain/client.js";
-import { simulateCall } from "../../core/simulator.js";
-import { signAndSubmit } from "../../custody/signer.js";
+import { trySignStep, recordFeeLoss } from "../plan.js";
 import { store, type UserRecord } from "../../db/store.js";
 import { registry } from "../../registry/registry.js";
 import type { PlanStep, SwapPlan } from "./swapBuilder.js";
@@ -53,39 +52,19 @@ export async function executeSwap(
   ];
 
   for (const step of plan.steps) {
-    // 1. Simulate immediately before signing this exact step.
-    const sim = await simulateCall({
-      from: user.address,
-      to: step.to,
-      data: step.data,
-      value: step.value,
-    });
-    if (!sim.ok) {
-      outcomes.push({ kind: step.kind, ok: false, reason: sim.reason });
+    // Simulate-then-sign with retries for fee steps (revenue survives transient
+    // RPC flakes; a lost fee is recorded as owed). Cap metadata travels ON the
+    // step, so native BTC is capped via btcWeiMoved and tokens via the per-token
+    // cap. (Audit R2 C1/H1.)
+    const attempt = await trySignStep(user, step, allowedTargets);
+    if (!attempt.ok) {
+      if (step.kind === "fee") {
+        recordFeeLoss(user, step, `swap ${plan.tokenIn.symbol}→${plan.tokenOut.symbol}`, attempt.reason);
+      }
+      outcomes.push({ kind: step.kind, ok: false, reason: attempt.reason });
       return { outcomes, aborted: true };
     }
-
-    // 2. Sign & submit within policy — signer only allowed to touch these targets.
-    let hash: Hex;
-    try {
-      hash = await signAndSubmit(user, {
-        to: step.to,
-        data: step.data,
-        value: step.value,
-        // Cap metadata now travels ON the step (set by the builder), so native
-        // BTC is capped via the signer's btcWeiMoved and tokens via the per-token
-        // cap — the previous `!native` guard here inverted reality and exempted
-        // native BTC from all caps. (Audit R2 C1/H1.)
-        policy: { allowedTargets, ...(step.erc20 ? { erc20: step.erc20 } : {}) },
-      });
-    } catch (err) {
-      outcomes.push({
-        kind: step.kind,
-        ok: false,
-        reason: err instanceof Error ? err.message : "signing failed",
-      });
-      return { outcomes, aborted: true };
-    }
+    const hash: Hex = attempt.hash;
 
     outcomes.push({ kind: step.kind, ok: true, hash });
     store.addTx({
