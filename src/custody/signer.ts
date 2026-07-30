@@ -133,13 +133,54 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
 
   const session = usableSession(user);
   try {
-    return session
-      ? await submitViaSession(user, session, plan)
-      : await submitDirect(user, plan);
+    if (!session) return await submitDirect(user, plan);
+
+    // Session path: the delegate enforces an ON-CHAIN allowlist frozen at
+    // /upgrade time, so a contract wired later (FeeRouter) or a target older
+    // builds missed (the BTC precompile) reverts with TargetNotAllowed /
+    // SpenderNotAllowed — invisible to our eth_call simulation, which doesn't
+    // go through the delegate. Check first; self-heal via the root key; if the
+    // target still isn't allowed, fall back to root-signed direct submission
+    // (off-chain policy above has already vetted the op).
+    if (!(await sessionCanExecute(user.address, session.address as Address, plan))) {
+      try {
+        const { ensureSessionTargets } = await import("./delegation.js");
+        await ensureSessionTargets(user);
+      } catch { /* healing is best-effort */ }
+      if (!(await sessionCanExecute(user.address, session.address as Address, plan))) {
+        return await submitDirect(user, plan);
+      }
+    }
+    return await submitViaSession(user, session, plan);
   } catch (err) {
     // Submission failed — release the reservation so it doesn't count against the cap.
     store.releaseSpend(reservation);
     throw err;
+  }
+}
+
+const SEL_APPROVE_HEX = "0x095ea7b3";
+
+/** Would the session delegate accept this op? (target + approve-spender allowlist) */
+async function sessionCanExecute(account: Address, sessionKey: Address, plan: SignablePlan): Promise<boolean> {
+  try {
+    const allowed = (await publicClient().readContract({
+      address: account, abi: sessionKeyDelegateAbi, functionName: "isAllowed", args: [sessionKey, plan.to],
+    })) as boolean;
+    if (!allowed) return false;
+    // approve(spender, …): the delegate also requires the SPENDER to be an
+    // allowlisted target — decode it and check.
+    if (plan.data && plan.data.slice(0, 10).toLowerCase() === SEL_APPROVE_HEX) {
+      const spender = ("0x" + plan.data.slice(34, 74)) as Address;
+      return (await publicClient().readContract({
+        address: account, abi: sessionKeyDelegateAbi, functionName: "isAllowed", args: [sessionKey, spender],
+      })) as boolean;
+    }
+    return true;
+  } catch {
+    // Can't read the delegate (not actually delegated?) — let the session path
+    // proceed and fail loudly rather than silently downgrade.
+    return true;
   }
 }
 

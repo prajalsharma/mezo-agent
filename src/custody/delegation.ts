@@ -74,6 +74,9 @@ const SEL_SWAP_ETH = toFunctionSelector(
 const SEL_SWAP_FOR_ETH = toFunctionSelector(
   "swapExactTokensForETH(uint256,uint256,(address,address,bool,address)[],address,uint256)",
 );
+const SEL_SWAP_WITH_FEE = toFunctionSelector(
+  "swapWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)",
+);
 
 /**
  * Coarse USD-ish ceiling used to convert a native BTC cap into a token cap.
@@ -99,18 +102,85 @@ function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
       tokenDailyCap: 0n,
     });
   }
+  // FeeRouter (atomic swap+fee wrapper). Must be a TARGET both to be called and
+  // to be a legal `approve` spender (the delegate rejects approvals to
+  // non-target spenders — the exact revert users hit before this was added).
+  if (registry.hasContract("FeeRouter")) {
+    policies.push({
+      target: registry.contract("FeeRouter"),
+      selectors: [SEL_SWAP_WITH_FEE],
+      tokenPerTxCap: 0n,
+      tokenDailyCap: 0n,
+    });
+  }
   for (const t of registry.allTokens()) {
-    if (t.native) continue;
-    const caps = tokenCapsFor(limits, t.decimals);
+    // Native BTC spends through its ERC-20 precompile — the precompile IS the
+    // approval/transfer target for BTC, so it needs a policy like any token.
+    // (It was previously skipped, which broke every BTC-input approval on
+    // upgraded accounts.)
+    const target = registry.routingAddress(t);
+    const caps = t.native
+      ? { perTx: BigInt(limits.perTxNativeWei), daily: BigInt(limits.dailyNativeWei) }
+      : tokenCapsFor(limits, t.decimals);
     policies.push({
       // approve is needed for swaps; transfer for fee payment / moves.
-      target: t.address,
+      target,
       selectors: [SEL_APPROVE, SEL_TRANSFER],
       tokenPerTxCap: caps.perTx,
       tokenDailyCap: caps.daily,
     });
   }
   return policies;
+}
+
+/**
+ * Self-heal an EXISTING session's on-chain allowlist. Sessions freeze their
+ * target policies at /upgrade time, so contracts added later (e.g. FeeRouter)
+ * — or targets missed by older builds (the BTC precompile) — are rejected by
+ * the delegate with TargetNotAllowed/SpenderNotAllowed. The ROOT key can fix
+ * that: setTargetPolicy is onlySelf, and a root-signed tx to the account itself
+ * satisfies msg.sender == address(this). Idempotent: only missing targets are
+ * installed. Returns how many policies were added.
+ */
+export async function ensureSessionTargets(user: UserRecord): Promise<number> {
+  if (!user.session) return 0;
+  const session = user.session.address as Address;
+  const limits = limitsOf(user.limits);
+  const wanted = sessionPolicies(limits);
+
+  const missing: TargetPolicy[] = [];
+  for (const p of wanted) {
+    try {
+      const ok = (await publicClient().readContract({
+        address: user.address,
+        abi: sessionKeyDelegateAbi,
+        functionName: "isAllowed",
+        args: [session, p.target],
+      })) as boolean;
+      if (!ok) missing.push(p);
+    } catch {
+      // Unreadable (not delegated / RPC) — nothing to heal here.
+      return 0;
+    }
+  }
+  if (missing.length === 0) return 0;
+
+  const chain = chainFor(env.network);
+  await keystore().use(user.sealedKey, async (rootKey: Hex) => {
+    const rootAccount = privateKeyToAccount(rootKey);
+    const wallet = createWalletClient({ account: rootAccount, chain, transport: http(chain.rpcUrls.default.http[0]) });
+    for (const p of missing) {
+      const data = encodeFunctionData({
+        abi: sessionKeyDelegateAbi,
+        functionName: "setTargetPolicy",
+        args: [session, { target: p.target, selectors: p.selectors, tokenPerTxCap: p.tokenPerTxCap, tokenDailyCap: p.tokenDailyCap }],
+      });
+      const hash = await wallet.sendTransaction({ to: user.address, data, gas: 500_000n } as never);
+      await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });
+      log.info("delegation.target-synced", { target: p.target });
+    }
+  });
+  return missing.length;
 }
 
 export async function isSmartAccount(user: UserRecord): Promise<boolean> {
