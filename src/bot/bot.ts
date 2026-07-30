@@ -1,4 +1,4 @@
-import { Bot, type Context } from "grammy";
+import { Bot, InlineKeyboard, type Context } from "grammy";
 import { env, llmEnabled, feesEnabled, accessRestricted } from "../config/env.js";
 import { log } from "../core/log.js";
 import { registry } from "../registry/registry.js";
@@ -214,9 +214,12 @@ export function buildBot(): Bot {
     const uid = ctx.from?.id;
     const hasAccount = uid ? Boolean(getUser(uid)) : false;
     if (/\bfaucet\b/.test(lower)) {
+      const fk = new InlineKeyboard()
+        .webApp("🚰 Open faucet", "https://faucet.test.mezo.org/").row()
+        .text("📥 My deposit address", "menu:act:deposit");
       await ctx.reply(
-        "🚰 Testnet faucet: https://faucet.test.mezo.org/\nPaste your deposit address there to get test BTC. Use /deposit to see your address.",
-        { link_preview_options: { is_disabled: true } },
+        "🚰 <b>Testnet faucet</b>\nTap below to open the faucet in-app, then paste your deposit address to get test BTC.",
+        { parse_mode: "HTML", reply_markup: fk, link_preview_options: { is_disabled: true } },
       );
       return;
     }

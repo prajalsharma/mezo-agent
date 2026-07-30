@@ -3,11 +3,12 @@ import { env, feesEnabled } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { store } from "../../db/store.js";
 import { registry } from "../../registry/registry.js";
-import { homeCard, screenCard, tipCard, feesText, helpText, type Card } from "../menu.js";
+import { homeCard, screenCard, tipCard, feesText, helpText, swapToCard, swapAmountCard, presetSwapAmount, type Card } from "../menu.js";
 import { b, i, code } from "../format.js";
 import { handlePortfolio, handleDeposit } from "./portfolio.js";
 import { handleLimits } from "./limits.js";
 import { handleActionIntent } from "./actions.js";
+import { handleSwapIntent } from "./swap.js";
 import { handleAutoCompound, handleDcaCancel, handleAccount } from "./automation.js";
 
 export { helpText };
@@ -91,6 +92,25 @@ export async function handleMenuCallback(ctx: Context): Promise<void> {
   if (rest.startsWith("tip:")) {
     const card = tipCard(rest.slice("tip:".length));
     if (card) await edit(card);
+    return;
+  }
+
+  // Swap picker flow: source → destination → preset amount → quote/confirm.
+  if (rest.startsWith("swapfrom:")) {
+    await edit(swapToCard(rest.slice("swapfrom:".length)));
+    return;
+  }
+  if (rest.startsWith("swapto:")) {
+    const [from, to] = rest.slice("swapto:".length).split(":");
+    if (from && to) await edit(await swapAmountCard(from, to, uid));
+    return;
+  }
+  if (rest.startsWith("swapx:")) {
+    const [from, to, pct] = rest.slice("swapx:".length).split(":");
+    if (!from || !to || !pct) return;
+    const amount = await presetSwapAmount(uid, from, Number(pct));
+    if (!amount) { await ctx.reply("Couldn't read your balance for that — try typing the swap amount."); return; }
+    await handleSwapIntent(ctx, { action: "swap", amount, fromToken: from, toToken: to });
     return;
   }
 

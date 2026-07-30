@@ -1,7 +1,9 @@
 import { InlineKeyboard, type Bot } from "grammy";
+import { formatUnits } from "viem";
 import { env, feesEnabled } from "../config/env.js";
 import { getUser, listAccounts, activeIndex } from "../wallet/walletService.js";
 import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
+import { registry } from "../registry/registry.js";
 import { b, i, code } from "./format.js";
 
 /**
@@ -121,10 +123,84 @@ function settingsCard(): Card {
   };
 }
 
-const SWAP_TEXT =
-  `${b("💱 Swap")}\nType it in plain language, e.g.:\n` +
-  `${code("swap 100 MUSD to mUSDC")}\n${code("swap 0.01 BTC to MUSD")}\n\n` +
-  i("You'll get a live quote + slippage, then confirm before it signs.");
+// ── Swap picker flow: source token → destination → preset amount ─────────────
+// Sniper-bot-style tap-to-swap. Amounts are % of the on-chain balance; the
+// existing quote/confirm card takes over once an amount is chosen.
+
+const NATIVE_GAS_BUFFER_WEI = 500_000_000_000_000n; // 0.0005 BTC kept for gas on Max
+
+/** Step 1 — pick the token to sell (from non-zero balances). */
+async function swapFromCard(telegramId: number): Promise<Card> {
+  const user = getUser(telegramId);
+  if (!user) return noWalletCard();
+  let nonzero: Awaited<ReturnType<typeof getPortfolio>> = [];
+  try { nonzero = (await getPortfolio(user.address)).filter((h) => h.raw > 0n); } catch { /* empty */ }
+  const kb = new InlineKeyboard();
+  nonzero.forEach((h, idx) => {
+    kb.text(`${h.token.symbol} · ${prettyAmount(h.formatted)}`, `menu:swapfrom:${h.token.symbol}`);
+    if (idx % 2 === 1) kb.row();
+  });
+  if (nonzero.length % 2 === 1) kb.row();
+  const text = nonzero.length
+    ? `${b("💱 Swap — pick the token to sell:")}\n\n${i("Or just type it, e.g. \"swap 100 MUSD to mUSDC\".")}`
+    : `${b("💱 Swap")}\n\n${i("No balance to swap yet — tap Deposit to fund your wallet, then come back.")}`;
+  return { text, keyboard: chrome(kb) };
+}
+
+/** Token symbols that share a live pool with `from`. */
+function swapDestinations(from: string): string[] {
+  const dests = new Set<string>();
+  for (const p of registry.pools()) {
+    const [a, c] = p.pair;
+    if (a === from) dests.add(c);
+    else if (c === from) dests.add(a);
+  }
+  return [...dests];
+}
+
+/** Step 2 — pick what to buy (only tokens with a direct pool). */
+export function swapToCard(from: string): Card {
+  const dests = swapDestinations(from);
+  const kb = new InlineKeyboard();
+  dests.forEach((d, idx) => { kb.text(d, `menu:swapto:${from}:${d}`); if (idx % 2 === 1) kb.row(); });
+  if (dests.length % 2 === 1) kb.row();
+  const text = dests.length
+    ? `${b(`💱 Swap ${from} → pick what to buy:`)}`
+    : `${b(`💱 Swap ${from}`)}\n\n${i(`No direct pool from ${from} yet. Try a different token.`)}`;
+  return { text, keyboard: chrome(kb, "swap") };
+}
+
+/** Step 3 — pick a preset amount (% of balance) or type a custom one. */
+export async function swapAmountCard(from: string, to: string, telegramId: number): Promise<Card> {
+  const user = getUser(telegramId);
+  let bal = "—";
+  if (user) {
+    try { const h = (await getPortfolio(user.address)).find((x) => x.token.symbol === from); if (h) bal = prettyAmount(h.formatted); } catch { /* keep — */ }
+  }
+  const kb = new InlineKeyboard()
+    .text("25%", `menu:swapx:${from}:${to}:25`)
+    .text("50%", `menu:swapx:${from}:${to}:50`)
+    .text("Max", `menu:swapx:${from}:${to}:100`);
+  const text =
+    `${b(`💱 Swap ${from} → ${to}`)}\nYour ${from}: ${b(bal)}\n\n` +
+    `Pick an amount, or type a custom one:\n${code(`swap 12.5 ${from} to ${to}`)}`;
+  return { text, keyboard: chrome(kb, "swap") };
+}
+
+/** Resolve a preset (% of balance) into a human amount string for handleSwapIntent. */
+export async function presetSwapAmount(telegramId: number, from: string, pct: number): Promise<string | undefined> {
+  const user = getUser(telegramId);
+  const tok = registry.tryToken(from);
+  if (!user || !tok) return undefined;
+  let raw = 0n;
+  try { raw = (await getPortfolio(user.address)).find((x) => x.token.symbol === from)?.raw ?? 0n; } catch { return undefined; }
+  if (raw <= 0n) return undefined;
+  let amt = (raw * BigInt(pct)) / 100n;
+  // Native BTC pays gas — on "Max" leave a buffer so the swap can still be sent.
+  if (tok.native && pct >= 100) amt = raw > NATIVE_GAS_BUFFER_WEI ? raw - NATIVE_GAS_BUFFER_WEI : 0n;
+  if (amt <= 0n) return undefined;
+  return formatUnits(amt, tok.decimals);
+}
 
 function borrowCard(): Card {
   const kb = new InlineKeyboard()
@@ -182,7 +258,7 @@ function automateCard(): Card {
 export async function screenCard(screen: string, telegramId: number): Promise<Card | undefined> {
   switch (screen) {
     case "portfolio": return portfolioCard(telegramId);
-    case "swap": return { text: SWAP_TEXT, keyboard: chrome(new InlineKeyboard()) };
+    case "swap": return swapFromCard(telegramId);
     case "borrow": return borrowCard();
     case "earn": return earnCard();
     case "lockvote": return lockVoteCard();

@@ -1,4 +1,4 @@
-import { type Context, InputFile } from "grammy";
+import { type Context, InputFile, InlineKeyboard } from "grammy";
 import QRCode from "qrcode";
 import { env } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
@@ -42,11 +42,18 @@ export async function handleDeposit(ctx: Context): Promise<void> {
   if (!user) return;
 
   const png = await QRCode.toBuffer(user.address, { width: 512, margin: 2 });
+  // On testnet, offer the faucet as an in-Telegram web app (opens in the built-in
+  // browser overlay — no leaving the chat) plus a 🏠 Menu button.
+  const kb = new InlineKeyboard();
+  if (env.network !== "mainnet") kb.webApp("🚰 Get test BTC (faucet)", "https://faucet.test.mezo.org/").row();
+  kb.text("🏠 Menu", "menu:home");
   await ctx.replyWithPhoto(new InputFile(png, "deposit.png"), {
     caption:
       `${b(`Deposit address — ${netLabel}`)}\n${code(user.address)}\n\n` +
       `Send BTC (native gas asset) or any Mezo token to this address.\n` +
+      (env.network !== "mainnet" ? `${i("Tap the faucet button below, then paste the address above to get test BTC.")}\n` : "") +
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}`,
     parse_mode: "HTML",
+    reply_markup: kb,
   });
 }
