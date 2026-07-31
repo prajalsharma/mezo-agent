@@ -1,3 +1,4 @@
+export {};
 // Full fee-logic verification at the COMMITTED rates: 50 bps swap/zap, 10 bps txn.
 const owner='0x2B325c6768a11B2E7Cc9cF3EF8513A426677Bde9'; // funded deployer (has BTC+MUSD)
 const { registry } = await import('../src/registry/registry.js');
@@ -10,7 +11,7 @@ const { formatUnits, parseUnits } = await import('viem');
 
 console.log('CONFIG: swapBps=', env.fees.swapBps, '| referredBps=', env.fees.referredBps, '| txnBps=', env.fees.txnBps, '| feesEnabled=', feesEnabled, '| txnFeesEnabled=', txnFeesEnabled);
 let pass=0, fail=0;
-const check=(name,cond,detail)=>{ console.log((cond?'✅':'❌'), name, detail??''); cond?pass++:fail++; };
+const check=(name: string, cond: boolean, detail?: string)=>{ console.log((cond?'✅':'❌'), name, detail??''); cond?pass++:fail++; };
 
 // 1. SWAP — normal user: 50 bps atomic via FeeRouter
 const p1 = await buildSwap({owner, tokenIn:registry.token('MUSD'), tokenOut:registry.token('BTC'), humanAmountIn:'100', slippagePct:0.5});
@@ -43,7 +44,7 @@ check('lock agent fee = 1 MEZO (10bps of 1000)', /1 MEZO \(0\.1%\)/.test(lockFee
 const { buildClaim } = await import('../src/surfaces/earn.js');
 try { const p6 = await buildClaim({action:'claim', scope:'all'}, owner);
   check('claim has no fee step', p6.steps.every(s=>s.kind!=='fee'));
-} catch(e){ check('claim has no fee step (nothing claimable — fee N/A)', /claimable/i.test(e.message), '| '+e.message.slice(0,60)); }
+} catch(e){ const m = e instanceof Error ? e.message : String(e); check('claim has no fee step (nothing claimable — fee N/A)', /claimable/i.test(m), '| '+m.slice(0,60)); }
 
 console.log(`\n${pass}/${pass+fail} PASSED${fail?' — '+fail+' FAILED':''}`);
 process.exit(fail?1:0);

@@ -400,25 +400,48 @@ export function tipCard(key: string): Card | undefined {
   return { text: t.text, keyboard: chrome(new InlineKeyboard(), t.parent) };
 }
 
-/** Fee disclosure text — shared by /fees and the Settings → Fees card. */
+/**
+ * Fee disclosure text — shared by /fees and the Settings → Fees card. Every
+ * number is computed from the LIVE env config so this can never drift from
+ * what is actually charged, and a worked example makes the rates concrete.
+ */
 export function feesText(): string {
-  const lines = [b("💸 Fees"), ""];
+  const lines = [b("💸 Fees — complete breakdown"), ""];
   if (feesEnabled) {
+    const swapPct = env.fees.swapBps / 100;
+    const refPct = env.fees.referredBps / 100;
+    const hasDiscount = env.fees.referredBps < env.fees.swapBps;
     lines.push(
-      `• Swaps & zaps: ${b(`${env.fees.swapBps / 100}%`)} of the input amount, taken in the input token.`,
-      ...(env.fees.referredBps < env.fees.swapBps
-        ? [`• Referred traders pay only ${b(`${env.fees.referredBps / 100}%`)} on swaps — for life. Join via someone's /referral link.`]
+      b("What you pay:"),
+      `• Swaps & zaps: ${b(`${swapPct}%`)} of the amount you put in, taken in that same token.`,
+      ...(hasDiscount
+        ? [`• …but if you joined via a referral link: ${b(`${refPct}%`)} on swaps — ${b("for life")}.`]
         : []),
-      ...(env.fees.txnBps > 0 ? [`• Borrow / vault deposit / lock: ${b(`${env.fees.txnBps / 100}%`)} of the amount, taken in that token.`] : []),
-      `• Shown on every confirmation before you approve — you always see the exact amount.`,
-      `• Fee recipient: ${code(env.fees.recipient)}`,
-      `• Referral share: ${b(`${env.fees.referralSharePct}%`)} of the fee goes to whoever referred the trader (/referral).`,
+      ...(env.fees.txnBps > 0
+        ? [`• Borrow / vault deposit / lock: ${b(`${env.fees.txnBps / 100}%`)} of the amount, in that token.`]
+        : []),
+      `• Claiming rewards, voting, deposits, portfolio, DCA setup: ${b("free")} — no agent fee, ever.`,
+      "",
+      b("How it's collected:"),
+      `• Swap/zap fees are collected ${b("inside the same transaction")} as your trade (on-chain FeeRouter): a failed trade charges you nothing.`,
+      `• Borrow/lock fees are charged only ${b("after")} your action confirms on-chain.`,
+      `• The exact fee amount is shown on ${b("every confirmation card")} before you approve.`,
+      "",
+      b("Referral split (from the fee, not from you):"),
+      `• ${b(`${env.fees.referralSharePct}%`)} of your fee goes to whoever referred you — paid instantly, on-chain, in the same transaction. It costs you nothing extra.`,
+      `• The remaining ${100 - env.fees.referralSharePct}% goes to the operator: ${code(env.fees.recipient)}`,
+      "",
+      b("Worked example — swap 1,000 MUSD:"),
+      `• Fee: ${b(`${((1000 * env.fees.swapBps) / 10_000).toFixed(2)} MUSD`)} (${swapPct}%)` +
+        (hasDiscount ? ` — or ${b(`${((1000 * env.fees.referredBps) / 10_000).toFixed(2)} MUSD`)} (${refPct}%) if you were referred` : ""),
+      `• Of that fee, your referrer would receive ${((1000 * env.fees.referredBps * env.fees.referralSharePct) / 1_000_000).toFixed(3)} MUSD instantly.`,
+      `• The other ${(1000 - (1000 * env.fees.swapBps) / 10_000).toFixed(2)} MUSD is swapped for you in full.`,
     );
   } else {
-    lines.push("• No agent fee is currently charged on this deployment.");
+    lines.push("• No agent fee is currently charged on this deployment. Trades, borrows, and locks are free of agent fees.");
   }
-  if (env.fees.automationNote) lines.push(`• Automation (DCA / auto-compound): ${env.fees.automationNote}`);
-  lines.push("", i("Network gas (BTC) is paid by you and is separate from any agent fee."));
+  if (env.fees.automationNote) lines.push("", `• Automation (DCA / auto-compound): ${env.fees.automationNote}`);
+  lines.push("", i("Network gas (BTC) is separate — it's paid to the chain, not the agent, on every transaction."));
   return lines.join("\n");
 }
 

@@ -43,11 +43,43 @@ No accrual, no claim, no operator-held payout key — the referred user's own tr
 settles it instantly and trustlessly. Disclosed under `/referral` and `/fees`.
 
 ```
-AGENT_REFERRAL_SHARE_PCT=30    # 30% of the fee → referrer; industry range 25–45%
+AGENT_REFERRAL_SHARE_PCT=30    # 30% of the fee → referrer; industry range 10–35% L1
+AGENT_REFERRED_FEE_BPS=45      # optional; default = 90% of AGENT_FEE_BPS
 ```
 
-Comparable bots: Trojan up to 45%, Maestro 25%. 30% is a competitive middle that
-still leaves the operator the majority of the fee.
+**Both sides of the referral get value** (the universal pattern across Trojan /
+GMGN / BullX, which all charge referred users 0.9% vs a 1% headline):
+
+| Party | What they get | When |
+| --- | --- | --- |
+| Referred trader | Reduced swap fee **for life** (`AGENT_REFERRED_FEE_BPS`, default 90% of headline — e.g. 45 bps vs 50 bps) | Every swap |
+| Referrer | `AGENT_REFERRAL_SHARE_PCT` (30%) of the agent fee on **every** swap their referral ever makes | Instantly, on-chain, inside the referral's own swap transaction |
+| Operator | The remaining 70% of the fee | Same transaction |
+
+Worked example at the approved rates: a referred user swaps 1,000 MUSD → fee
+4.50 MUSD (0.45%) → referrer receives **1.35 MUSD instantly**, operator receives
+3.15 MUSD, and 995.50 MUSD is swapped. Settlement is verifiable on-chain per
+trade — no other bot in the researched market (Trojan, Maestro, BONKbot, Banana
+Gun, GMGN, Photon) settles referrals at source; they batch daily or require
+claiming above a minimum.
+
+## Collection architecture (why fees can't be lost)
+
+- **Swaps & zaps — atomic (`contracts/src/FeeRouter.sol`):** the trade routes
+  through the operator-deployed FeeRouter, which pulls the input, splits the fee
+  (referrer share + operator share), swaps the remainder, and delivers output
+  directly to the user — all in ONE transaction. A failed swap charges nothing;
+  a successful swap has already collected the fee. Escrowless; fee rate
+  hard-capped on-chain at 100 bps (1%). Zaps collect their whole fee in the swap
+  leg via a per-call rate override (2× bps on half the input = bps on gross;
+  override ceiling 200 bps exists solely for this accounting).
+- **Borrow / vault / lock — post-action with retry + ledger:** the 10 bps fee is
+  charged only AFTER the action confirms (a failed action never pays), retried
+  up to 3× on transient RPC failures, and — if it still fails — recorded in a
+  persistent **owed-fee ledger** so uncollected revenue is logged and auditable,
+  never silently lost. (These cannot be made atomic by a wrapper: Liquity troves
+  are one-per-address and veNFTs mint to the caller, so a fee contract would own
+  the user's position.)
 
 ## 2. Automation subscription (the bounty's "subscription for DCA / auto-convert")
 
@@ -79,11 +111,32 @@ the operator "retains full ownership of their fee structure."
 - Nothing is charged unless the operator sets `AGENT_FEE_BPS > 0` **and** a valid
   `AGENT_FEE_RECIPIENT` — the default deployment charges zero.
 
-## Recommended launch configuration
+## Recommended launch configuration (Mezo-approved rates)
 
 ```
-AGENT_FEE_BPS=50
-AGENT_FEE_RECIPIENT=0x<operator>
-AGENT_REFERRAL_SHARE_PCT=30
+AGENT_FEE_BPS=50                # 0.5% swaps & zaps (approved)
+AGENT_TXN_FEE_BPS=10            # 0.1% borrow / vault-deposit / lock (approved)
+AGENT_REFERRED_FEE_BPS=45       # referred traders pay 0.45% for life (optional; default 90% of headline)
+AGENT_REFERRAL_SHARE_PCT=30     # 30% of the fee → referrer, instant on-chain
+AGENT_FEE_RECIPIENT=0x<operator revenue wallet>
+FEE_ROUTER_ADDRESS=0x<deployed FeeRouter>   # npm run deployfeerouter -- --deploy
 AGENT_AUTOMATION_NOTE="DCA & auto-compound: 5 MUSD / month"
 ```
+
+### Complete rate table (as disclosed in-bot via /fees)
+
+| Action | Rate | Collection |
+| --- | --- | --- |
+| Swap | 50 bps (0.5%) of input | Atomic, in the swap tx (FeeRouter) |
+| Swap — referred user | 45 bps (0.45%), lifetime | Atomic |
+| Zap | 50 bps (0.5%) of gross input | Atomic, in the swap leg |
+| Borrow | 10 bps (0.1%) of minted MUSD | After trove opens; retry + ledger |
+| Vault deposit | 10 bps (0.1%) of deposit | After deposit; retry + ledger |
+| Lock (veBTC/veMEZO) | 10 bps (0.1%) of locked amount | After lock; retry + ledger |
+| Claim rewards / vote / deposit / portfolio / DCA setup | **0** | — |
+| Referrer's cut | 30% of the fee on referred swaps | Instant, same tx, on-chain |
+
+Market context (researched July 2026 vs. DefiLlama/Dune-verified data): every
+surviving competitor charges **1% gross** (Axiom $714M lifetime fees, GMGN
+$236M, Trojan $225M, Maestro $140M — all at 1%). The approved 50/10 bps sits at
+half the market rate; raising the headline later is a one-variable change.

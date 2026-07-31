@@ -25,11 +25,22 @@ export async function handleReferral(ctx: Context): Promise<void> {
   const link = `https://t.me/${botUsername}?start=${id}`;
   const count = store.countReferrals(id);
   const earnings = store.referralEarnings(id);
-  const discount = env.fees.referredBps < env.fees.swapBps
-    ? ` And they pay a reduced ${b(`${env.fees.referredBps / 100}%`)} swap fee for life (vs ${env.fees.swapBps / 100}%) — so your link saves them money.`
-    : "";
-  const shareLine = feesEnabled
-    ? `You earn ${b(`${env.fees.referralSharePct}%`)} of the agent fee on swaps by people you refer — paid ${b("instantly to your wallet")} on each of their trades (split on-chain, no claiming needed).${discount}`
+  const hasDiscount = env.fees.referredBps < env.fees.swapBps;
+  const body = feesEnabled
+    ? [
+        b("How it works — both sides win:"),
+        `1. Share your link. Anyone who taps it and starts the bot is credited to you — ${b("for life")}.`,
+        `2. ${b("They save:")} ${hasDiscount
+          ? `referred traders pay ${b(`${env.fees.referredBps / 100}%`)} on swaps instead of ${env.fees.swapBps / 100}% — a lifetime discount your link unlocks.`
+          : `referred traders pay the standard ${env.fees.swapBps / 100}% swap fee.`}`,
+        `3. ${b("You earn:")} ${b(`${env.fees.referralSharePct}%`)} of the agent fee on ${b("every swap they ever make")}.`,
+        `4. ${b("Instant settlement:")} your share is split ${b("on-chain, inside their swap transaction")} and lands straight in your wallet. No claiming, no minimum, no waiting.`,
+        "",
+        b("Worked example:"),
+        `Your referral swaps 1,000 MUSD → fee ${((1000 * env.fees.referredBps) / 10_000).toFixed(2)} MUSD (${env.fees.referredBps / 100}%) → ` +
+          `${b(`${((1000 * env.fees.referredBps * env.fees.referralSharePct) / 1_000_000).toFixed(3)} MUSD`)} arrives in your wallet the moment their swap confirms.`,
+        `Refer an active trader doing that daily and that's ~${b(`${((1000 * env.fees.referredBps * env.fees.referralSharePct * 30) / 1_000_000).toFixed(1)} MUSD/month`)} — from one person.`,
+      ].join("\n")
     : `Referral rewards activate when the agent fee is enabled on this deployment (see /fees).`;
   const earnedLines = Object.entries(earnings.byToken).length
     ? "\n" + b("Earned so far:") + "\n" +
@@ -39,11 +50,11 @@ export async function handleReferral(ctx: Context): Promise<void> {
     : "";
   await ctx.reply(
     `${b("🎁 Referral")}\n\n` +
-      `Share your link — anyone who starts the bot through it is credited to you:\n${code(link)}\n\n` +
-      `${shareLine}\n` +
+      `Your personal link:\n${code(link)}\n\n` +
+      `${body}\n\n` +
       `Referred so far: ${b(String(count))}\n` +
       earnedLines +
-      "\n" + i("Rewards are split from the agent fee at the moment of each trade, so they cost your referrals nothing extra and require no claim."),
+      "\n" + i("Your share comes out of the agent fee — it never costs your referrals anything extra. Full rates: /fees."),
     { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }
