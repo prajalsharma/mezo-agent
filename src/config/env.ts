@@ -120,6 +120,18 @@ export const env = {
   fees: {
     swapBps: Math.min(Number(optional("AGENT_FEE_BPS", "0")) || 0, 100),
     /**
+     * Fee (bps) REFERRED users pay on swaps — a lifetime discount vs swapBps,
+     * the universal growth pattern across trading bots (Trojan/GMGN/BullX all
+     * charge referred users 0.9% vs 1%). Default: 90% of swapBps, rounded down.
+     * Clamped to [0, swapBps] so it can never exceed the headline rate.
+     */
+    referredBps: (() => {
+      const base = Math.min(Number(optional("AGENT_FEE_BPS", "0")) || 0, 100);
+      const raw = optional("AGENT_REFERRED_FEE_BPS");
+      const v = raw === "" ? Math.floor(base * 0.9) : Number(raw) || 0;
+      return Math.min(Math.max(v, 0), base);
+    })(),
+    /**
      * Fee (bps) on non-swap fund-moving actions — borrow (minted MUSD), vault
      * deposit, and lock — approved by the Mezo team. Taken from the action's
      * own token, disclosed on the confirmation. Hard-capped at 100 bps. Off (0)

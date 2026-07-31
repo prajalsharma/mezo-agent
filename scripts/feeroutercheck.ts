@@ -12,8 +12,8 @@ const { erc20Abi } = await import('../src/abis/erc20.js');
 // E2E check: swaps 0.0005 BTC → MUSD through the FeeRouter with the DEPLOYER
 // key and verifies the fee event + escrowless invariant. Testnet only.
 // v1 proven live 2026-07-30: tx 0x24c69868d8d7e146638edd34566337bc2c57e3a520163d8020e09b5490cb5472
-// v2 (adds feeBpsOverride for atomic zap fees) deployed at the address below.
-const FEE_ROUTER = (process.env.FEE_ROUTER_ADDRESS ?? '0x16340c6a09d0383fe84f623f6c06885d5ce746a8') as Hex;
+// v3 (override ceiling 200 bps for zap half-leg; deployed at 1% default) below.
+const FEE_ROUTER = (process.env.FEE_ROUTER_ADDRESS ?? '0xaa118fb3e071e6ba978af52b0cf531b316c4b8c9') as Hex;
 const pk = readFileSync(join(homedir(), '.mezo-agent-deploy/deployer.key'), 'utf8').trim() as Hex;
 const account = privateKeyToAccount(pk);
 const c = publicClient();

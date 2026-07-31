@@ -57,7 +57,9 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
   // step after the zap lands (with retry + owed-ledger).
   const grossInput = parseUnits(intent.inputAmount, input.decimals);
   const atomicFee = feesEnabled && env.fees.swapBps > 0 && registry.hasContract("FeeRouter");
-  const zapFeeBpsOverride = atomicFee ? Math.min(env.fees.swapBps * 2, 100) : 0;
+  // 2× bps on HALF the input == bps on the gross. The contract's override
+  // ceiling is 200 bps precisely so a 1% headline rate stays exact here.
+  const zapFeeBpsOverride = atomicFee ? Math.min(env.fees.swapBps * 2, 200) : 0;
   const zapFee = feesEnabled ? (grossInput * BigInt(env.fees.swapBps)) / 10_000n : 0n;
   const inputNet = atomicFee ? grossInput : grossInput - zapFee;
   if (inputNet <= 0n || (atomicFee && zapFee >= grossInput / 2n)) {

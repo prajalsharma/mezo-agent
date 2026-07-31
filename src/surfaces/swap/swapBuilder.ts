@@ -117,12 +117,15 @@ export async function buildSwap(params: {
 
   // Agent fee (monetization) — taken from the INPUT token so the user always
   // sees exactly what is deducted before confirming. Disabled unless configured.
-  const feeAmount = feesEnabled ? (amountIn * BigInt(env.fees.swapBps)) / 10_000n : 0n;
+  // REFERRED users pay the discounted lifetime rate (the universal bot pattern:
+  // 0.9% referred vs 1% headline).
+  const effectiveBps = referral ? env.fees.referredBps : env.fees.swapBps;
+  const feeAmount = feesEnabled ? (amountIn * BigInt(effectiveBps)) / 10_000n : 0n;
   const amountInNet = amountIn - feeAmount;
   if (amountInNet <= 0n) throw new SwapUnavailableError("Amount is too small to cover the agent fee.");
   const fee: SwapFee | undefined = feeAmount > 0n
     ? {
-        bps: env.fees.swapBps,
+        bps: effectiveBps,
         amount: feeAmount,
         amountFormatted: formatUnits(feeAmount, tokenIn.decimals),
         recipient: env.fees.recipient as Address,
@@ -222,9 +225,9 @@ export async function buildSwap(params: {
   // (contracts/src/FeeRouter.sol): a failed swap charges nothing, a successful
   // swap has already collected the fee — revenue can't be lost to a failed
   // follow-up tx. Referral split happens inside the same tx.
-  // NOTE: the on-chain feeBps must match AGENT_FEE_BPS (deployfeerouter wires it
-  // from the same env; change both via setConfig). A mismatch only fails SAFE:
-  // if the contract takes more than we quoted for, minOut reverts the swap.
+  // The env is the single source of truth for the rate: we ALWAYS pass an
+  // explicit feeBpsOverride (headline or referred-discount bps), which the
+  // contract caps on-chain. A mismatch only ever fails SAFE via minOut.
   if (fee && registry.hasContract("FeeRouter")) {
     const feeRouter = registry.contract("FeeRouter");
     const frAllowance = (await publicClient().readContract({
@@ -244,7 +247,7 @@ export async function buildSwap(params: {
       data: encodeFunctionData({
         abi: feeRouterAbi,
         functionName: "swapWithFee",
-        args: [amountIn, minOut, [route], deadline, (referral?.recipient ?? ZERO_ADDRESS) as Address, referralShareBps, 0],
+        args: [amountIn, minOut, [route], deadline, (referral?.recipient ?? ZERO_ADDRESS) as Address, referralShareBps, effectiveBps],
       }),
       describe:
         `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol} ` +

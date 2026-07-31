@@ -150,9 +150,15 @@ contract FeeRouterTest is Test {
         assertEq(tokenIn.balanceOf(operator), 1e18, "override 1% applied instead of default 0.5%");
     }
 
+    function test_feeBpsOverrideAllowsZapDouble() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 200); // 2% on the half-leg
+        assertEq(tokenIn.balanceOf(operator), 2e18, "200 bps override for zap half-leg accounting");
+    }
+
     function test_feeBpsOverrideCappedAtMax() public {
         vm.prank(user);
         vm.expectRevert(FeeRouter.FeeTooHigh.selector);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 101); // >1% rejected
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 201); // > override cap rejected
     }
 }

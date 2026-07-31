@@ -42,7 +42,12 @@ interface IVeloRouter {
  *  - Fee is hard-capped at 1% (MAX_FEE_BPS), matching the agent's off-chain cap.
  */
 contract FeeRouter {
-    uint16 public constant MAX_FEE_BPS = 100; // 1%
+    uint16 public constant MAX_FEE_BPS = 100; // 1% — cap on the DEFAULT rate
+    /// @dev Per-call override ceiling. 2× MAX_FEE_BPS exists solely for zap
+    ///      half-leg accounting (2× bps on half the input == bps on the gross);
+    ///      an override only lets the CALLER volunteer a higher rate on their
+    ///      own call — the default every plain swap pays stays capped at 1%.
+    uint16 public constant MAX_OVERRIDE_BPS = 200;
     uint16 public constant BPS = 10_000;
 
     IVeloRouter public immutable router;
@@ -115,7 +120,7 @@ contract FeeRouter {
         uint16 feeBpsOverride
     ) external nonReentrant returns (uint256 amountOut) {
         if (routes.length == 0) revert EmptyRoute();
-        if (feeBpsOverride > MAX_FEE_BPS) revert FeeTooHigh();
+        if (feeBpsOverride > MAX_OVERRIDE_BPS) revert FeeTooHigh();
         address tokenIn = routes[0].from;
 
         _pull(tokenIn, msg.sender, amountIn);

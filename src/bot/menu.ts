@@ -406,6 +406,9 @@ export function feesText(): string {
   if (feesEnabled) {
     lines.push(
       `• Swaps & zaps: ${b(`${env.fees.swapBps / 100}%`)} of the input amount, taken in the input token.`,
+      ...(env.fees.referredBps < env.fees.swapBps
+        ? [`• Referred traders pay only ${b(`${env.fees.referredBps / 100}%`)} on swaps — for life. Join via someone's /referral link.`]
+        : []),
       ...(env.fees.txnBps > 0 ? [`• Borrow / vault deposit / lock: ${b(`${env.fees.txnBps / 100}%`)} of the amount, taken in that token.`] : []),
       `• Shown on every confirmation before you approve — you always see the exact amount.`,
       `• Fee recipient: ${code(env.fees.recipient)}`,

@@ -25,8 +25,11 @@ export async function handleReferral(ctx: Context): Promise<void> {
   const link = `https://t.me/${botUsername}?start=${id}`;
   const count = store.countReferrals(id);
   const earnings = store.referralEarnings(id);
+  const discount = env.fees.referredBps < env.fees.swapBps
+    ? ` And they pay a reduced ${b(`${env.fees.referredBps / 100}%`)} swap fee for life (vs ${env.fees.swapBps / 100}%) — so your link saves them money.`
+    : "";
   const shareLine = feesEnabled
-    ? `You earn ${b(`${env.fees.referralSharePct}%`)} of the agent fee on swaps by people you refer — paid ${b("instantly to your wallet")} on each of their trades (split on-chain, no claiming needed).`
+    ? `You earn ${b(`${env.fees.referralSharePct}%`)} of the agent fee on swaps by people you refer — paid ${b("instantly to your wallet")} on each of their trades (split on-chain, no claiming needed).${discount}`
     : `Referral rewards activate when the agent fee is enabled on this deployment (see /fees).`;
   const earnedLines = Object.entries(earnings.byToken).length
     ? "\n" + b("Earned so far:") + "\n" +
