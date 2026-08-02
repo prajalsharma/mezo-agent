@@ -39,6 +39,14 @@ const cases: { msg: string; want: Expect }[] = [
   // ── Lock (days / weeks / years) ───────────────────────────────────────────
   { msg: "lock 0.2 BTC for 28 days",   want: { action: "lock", asset: "BTC", amount: "0.2", lockDays: 28 } },
   { msg: "lock 1000 MEZO for 2 years", want: { action: "lock", asset: "MEZO", amount: "1000", lockDays: 730 } },
+  // Duration phrasings users actually type — MONTHS and bare articles were
+  // missing, so "lock 0.2 BTC for 6 months" hit "I didn't catch that".
+  { msg: "Lock 0.2 btc for 6 months",   want: { action: "lock", asset: "BTC", amount: "0.2", lockDays: 180 } },
+  { msg: "lock 0.02 btc for 1 month",   want: { action: "lock", asset: "BTC", amount: "0.02", lockDays: 30 } },
+  { msg: "lock 1000 mezo for 18 months",want: { action: "lock", asset: "MEZO", amount: "1000", lockDays: 540 } },
+  { msg: "lock 0.01 btc for a week",    want: { action: "lock", asset: "BTC", amount: "0.01", lockDays: 7 } },
+  { msg: "stake 0.1 btc for 30 days",   want: { action: "lock", asset: "BTC", amount: "0.1", lockDays: 30 } },
+  { msg: "extend lock 3 by 2 months",   want: { action: "extendLock", tokenId: 3, addDays: 60 } },
 
   // ── DCA / automation ──────────────────────────────────────────────────────
   { msg: "dca 50 MUSD to BTC every 24h", want: { action: "dcaCreate", fromToken: "MUSD", toToken: "BTC", amount: "50", everyHours: 24 } },

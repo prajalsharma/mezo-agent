@@ -23,7 +23,9 @@ export function buildLock(intent: LockIntent): ActionPlan {
   const maxDays = intent.asset === "BTC" ? VE_BTC_MAX_DAYS : VE_MEZO_MAX_DAYS;
   if (intent.lockDays > maxDays) {
     throw new ActionUnavailableError(
-      `${intent.asset} locks are capped at ${maxDays} days. Reduce the duration.`,
+      `${intent.asset} locks are capped at ${maxDays} days` +
+        (intent.asset === "BTC" ? " (veBTC is a short-term lock; veMEZO goes up to 4 years)" : "") +
+        `.\n\nTry: lock ${intent.amount} ${intent.asset} for ${maxDays} days`,
     );
   }
   const key = intent.asset === "BTC" ? "VotingEscrowBTC" : "VotingEscrowMEZO";

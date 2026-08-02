@@ -302,6 +302,20 @@ export function isQuestionLike(text: string): boolean {
   return /^(what|what's|whats|how|why|when|which|who|should|shall|can|could|would|will|is|are|am|do|does|did|tell me|explain|help|any |anything|i want|i'd like|i would|recommend|suggest|best )/.test(t);
 }
 
+/**
+ * Duration phrases users actually type. Covers day/week/MONTH/year (months were
+ * missing, so "lock 0.2 BTC for 6 months" fell through to "I didn't catch
+ * that"), and the bare articles "a"/"an" ("for a week"). A month is 30 days.
+ * Returns whole days, or undefined when the phrase isn't a duration.
+ */
+const DURATION_RE = "(\\d+(?:\\.\\d+)?|an?)\\s*(day|days|week|weeks|month|months|year|years)";
+function daysFrom(qty: string, unit: string): number {
+  const n = /^an?$/i.test(qty) ? 1 : Number(qty);
+  const u = unit.toLowerCase();
+  const mult = u.startsWith("year") ? 365 : u.startsWith("month") ? 30 : u.startsWith("week") ? 7 : 1;
+  return Math.max(1, Math.round(n * mult));
+}
+
 export function fallbackParse(message: string, knownSymbols: string[]): IntentT {
   const t = message.trim();
   const lower = t.toLowerCase();
@@ -354,10 +368,8 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
   }
 
   // Lock: "lock 0.2 BTC for 28 days" / "lock 1000 MEZO for 2 years"
-  { const m = t.match(new RegExp(`lock\\s+${num}\\s+(btc|mezo)\\s+for\\s+${num}\\s*(day|days|week|weeks|year|years)`, "i"));
-    if (m) { const unit = m[4]!.toLowerCase(); const n = Number(m[3]);
-      const days = unit.startsWith("year") ? Math.round(n * 365) : unit.startsWith("week") ? n * 7 : n;
-      return { action: "lock", asset: m[2]!.toUpperCase() as "BTC" | "MEZO", amount: m[1]!, lockDays: days }; } }
+  { const m = t.match(new RegExp(`(?:lock|stake)\\s+${num}\\s+(btc|mezo)\\s+for\\s+${DURATION_RE}`, "i"));
+    if (m) return { action: "lock", asset: m[2]!.toUpperCase() as "BTC" | "MEZO", amount: m[1]!, lockDays: daysFrom(m[3]!, m[4]!) }; }
 
   // Vote / claim
   if (loose && /\bvote\b/.test(lower)) return { action: "vote", mode: /\bmanual\b/.test(lower) ? "manual" : "optimal" };
@@ -381,10 +393,8 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
 
   // Extend lock: "extend lock 3 by 30 days" / "add 100 MEZO to lock 3" — also
   // taught by a tip card with no rule behind it.
-  { const m = t.match(new RegExp(`extend\\s+(?:lock|venft|ve-?nft)\\s*#?(\\d+)\\s+by\\s+${num}\\s*(day|days|week|weeks|year|years)`, "i"));
-    if (m) { const unit = m[3]!.toLowerCase(); const n = Number(m[2]);
-      const days = unit.startsWith("year") ? Math.round(n * 365) : unit.startsWith("week") ? n * 7 : n;
-      return { action: "extendLock", tokenId: Number(m[1]), addDays: days }; } }
+  { const m = t.match(new RegExp(`extend\\s+(?:lock|venft|ve-?nft)\\s*#?(\\d+)\\s+by\\s+${DURATION_RE}`, "i"));
+    if (m) return { action: "extendLock", tokenId: Number(m[1]), addDays: daysFrom(m[2]!, m[3]!) }; }
   { const m = t.match(new RegExp(`add\\s+${num}\\s+([a-z0-9]+)\\s+to\\s+(?:lock|venft|ve-?nft)\\s*#?(\\d+)`, "i"));
     if (m) return { action: "extendLock", tokenId: Number(m[3]), addAmount: m[1]! }; }
 
