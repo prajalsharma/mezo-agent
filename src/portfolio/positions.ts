@@ -5,7 +5,7 @@ import { erc20Abi } from "../abis/erc20.js";
 import { gaugeAbi, voterAbi, votingEscrowAbi } from "../abis/mezo.js";
 import { readTrove } from "../surfaces/borrow.js";
 import { btcPriceUsd } from "../core/prices.js";
-import { ownedVeNftsDetailed, claimableRebase } from "../core/veEnumeration.js";
+import { claimableRebase } from "../core/veEnumeration.js";
 
 /**
  * Live POSITIONS view — the bounty's core requirement: "BTC, MUSD, LP
@@ -26,7 +26,17 @@ export type TroveView = {
 };
 
 export type LpView = { pool: string; walletLp: string; stakedLp: string; earned: string };
-export type VeView = { id: string; votingPower: string; rebase: string };
+export type VeView = {
+  kind: "veBTC" | "veMEZO";
+  id: string;
+  /** Undefined when the escrow doesn't expose a readable power function
+   *  (veMEZO reverts on balanceOfNFT) — shown as "—" rather than a fake 0. */
+  votingPower?: string;
+  rebase: string;
+  lockedAmount: string;
+  /** Unlock date (YYYY-MM-DD) from locked().end. */
+  unlocks?: string;
+};
 
 export type Positions = {
   trove?: TroveView;
@@ -90,25 +100,61 @@ export async function readPositions(owner: Address): Promise<Positions> {
     }),
   );
 
-  // ── veNFTs (voting power + claimable rebase) ──────────────────────────────
-  if (registry.hasContract("VotingEscrowBTC")) {
+  // ── veNFTs — BOTH escrows ─────────────────────────────────────────────────
+  // veMEZO was invisible: enumeration was hardcoded to VotingEscrowBTC, so a
+  // user who locked MEZO saw "no open positions" despite holding a veMEZO NFT.
+  for (const [kind, key] of [["veBTC", "VotingEscrowBTC"], ["veMEZO", "VotingEscrowMEZO"]] as const) {
+    if (!registry.hasContract(key)) continue;
+    const ve = registry.contract(key);
     try {
-      const owned = await ownedVeNftsDetailed(owner);
-      out.veTruncated = owned.truncated;
-      for (const id of owned.ids) {
-        let power = 0n;
+      const total = (await c.readContract({
+        address: ve, abi: votingEscrowAbi, functionName: "balanceOf", args: [owner],
+      })) as bigint;
+      const cap = total > 20n ? 20n : total;
+      if (total > 20n) out.veTruncated = true;
+      for (let idx = 0n; idx < cap; idx++) {
+        let id: bigint;
+        try {
+          id = (await c.readContract({
+            address: ve, abi: votingEscrowAbi, functionName: "ownerToNFTokenIdList", args: [owner, idx],
+          })) as bigint;
+        } catch { break; }
+        if (id <= 0n) continue;
+        let power: bigint | undefined;
+        let locked = 0n;
+        let unlocks: string | undefined;
         let rebase = 0n;
         try {
           power = (await c.readContract({
-            address: registry.contract("VotingEscrowBTC"), abi: votingEscrowAbi,
-            functionName: "balanceOfNFT", args: [id],
+            address: ve, abi: votingEscrowAbi, functionName: "balanceOfNFT", args: [id],
           })) as bigint;
-        } catch { /* ignore */ }
-        try { rebase = await claimableRebase(id); } catch { /* ignore */ }
-        out.veNfts.push({ id: id.toString(), votingPower: trim(formatUnits(power, 18)), rebase: trim(formatUnits(rebase, 18)) });
+        } catch { /* veMEZO reverts here — leave undefined, never fake a 0 */ }
+        try {
+          // locked() returns (amount, end) on Velodrome-style escrows; int128
+          // amount is common, so decode defensively.
+          const l = (await c.readContract({
+            address: ve,
+            abi: [{ type: "function", name: "locked", stateMutability: "view",
+                    inputs: [{ type: "uint256" }],
+                    outputs: [{ name: "amount", type: "int128" }, { name: "end", type: "uint256" }] }] as const,
+            functionName: "locked", args: [id],
+          })) as unknown as readonly [bigint, bigint];
+          locked = l[0] > 0n ? l[0] : 0n;
+          if (l[1] > 0n) unlocks = new Date(Number(l[1]) * 1000).toISOString().slice(0, 10);
+        } catch { /* shape varies across escrows; voting power still shown */ }
+        // Rebase is distributed for veBTC via RewardsDistributor.
+        if (kind === "veBTC") { try { rebase = await claimableRebase(id); } catch { /* ignore */ } }
+        out.veNfts.push({
+          kind,
+          id: id.toString(),
+          ...(power !== undefined ? { votingPower: trim(formatUnits(power, 18)) } : {}),
+          rebase: trim(formatUnits(rebase, 18)),
+          lockedAmount: trim(formatUnits(locked, 18)),
+          ...(unlocks ? { unlocks } : {}),
+        });
       }
     } catch {
-      out.unavailable.push("veNFTs");
+      out.unavailable.push(kind);
     }
   }
 

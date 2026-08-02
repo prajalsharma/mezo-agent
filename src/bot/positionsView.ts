@@ -43,8 +43,12 @@ export async function positionsBlock(owner: Address): Promise<string> {
   if (p.veNfts.length) {
     out.push(b("🔒 veNFTs"));
     for (const v of p.veNfts) {
-      const reb = Number(v.rebase) > 0 ? ` · rebase ${v.rebase}` : "";
-      out.push(`• #${v.id}: voting power ${v.votingPower}${reb}`);
+      const unit = v.kind === "veBTC" ? "BTC" : "MEZO";
+      const bits = [`${v.lockedAmount} ${unit} locked`];
+      if (v.unlocks) bits.push(`unlocks ${v.unlocks}`);
+      if (v.votingPower !== undefined) bits.push(`power ${v.votingPower}`);
+      if (Number(v.rebase) > 0) bits.push(`rebase ${v.rebase}`);
+      out.push(`• ${b(`${v.kind} #${v.id}`)}: ${bits.join(" · ")}`);
     }
     if (p.veTruncated) out.push(i("(showing the first few — you hold more)"));
     out.push("");
