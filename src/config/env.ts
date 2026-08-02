@@ -141,8 +141,14 @@ export const env = {
     recipient: optional("AGENT_FEE_RECIPIENT"),
     /** Monthly price for automation (DCA / auto-compound), display-only. */
     automationNote: optional("AGENT_AUTOMATION_NOTE"),
-    /** Referral revenue share (% of the agent fee), disclosed via /referral. */
-    referralSharePct: Math.min(Math.max(Number(optional("AGENT_REFERRAL_SHARE_PCT", "30")) || 0, 0), 100),
+    /**
+     * Referral revenue share (% of the agent fee), disclosed via /referral.
+     * Clamped to 30 — the FeeRouter's on-chain maxReferralShareBps (3000). A
+     * higher env value would be SILENTLY clamped by the contract while the
+     * ledger and copy advertised the bigger number (audit). To go above 30%,
+     * first raise the contract's max via scripts/feerouterconfig.ts, then this cap.
+     */
+    referralSharePct: Math.min(Math.max(Math.round(Number(optional("AGENT_REFERRAL_SHARE_PCT", "30")) || 0), 0), 30),
   },
 } as const;
 

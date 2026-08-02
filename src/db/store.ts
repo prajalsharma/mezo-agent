@@ -109,6 +109,9 @@ type Db = {
   referralEarnings?: Record<string, { trades: number; byToken: Record<string, string> }>;
   /** Agent fees whose fee-tx failed after the main action succeeded (uncollected revenue). */
   owedFees?: OwedFee[];
+  /** Deep-link referral clicks awaiting wallet creation (persisted so a redeploy
+   *  between click and create can't drop the credit). Keyed by new-user id. */
+  pendingReferrals?: Record<string, { referrer: number; expiresAt: number }>;
 };
 
 export type OwedFee = {
@@ -120,6 +123,9 @@ export type OwedFee = {
   context: string;
   reason: string;
   at: string;
+  /** Who the failed payout was FOR — a failed referrer cut is not operator
+   *  revenue and must not inflate the operator's uncollected-fee report. */
+  beneficiary?: "operator" | "referrer";
 };
 
 type LegacyDb = Db & { users?: Record<string, UserRecord> };
@@ -155,9 +161,10 @@ class Store {
         autoCompound: loaded.autoCompound ?? [],
         keeperPaused: loaded.keeperPaused ?? false,
         pausedUsers: loaded.pausedUsers ?? [],
-        // These two were previously dropped here, wiping them on every restart.
+        // These were previously dropped here, wiping them on every restart.
         referralEarnings: loaded.referralEarnings ?? {},
         owedFees: loaded.owedFees ?? [],
+        pendingReferrals: loaded.pendingReferrals ?? {},
       };
     } else {
       this.flush();
@@ -265,6 +272,29 @@ class Store {
 
   owedFees(): OwedFee[] {
     return this.db.owedFees ?? [];
+  }
+
+  // ── Pending deep-link referrals (persisted; 24h TTL) ───────────────────────
+  setPendingReferral(newUser: number, referrer: number, ttlMs: number): void {
+    const map = (this.db.pendingReferrals ??= {});
+    map[String(newUser)] = { referrer, expiresAt: Date.now() + ttlMs };
+    // Bounded sweep so abandoned onboardings can't grow the store forever.
+    const now = Date.now();
+    for (const [k, v] of Object.entries(map)) if (v.expiresAt < now) delete map[k];
+    this.flush();
+  }
+
+  /** Read WITHOUT consuming (validate first, delete only after a successful credit). */
+  peekPendingReferral(newUser: number): number | undefined {
+    const e = this.db.pendingReferrals?.[String(newUser)];
+    return e && e.expiresAt >= Date.now() ? e.referrer : undefined;
+  }
+
+  clearPendingReferral(newUser: number): void {
+    if (this.db.pendingReferrals?.[String(newUser)] !== undefined) {
+      delete this.db.pendingReferrals[String(newUser)];
+      this.flush();
+    }
   }
 
   addTx(tx: TxRecord): void {

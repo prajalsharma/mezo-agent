@@ -107,8 +107,10 @@ contract FeeRouter {
      * @param referralShareBps referrer's share of the fee, in bps of the fee;
      *        clamped to `maxReferralShareBps`. Ignored when referrer is zero.
      * @param feeBpsOverride optional per-call fee rate; 0 uses the default
-     *        `feeBps`. Still hard-capped at MAX_FEE_BPS. Lets a zap collect its
-     *        WHOLE fee on the swapped half (2× bps on half == bps on gross).
+     *        `feeBps`. Capped at MAX_OVERRIDE_BPS (200) — the 2× headroom exists
+     *        solely so a zap can collect its WHOLE fee on the swapped half
+     *        (2× bps on half == bps on gross); a caller can only volunteer a
+     *        HIGHER rate on their own call, never change what others pay.
      */
     function swapWithFee(
         uint256 amountIn,

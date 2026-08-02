@@ -31,9 +31,9 @@ export async function handleReferral(ctx: Context): Promise<void> {
         b("How it works — both sides win:"),
         `1. Share your link. Anyone who taps it and starts the bot is credited to you — ${b("for life")}.`,
         `2. ${b("They save:")} ${hasDiscount
-          ? `referred traders pay ${b(`${env.fees.referredBps / 100}%`)} on swaps instead of ${env.fees.swapBps / 100}% — a lifetime discount your link unlocks.`
+          ? `referred traders pay ${b(`${env.fees.referredBps / 100}%`)} on swaps & zaps instead of ${env.fees.swapBps / 100}% — a lifetime discount your link unlocks.`
           : `referred traders pay the standard ${env.fees.swapBps / 100}% swap fee.`}`,
-        `3. ${b("You earn:")} ${b(`${env.fees.referralSharePct}%`)} of the agent fee on ${b("every swap they ever make")}.`,
+        `3. ${b("You earn:")} ${b(`${env.fees.referralSharePct}%`)} of the agent fee on ${b("every swap and zap they ever make")}.`,
         `4. ${b("Instant settlement:")} your share is split ${b("on-chain, inside their swap transaction")} and lands straight in your wallet. No claiming, no minimum, no waiting.`,
         "",
         b("Worked example:"),

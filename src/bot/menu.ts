@@ -415,7 +415,7 @@ export function feesText(): string {
       b("What you pay:"),
       `• Swaps & zaps: ${b(`${swapPct}%`)} of the amount you put in, taken in that same token.`,
       ...(hasDiscount
-        ? [`• …but if you joined via a referral link: ${b(`${refPct}%`)} on swaps — ${b("for life")}.`]
+        ? [`• …but if you joined via a referral link: ${b(`${refPct}%`)} on swaps & zaps — ${b("for life")}.`]
         : []),
       ...(env.fees.txnBps > 0
         ? [`• Borrow / vault deposit / lock: ${b(`${env.fees.txnBps / 100}%`)} of the amount, in that token.`]
@@ -423,13 +423,16 @@ export function feesText(): string {
       `• Claiming rewards, voting, deposits, portfolio, DCA setup: ${b("free")} — no agent fee, ever.`,
       "",
       b("How it's collected:"),
-      `• Swap/zap fees are collected ${b("inside the same transaction")} as your trade (on-chain FeeRouter): a failed trade charges you nothing.`,
+      ...(registry.hasContract("FeeRouter")
+        ? [`• Swap/zap fees are collected ${b("inside the same transaction")} as your trade (on-chain FeeRouter): a failed trade charges you nothing.`]
+        : [`• Swap/zap fees are charged as a follow-up transfer after your trade confirms.`]),
       `• Borrow/lock fees are charged only ${b("after")} your action confirms on-chain.`,
       `• The exact fee amount is shown on ${b("every confirmation card")} before you approve.`,
       "",
-      b("Referral split (from the fee, not from you):"),
-      `• ${b(`${env.fees.referralSharePct}%`)} of your fee goes to whoever referred you — paid instantly, on-chain, in the same transaction. It costs you nothing extra.`,
+      b("Referral split (swaps & zaps; from the fee, not from you):"),
+      `• ${b(`${env.fees.referralSharePct}%`)} of your swap/zap fee goes to whoever referred you — paid instantly, on-chain, in the same transaction. It costs you nothing extra.`,
       `• The remaining ${100 - env.fees.referralSharePct}% goes to the operator: ${code(env.fees.recipient)}`,
+      ...(env.fees.txnBps > 0 ? [`• Borrow/vault/lock fees carry no referral split.`] : []),
       "",
       b("Worked example — swap 1,000 MUSD:"),
       `• Fee: ${b(`${((1000 * env.fees.swapBps) / 10_000).toFixed(2)} MUSD`)} (${swapPct}%)` +

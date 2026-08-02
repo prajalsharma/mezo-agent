@@ -4,6 +4,7 @@ import { registry } from "../registry/registry.js";
 import { buildSwap } from "../surfaces/swap/swapBuilder.js";
 import { executeSwap } from "../surfaces/swap/swapService.js";
 import { log } from "../core/log.js";
+import { referralFor } from "../core/referral.js";
 import type { DcaCreateIntent } from "../llm/intent.js";
 
 /**
@@ -57,9 +58,19 @@ export type SwapExecutor = (user: UserRecord, s: DcaSchedule) => Promise<{ ok: b
 const liveExecutor: SwapExecutor = async (user, s) => {
   const tokenIn = registry.token(s.fromToken);
   const tokenOut = registry.token(s.toToken);
-  const plan = await buildSwap({ owner: user.address, tokenIn, tokenOut, humanAmountIn: s.amount, slippagePct: 0.5 });
+  // Referral parity for scheduled swaps (audit: DCA previously bypassed referral
+  // entirely — referred users were over-charged and referrers earned nothing on
+  // exactly the recurring flow that matters most).
+  const referral = referralFor(user.telegramId, user.address);
+  const plan = await buildSwap({ owner: user.address, tokenIn, tokenOut, humanAmountIn: s.amount, slippagePct: 0.5, referral });
   if (!plan.executable) return { ok: false, detail: plan.gatedReason ?? "swap execution gated" };
   const res = await executeSwap(user, plan);
+  // Ledger the referrer's cut when it settled (same rules as the interactive path).
+  const rp = plan.referralPaid;
+  const settled =
+    rp && rp.amount > 0n &&
+    res.outcomes.some((o) => o.ok && (plan.steps.some((st) => st.kind === "referral") ? o.kind === "referral" : o.kind === "swap"));
+  if (settled) store.recordReferralEarning(rp.referrerTelegramId, rp.symbol, rp.amount);
   return res.aborted ? { ok: false, detail: "swap aborted" } : { ok: true, detail: res.finalHash ?? "submitted" };
 };
 

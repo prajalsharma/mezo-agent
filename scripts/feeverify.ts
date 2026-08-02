@@ -19,7 +19,7 @@ check('swap fee = 0.5 MUSD (50bps of 100)', p1.fee?.amount === parseUnits('0.5',
 check('swap atomic (target=FeeRouter, no fee step)', p1.steps.every(s=>s.kind!=='fee') && p1.steps.some(s=>s.kind==='swap' && s.to.toLowerCase()==='0xaa118fb3e071e6ba978af52b0cf531b316c4b8c9'));
 
 // 2. SWAP — referred user: 45 bps (90% of 50) + 30% referral share to referrer
-const p2 = await buildSwap({owner, tokenIn:registry.token('MUSD'), tokenOut:registry.token('BTC'), humanAmountIn:'100', slippagePct:0.5, referral:{recipient:'0x9F1b0940387423290e069FE02d15d5B287d940B7', sharePct:30}});
+const p2 = await buildSwap({owner, tokenIn:registry.token('MUSD'), tokenOut:registry.token('BTC'), humanAmountIn:'100', slippagePct:0.5, referral:{recipient:'0x9F1b0940387423290e069FE02d15d5B287d940B7', sharePct:30, referrerTelegramId:1}});
 check('referred swap fee = 0.45 MUSD (45bps)', p2.fee?.amount === parseUnits('0.45',18), '| bps='+p2.fee?.bps);
 
 // 3. ZAP — 50 bps of gross, atomic via override

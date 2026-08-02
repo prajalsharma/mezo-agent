@@ -31,13 +31,13 @@ type Outcome = { kind: string; ok: boolean; hash?: Hex };
  */
 export function actionHashOf(outcomes: Outcome[]): Hex | undefined {
   const ok = outcomes.filter((o) => o.ok && o.hash);
-  const primary = ok.find((o) => o.kind !== "approval" && o.kind !== "fee");
+  const primary = ok.find((o) => o.kind !== "approval" && o.kind !== "fee" && o.kind !== "referral");
   return (primary ?? ok[ok.length - 1])?.hash;
 }
 
 /** True when the primary action landed even though a later step (e.g. fee) failed. */
 export function actionLanded(outcomes: Outcome[]): boolean {
-  return outcomes.some((o) => o.ok && o.kind !== "approval" && o.kind !== "fee");
+  return outcomes.some((o) => o.ok && o.kind !== "approval" && o.kind !== "fee" && o.kind !== "referral");
 }
 
 /**
@@ -57,7 +57,7 @@ export async function preflightBalances(owner: Address, plan: PlanLike): Promise
   const need = new Map<string, bigint>();
   let btcTagged = 0n;
   for (const s of plan.steps) {
-    if (s.kind === "approval" || s.kind === "fee") continue;
+    if (s.kind === "approval" || s.kind === "fee" || s.kind === "referral") continue;
     const e = s.erc20;
     if (!e || e.amount <= 0n) continue;
     if (e.symbol.toUpperCase() === "BTC") btcTagged += e.amount;

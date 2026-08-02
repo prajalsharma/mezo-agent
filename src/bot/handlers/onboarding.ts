@@ -45,36 +45,36 @@ export async function handleStart(ctx: Context): Promise<void> {
 }
 
 /**
- * In-memory pending referral (referrer id) until the wallet is created. Entries
- * carry an expiry so an abandoned onboarding can't leak the map indefinitely
- * (the bot is publicly reachable unless allowlisted) — Audit R3 F3.
+ * Pending referral (referrer id) until the wallet is created. PERSISTED in the
+ * datastore (24h TTL) so a redeploy/crash between the /start click and wallet
+ * creation can't silently drop a credit the user was already promised. Entries
+ * expire so an abandoned onboarding can't grow the store — Audit R3 F3.
  */
 const REFERRAL_TTL_MS = 24 * 60 * 60 * 1000;
-const pendingReferrals = new Map<number, { referrer: number; expiresAt: number }>();
 function rememberPendingReferral(newUser: number, referrer: number): void {
-  pendingReferrals.set(newUser, { referrer, expiresAt: Date.now() + REFERRAL_TTL_MS });
-  // Opportunistic sweep of expired entries (bounded, cheap).
-  if (pendingReferrals.size > 1000) {
-    const now = Date.now();
-    for (const [k, v] of pendingReferrals) if (v.expiresAt < now) pendingReferrals.delete(k);
-  }
-}
-export function consumePendingReferral(newUser: number): number | undefined {
-  const e = pendingReferrals.get(newUser);
-  pendingReferrals.delete(newUser);
-  return e && e.expiresAt >= Date.now() ? e.referrer : undefined;
+  store.setPendingReferral(newUser, referrer, REFERRAL_TTL_MS);
 }
 
-/** Attribute a pending referral onto a just-created/imported account. */
+/**
+ * Attribute a pending referral onto a just-created/imported account.
+ * Validate-BEFORE-consume: the pending entry is only cleared once the credit
+ * actually lands (or is definitively invalid), so a transient store hiccup
+ * can't destroy an unclaimable-but-valid credit.
+ */
 export function attributeReferral(telegramId: number): void {
-  const referrer = consumePendingReferral(telegramId);
+  const referrer = store.peekPendingReferral(telegramId);
   if (referrer === undefined) return;
   const rec = getUser(telegramId);
-  // Only credit a referrer that actually exists, and never overwrite one.
-  if (rec && rec.referredBy === undefined && getUser(referrer)) {
+  if (!rec) return; // wallet not created yet — keep the entry for the next attempt
+  const refRec = getUser(referrer);
+  // Never credit: a non-existent referrer, an existing attribution, or a
+  // "referrer" whose wallet IS this wallet (same key imported on a second
+  // Telegram account — the cheap self-referral loophole).
+  if (rec.referredBy === undefined && refRec && refRec.address.toLowerCase() !== rec.address.toLowerCase()) {
     rec.referredBy = referrer;
     store.saveUser(rec);
   }
+  store.clearPendingReferral(telegramId);
 }
 
 export async function handleCreate(ctx: Context): Promise<void> {

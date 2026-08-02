@@ -9,6 +9,8 @@ import { setPending, getPending, clearPending } from "../session.js";
 import type { Intent } from "../../llm/intent.js";
 import { b, i, esc } from "../format.js";
 import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
+import { referralFor } from "../../core/referral.js";
+import { store } from "../../db/store.js";
 
 /**
  * Generic handler for every fund-moving surface (borrow, lock, vote, zap, …).
@@ -42,7 +44,8 @@ export async function handleActionIntent(ctx: Context, intent: Intent): Promise<
 
   let plan: ActionPlan | undefined;
   try {
-    plan = await buildActionPlan(intent, user.address);
+    // Referral context (zap fee split + referred discount) — same resolver as swaps.
+    plan = await buildActionPlan(intent, user.address, referralFor(telegramId, user.address));
   } catch (err) {
     if (err instanceof ActionUnavailableError) {
       await ctx.reply(`⚠️ ${esc(err.message)}`, { parse_mode: "HTML" });
@@ -125,6 +128,13 @@ export async function handleActionConfirm(ctx: Context): Promise<void> {
   await ctx.reply("⏳ Executing…");
 
   const result = await executeActionPlan(user, pending.plan, async (msg) => { await ctx.reply(msg); });
+
+  // Ledger the referral cut when it actually settled on-chain: for atomic zaps
+  // the split happens INSIDE the swap step, so a confirmed swap step == paid.
+  const rp = pending.plan.referralPaid;
+  if (rp && rp.amount > 0n && result.outcomes.some((o) => o.ok && o.kind === "swap")) {
+    store.recordReferralEarning(rp.referrerTelegramId, rp.symbol, rp.amount);
+  }
 
   if (result.aborted) {
     const failed = result.outcomes.find((o) => !o.ok);

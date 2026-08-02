@@ -58,7 +58,7 @@ export async function executeSwap(
     // cap. (Audit R2 C1/H1.)
     const attempt = await trySignStep(user, step, allowedTargets);
     if (!attempt.ok) {
-      if (step.kind === "fee") {
+      if (step.kind === "fee" || step.kind === "referral") {
         recordFeeLoss(user, step, `swap ${plan.tokenIn.symbol}→${plan.tokenOut.symbol}`, attempt.reason);
       }
       outcomes.push({ kind: step.kind, ok: false, reason: attempt.reason });
@@ -81,7 +81,7 @@ export async function executeSwap(
     //    approval grants the allowance the swap needs, and the swap must CONFIRM
     //    before the fee is charged (Audit R3 F1 — no fee on a failed swap). A
     //    bounded timeout keeps the single-threaded bot responsive (Audit R2 H2).
-    if (step.kind === "approval" || step.kind === "fee" || step.waitForReceipt) {
+    if (step.kind === "approval" || step.kind === "fee" || step.kind === "referral" || step.waitForReceipt) {
       let receipt;
       try {
         receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });

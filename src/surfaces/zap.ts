@@ -18,7 +18,11 @@ import type { ZapIntent } from "../llm/intent.js";
  * the Router (native BTC via its ERC-20 precompile); staking the resulting LP
  * is its own confirmed action since the LP amount is only known post-deposit.
  */
-export async function buildZap(intent: ZapIntent, owner: import("viem").Address): Promise<ActionPlan> {
+export async function buildZap(
+  intent: ZapIntent,
+  owner: import("viem").Address,
+  referral?: { recipient: import("viem").Address; sharePct: number; referrerTelegramId: number },
+): Promise<ActionPlan> {
   const input = registry.tryToken(intent.inputToken);
   if (!input) throw new ActionUnavailableError(`Unknown token "${intent.inputToken}".`);
   if (Number(intent.inputAmount) <= 0) throw new ActionUnavailableError("Amount must be greater than zero.");
@@ -57,10 +61,13 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
   // step after the zap lands (with retry + owed-ledger).
   const grossInput = parseUnits(intent.inputAmount, input.decimals);
   const atomicFee = feesEnabled && env.fees.swapBps > 0 && registry.hasContract("FeeRouter");
+  // Referred users get the SAME lifetime discount on zaps as on swaps (audit:
+  // zaps previously charged the full headline rate and paid referrers nothing).
+  const effBps = referral ? env.fees.referredBps : env.fees.swapBps;
   // 2× bps on HALF the input == bps on the gross. The contract's override
   // ceiling is 200 bps precisely so a 1% headline rate stays exact here.
-  const zapFeeBpsOverride = atomicFee ? Math.min(env.fees.swapBps * 2, 200) : 0;
-  const zapFee = feesEnabled ? (grossInput * BigInt(env.fees.swapBps)) / 10_000n : 0n;
+  const zapFeeBpsOverride = atomicFee ? Math.min(effBps * 2, 200) : 0;
+  const zapFee = feesEnabled ? (grossInput * BigInt(effBps)) / 10_000n : 0n;
   const inputNet = atomicFee ? grossInput : grossInput - zapFee;
   if (inputNet <= 0n || (atomicFee && zapFee >= grossInput / 2n)) {
     throw new ActionUnavailableError("Amount is too small to cover the agent fee.");
@@ -84,7 +91,7 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
   const summary = [
     `Zap ${intent.inputAmount} ${inSym} into ${p.pair.join("/")} (${p.stable ? "stable" : "volatile"}):`,
     ...(zapFee > 0n
-      ? [`• Agent fee: ${formatUnits(zapFee, input.decimals)} ${inSym} (${env.fees.swapBps / 100}%)${atomicFee ? " — collected atomically in the swap leg" : ""}`]
+      ? [`• Agent fee: ${formatUnits(zapFee, input.decimals)} ${inSym} (${effBps / 100}%)${atomicFee ? " — collected atomically in the swap leg" : ""}`]
       : []),
     `• Keep ~${formatUnits(half, input.decimals)} ${inSym}`,
     `• Swap ~${formatUnits(half, input.decimals)} ${inSym} → ${otherOut > 0n ? "~" + Number(formatUnits(otherOut, other.decimals)).toFixed(4) : ""} ${otherSym}`,
@@ -165,7 +172,11 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
       data: feeRouter
         ? encodeFunctionData({
             abi: feeRouterAbi, functionName: "swapWithFee",
-            args: [half, minOther, [route], deadline, ZERO_ADDRESS, 0, zapFeeBpsOverride],
+            // Referral split at source on the zap fee too (parity with swaps).
+            args: [half, minOther, [route], deadline,
+              (referral?.recipient ?? ZERO_ADDRESS) as Address,
+              referral ? Math.min(Math.round(referral.sharePct), 100) * 100 : 0,
+              zapFeeBpsOverride],
           })
         : encodeFunctionData({
             abi: routerAbi, functionName: "swapExactTokensForTokens",
@@ -199,15 +210,28 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
     feeTargets.push(input.native ? recipient : inAddr);
     steps.push(
       input.native
-        ? { kind: "fee", to: recipient, value: zapFee, describe: `Agent fee ${formatUnits(zapFee, input.decimals)} BTC (${env.fees.swapBps / 100}%)`, waitForReceipt: true }
+        ? { kind: "fee", to: recipient, value: zapFee, describe: `Agent fee ${formatUnits(zapFee, input.decimals)} BTC (${effBps / 100}%)`, waitForReceipt: true }
         : {
             kind: "fee", to: inAddr, value: 0n,
             data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipient, zapFee] }),
-            describe: `Agent fee ${formatUnits(zapFee, input.decimals)} ${inSym} (${env.fees.swapBps / 100}%)`,
+            describe: `Agent fee ${formatUnits(zapFee, input.decimals)} ${inSym} (${effBps / 100}%)`,
             erc20: { symbol: inSym, amount: zapFee }, waitForReceipt: true,
           },
     );
   }
+
+  // Ledger record for the referrer's cut, paid at source inside the swap leg
+  // (atomic mode only — the legacy zap path pays no referral split). Amount may
+  // differ from on-chain by ≤1 base unit on odd gross inputs (half rounding).
+  const referralPaid =
+    feeRouter && referral && zapFee > 0n
+      ? {
+          referrerTelegramId: referral.referrerTelegramId,
+          recipient: referral.recipient,
+          symbol: inSym,
+          amount: (zapFee * BigInt(Math.round(referral.sharePct))) / 100n,
+        }
+      : undefined;
 
   return {
     action: "zap", title: "⚡ Zap into pool", summary,
@@ -215,5 +239,6 @@ export async function buildZap(intent: ZapIntent, owner: import("viem").Address)
     steps, allowedTargets: [router, inAddr, otherAddr, ...(feeRouter ? [feeRouter] : []), ...feeTargets],
     // Step-up threshold is BTC-denominated: a BTC-input zap moves the full gross input.
     executable: true, nativeValue: input.native ? grossInput : 0n,
+    referralPaid,
   };
 }

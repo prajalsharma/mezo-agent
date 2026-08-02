@@ -16,7 +16,11 @@ import { buildMarketBrowse, buildMarketBuy, buildMatchbox, buildVeTransfer, buil
  * Returns undefined for intents this dispatcher doesn't own, so the gateway can
  * route them elsewhere.
  */
-export async function buildActionPlan(intent: Intent, owner: Address): Promise<ActionPlan | undefined> {
+export async function buildActionPlan(
+  intent: Intent,
+  owner: Address,
+  referral?: { recipient: Address; sharePct: number; referrerTelegramId: number },
+): Promise<ActionPlan | undefined> {
   switch (intent.action) {
     case "borrow": return await buildBorrow(intent);
     case "repay": return await buildRepay(intent, owner);
@@ -29,7 +33,7 @@ export async function buildActionPlan(intent: Intent, owner: Address): Promise<A
     case "lock": return buildLock(intent);
     case "extendLock": return buildExtendLock(intent, owner);
     case "vote": return await buildVote(intent);
-    case "zap": return buildZap(intent, owner);
+    case "zap": return buildZap(intent, owner, referral);
     case "matchbox": return buildMatchbox(intent);
     case "marketBrowse": return await buildMarketBrowse(intent.query);
     case "marketBuy": return buildMarketBuy(intent);

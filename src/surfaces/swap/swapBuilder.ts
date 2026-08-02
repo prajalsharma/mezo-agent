@@ -35,7 +35,7 @@ export type Route = {
 };
 
 export type PlanStep = {
-  kind: "approval" | "swap" | "fee";
+  kind: "approval" | "swap" | "fee" | "referral";
   to: Address;
   /** Absent for a plain native-value transfer (native-BTC agent fee). */
   data?: Hex;
@@ -63,7 +63,7 @@ export type SwapPlan = {
   /** Agent fee taken from the input token, or undefined when no fee applies. */
   fee?: SwapFee;
   /** Referral reward split from the fee to the referrer (instant, on-chain). */
-  referralPaid?: { recipient: Address; symbol: string; amount: bigint };
+  referralPaid?: { recipient: Address; symbol: string; amount: bigint; referrerTelegramId: number };
   /** BTC value the swap moves (gross), for the handler's high-value step-up. */
   nativeValue: bigint;
   /** Amount actually routed to the DEX after the fee. */
@@ -96,7 +96,7 @@ export async function buildSwap(params: {
   humanAmountIn: string;
   slippagePct: number;
   /** When the trader was referred, split the fee: sharePct → recipient, rest → operator. */
-  referral?: { recipient: Address; sharePct: number };
+  referral?: { recipient: Address; sharePct: number; referrerTelegramId: number };
 }): Promise<SwapPlan> {
   const { owner, tokenIn, tokenOut, humanAmountIn, slippagePct, referral } = params;
 
@@ -170,6 +170,7 @@ export async function buildSwap(params: {
           recipient: referral.recipient,
           symbol: tokenIn.native ? "BTC" : tokenIn.symbol,
           amount: (fee.amount * BigInt(Math.round(referral.sharePct))) / 100n,
+          referrerTelegramId: referral.referrerTelegramId,
         }
       : undefined;
 
@@ -299,28 +300,31 @@ export async function buildSwap(params: {
     waitForReceipt: fee !== undefined,
   });
 
-  // 3. Agent fee — AFTER the swap. Splits at source: referrer share → referrer
-  // wallet, remainder → operator, both shown before signing.
+  // 3. Agent fee — AFTER the swap. Splits at source: OPERATOR share first,
+  // referrer share LAST (audit: referrer-first meant one failed referral
+  // transfer aborted before the operator's cut ever ran — a referral hiccup
+  // cost 100% of the fee instead of 30%). The referral step carries its own
+  // kind so retries/owed-ledger attribute it to the right beneficiary.
   if (fee) {
     const referrerCut = referral ? (fee.amount * BigInt(Math.round(referral.sharePct))) / 100n : 0n;
     const operatorCut = fee.amount - referrerCut;
-    const pushFee = (to: Address, amount: bigint, label: string) => {
+    const pushFee = (kind: "fee" | "referral", to: Address, amount: bigint, label: string) => {
       if (amount <= 0n) return;
       steps.push(
         tokenIn.native
-          ? { kind: "fee", to, data: undefined, value: amount, describe: label }
+          ? { kind, to, data: undefined, value: amount, describe: label }
           : {
-              kind: "fee", to: tokenIn.address, value: 0n,
+              kind, to: tokenIn.address, value: 0n,
               data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, amount] }),
               describe: label, erc20: { symbol: tokenIn.symbol, amount },
             },
       );
     };
     const unit = tokenIn.native ? "BTC" : tokenIn.symbol;
+    pushFee("fee", fee.recipient, operatorCut, `Agent fee ${formatUnits(operatorCut, tokenIn.decimals)} ${unit} (${fee.bps / 100}%)`);
     if (referrerCut > 0n && referral) {
-      pushFee(referral.recipient, referrerCut, `Referral reward ${formatUnits(referrerCut, tokenIn.decimals)} ${unit} → your referrer`);
+      pushFee("referral", referral.recipient, referrerCut, `Referral reward ${formatUnits(referrerCut, tokenIn.decimals)} ${unit} → your referrer`);
     }
-    pushFee(fee.recipient, operatorCut, `Agent fee ${formatUnits(operatorCut, tokenIn.decimals)} ${unit} (${fee.bps / 100}%)`);
   }
 
   return { ...base, steps, executable: true, router };

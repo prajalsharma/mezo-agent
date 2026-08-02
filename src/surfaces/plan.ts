@@ -17,7 +17,7 @@ import { store, type UserRecord } from "../db/store.js";
  */
 
 export type ActionStep = {
-  kind: string; // "approval" | "borrow" | "lock" | ...
+  kind: string; // "approval" | "borrow" | "lock" | "fee" | "referral" | ...
   to: Address;
   data?: Hex;
   value: bigint;
@@ -26,6 +26,14 @@ export type ActionStep = {
   erc20?: { symbol: string; amount: bigint };
   /** Wait for this step to confirm before the next (e.g. approval before spend). */
   waitForReceipt?: boolean;
+};
+
+/** Referral payout carried by a plan, for the earnings ledger. */
+export type ReferralPaid = {
+  referrerTelegramId: number;
+  recipient: Address;
+  symbol: string;
+  amount: bigint;
 };
 
 export type ActionPlan = {
@@ -40,6 +48,8 @@ export type ActionPlan = {
   gatedReason?: string;
   /** Native BTC value the whole plan moves (for step-up / display). */
   nativeValue: bigint;
+  /** Set when this plan pays a referrer at source (e.g. atomic zap fee split). */
+  referralPaid?: ReferralPaid;
 };
 
 export class ActionUnavailableError extends Error {}
@@ -81,7 +91,7 @@ export async function trySignStep(
   step: { kind: string; to: Address; data?: Hex; value: bigint; erc20?: { symbol: string; amount: bigint } },
   allowedTargets: Address[],
 ): Promise<{ ok: true; hash: Hex } | { ok: false; reason: string }> {
-  const attempts = step.kind === "fee" ? 3 : 1;
+  const attempts = step.kind === "fee" || step.kind === "referral" ? 3 : 1;
   let lastReason = "unknown error";
   for (let n = 0; n < attempts; n++) {
     if (n > 0) await new Promise((r) => setTimeout(r, 1500));
@@ -103,8 +113,10 @@ export async function trySignStep(
   return { ok: false, reason: lastReason };
 }
 
-/** Persist an uncollected fee so a failed fee-tx is logged revenue, not lost. */
-export function recordFeeLoss(user: UserRecord, step: { value: bigint; erc20?: { symbol: string; amount: bigint } }, context: string, reason: string): void {
+/** Persist an uncollected fee so a failed fee-tx is logged revenue, not lost.
+ *  A failed REFERRAL cut is logged under its own beneficiary — it is not
+ *  operator revenue and must not inflate the operator's owed-fee report. */
+export function recordFeeLoss(user: UserRecord, step: { kind?: string; value: bigint; erc20?: { symbol: string; amount: bigint } }, context: string, reason: string): void {
   store.recordOwedFee({
     telegramId: user.telegramId,
     symbol: step.erc20?.symbol ?? "BTC",
@@ -112,6 +124,7 @@ export function recordFeeLoss(user: UserRecord, step: { value: bigint; erc20?: {
     context,
     reason,
     at: new Date().toISOString(),
+    beneficiary: step.kind === "referral" ? "referrer" : "operator",
   });
 }
 
@@ -146,7 +159,7 @@ export async function executeActionPlan(
     // must survive a transient RPC flake, and a lost fee must be recorded).
     const attempt = await trySignStep(user, step, plan.allowedTargets);
     if (!attempt.ok) {
-      if (step.kind === "fee") recordFeeLoss(user, step, plan.action, attempt.reason);
+      if (step.kind === "fee" || step.kind === "referral") recordFeeLoss(user, step, plan.action, attempt.reason);
       outcomes.push({ kind: step.kind, ok: false, reason: attempt.reason });
       return { outcomes, aborted: true };
     }

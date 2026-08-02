@@ -13,6 +13,7 @@ import type { SwapIntent } from "../../llm/intent.js";
 import { prettyAmount } from "../../portfolio/portfolioService.js";
 import { b, i, esc } from "../format.js";
 import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
+import { referralFor } from "../../core/referral.js";
 
 const DEFAULT_SLIPPAGE_PCT = 0.5;
 
@@ -39,11 +40,9 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
   try {
     // Referral split-at-source: if this trader was referred and a fee is
     // charged, the referrer's share is paid straight to their wallet on-chain.
-    const referrerId = store.referrerOf(telegramId);
-    const referrerRec = referrerId !== undefined ? getUser(referrerId) : undefined;
-    const referral = referrerRec
-      ? { recipient: referrerRec.address, sharePct: env.fees.referralSharePct }
-      : undefined;
+    // referralFor is the single source of truth (self-referral guard, zero-share
+    // guard) shared with the zap path and the DCA keeper.
+    const referral = referralFor(telegramId, user.address);
     plan = await buildSwap({
       owner: user.address,
       tokenIn,
@@ -170,20 +169,28 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
     `Received ~${prettyAmount(plan.expectedOutFormatted)} ${plan.tokenOut.symbol} (estimated)`,
   ];
 
+  // Ledger the referral reward from what actually settled on-chain, using the
+  // referrer id CAPTURED AT BUILD TIME (a confirm-time store re-read could
+  // leave an on-chain payout unledgered — audit). Settlement rules:
+  //   atomic path — the referral is paid INSIDE the swap step;
+  //   legacy path — the referral transfer is its own final "referral" step.
+  const rp = plan.referralPaid;
+  const referralSettled =
+    rp && rp.amount > 0n &&
+    result.outcomes.some((o) => o.ok && (plan.steps.some((s) => s.kind === "referral") ? o.kind === "referral" : o.kind === "swap"));
+  if (referralSettled) store.recordReferralEarning(rp.referrerTelegramId, rp.symbol, rp.amount);
+
   if (result.aborted) {
     const failed = result.outcomes.find((o) => !o.ok);
-    // Swap confirmed on-chain but only the trailing fee step failed → the user
-    // got their swap; report success with a note rather than "aborted".
-    if (failed && !failed.ok && failed.kind === "fee" && actionLanded(result.outcomes)) {
+    // Swap confirmed on-chain but only a trailing payout step failed → the user
+    // got their swap; report success with an accurate note, not "aborted".
+    if (failed && !failed.ok && (failed.kind === "fee" || failed.kind === "referral") && actionLanded(result.outcomes)) {
       const hash = actionHashOf(result.outcomes)!;
+      const note = failed.kind === "referral"
+        ? `Your swap and the agent fee settled, but the referral payout couldn't be delivered (${friendlyReason(failed.reason)}) — it's logged and owed to your referrer.`
+        : `The agent fee couldn't be applied (${friendlyReason(failed.reason)}), but your swap went through.`;
       await ctx.reply(
-        renderSuccess({
-          title: "Swap complete",
-          lines: successLines,
-          hash,
-          network: env.network,
-          note: `The agent fee couldn't be applied (${friendlyReason(failed.reason)}), but your swap went through.`,
-        }),
+        renderSuccess({ title: "Swap complete", lines: successLines, hash, network: env.network, note }),
         { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
       );
       return;
@@ -191,14 +198,6 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
     const reason = failed && !failed.ok ? friendlyReason(failed.reason) : "unknown error";
     await ctx.reply(`❌ Swap didn't go through: ${esc(reason)}`, { parse_mode: "HTML" });
     return;
-  }
-
-  // Record the referral reward (paid on-chain in the same tx set) for the
-  // referrer's /referral history. Ledger only — settlement already happened.
-  const rp = plan.referralPaid;
-  const referrerId = store.referrerOf(telegramId);
-  if (rp && rp.amount > 0n && referrerId !== undefined) {
-    store.recordReferralEarning(referrerId, rp.symbol, rp.amount);
   }
 
   const hash = actionHashOf(result.outcomes) ?? result.finalHash!;
