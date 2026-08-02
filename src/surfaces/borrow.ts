@@ -7,27 +7,9 @@ import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } f
 import { txnFee, musdToken } from "./fees.js";
 import type { BorrowIntent, RepayIntent, AdjustIntent } from "../llm/intent.js";
 
-// fetchPrice is nonpayable on-chain but returns the price on an eth_call; declare
-// it as view here so viem's readContract will read it. Returns USD/BTC * 1e18.
-const PRICE_ABI = [
-  { type: "function", name: "fetchPrice", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
-] as const;
-
-/** Live BTC price in USD from the Mezo PriceFeed. undefined if unreadable (fail-open). */
-async function readBtcPriceUsd(): Promise<number | undefined> {
-  if (!registry.hasContract("PriceFeed")) return undefined;
-  try {
-    const raw = (await publicClient().readContract({
-      address: registry.contract("PriceFeed"),
-      abi: PRICE_ABI,
-      functionName: "fetchPrice",
-    })) as bigint;
-    const price = Number(formatUnits(raw, 18));
-    return price > 0 ? price : undefined;
-  } catch {
-    return undefined;
-  }
-}
+// Live BTC/USD pricing is shared with the natural-language layer (dollar
+// amounts) — see src/core/prices.ts.
+import { btcPriceUsd as readBtcPriceUsd } from "../core/prices.js";
 
 /** Current Trove collateral (BTC) and debt (MUSD) for an owner. undefined if unreadable. */
 async function readTrove(owner: Address): Promise<{ collBTC: number; debtMUSD: number } | undefined> {

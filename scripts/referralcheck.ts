@@ -1,3 +1,4 @@
+export {};
 /** Referral split-at-source: discount, split ordering, ledger. (Legacy path — no FeeRouter set.) */
 process.env.AGENT_FEE_BPS = "50";
 process.env.AGENT_FEE_RECIPIENT = "0x00000000000000000000000000000000000000fe";

@@ -2,7 +2,10 @@ import { Bot, InlineKeyboard, type Context } from "grammy";
 import { env, llmEnabled, feesEnabled, accessRestricted } from "../config/env.js";
 import { log } from "../core/log.js";
 import { registry } from "../registry/registry.js";
-import { parseIntent } from "../llm/adapter.js";
+import { parseIntent, resolveDollarPhrases } from "../llm/adapter.js";
+import { btcPriceUsd } from "../core/prices.js";
+import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
+import { esc } from "./format.js";
 import {
   handleStart,
   handleCreate,
@@ -220,11 +223,50 @@ export function buildBot(): Bot {
     }
     if (/^\s*(deposit|fund|my address)\s*$/.test(lower)) { await handleDeposit(ctx); return; }
 
+    // Dollar-denominated phrasing ("swap $50 of BTC…") → token units, before any
+    // parsing. Deterministic (stables $1, BTC via the live PriceFeed).
+    const symbols = registry.knownTokenSymbols();
+    let parsedText = text;
+    try { parsedText = await resolveDollarPhrases(text, symbols); } catch { /* keep original */ }
+
     // Conversational context: remember the last message per user so a follow-up
     // like "do it to MUSD then" can inherit the amount/tokens from it.
     const prior = uid ? lastUserMessage.get(uid) : undefined;
     if (uid) lastUserMessage.set(uid, text);
-    const intent = await parseIntent(text, registry.knownTokenSymbols(), prior);
+
+    // Lazy grounding for GUIDE mode: the user's real balances, live routes and
+    // the BTC price — fetched only when the rule parser can't handle the message.
+    const ground = async (): Promise<string> => {
+      const lines: string[] = [];
+      lines.push(`Network: Mezo ${env.network}. Tokens: ${symbols.join(", ")}.`);
+      lines.push(`Swap routes: ${registry.pools().map((p) => p.pair.join("/")).join(", ")}.`);
+      const price = await btcPriceUsd().catch(() => undefined);
+      if (price) lines.push(`BTC price: $${Math.round(price).toLocaleString()}. MUSD and m-stables are $1.`);
+      if (uid && hasAccount) {
+        try {
+          const user = getUser(uid)!;
+          const holdings = (await getPortfolio(user.address)).filter((h) => h.raw > 0n);
+          lines.push(holdings.length
+            ? `User balances: ${holdings.map((h) => `${prettyAmount(h.formatted)} ${h.token.symbol}`).join(", ")}.`
+            : "User balances: empty (needs to deposit first).");
+        } catch { /* balances unavailable */ }
+      } else {
+        lines.push("User has NO wallet yet — first step is /start to create one.");
+      }
+      lines.push(
+        "Facts: borrow mints MUSD against BTC (min debt 1,800 MUSD, keep collateral ≥110% or risk liquidation). " +
+        "Zap turns one asset into a staked LP position. Locks: veBTC 1-28 days, veMEZO up to 4 years; longer = more voting power. " +
+        "Claiming rewards and voting are free of agent fees. Swaps/zaps show a quote + confirmation before anything signs.",
+      );
+      return lines.join("\n");
+    };
+
+    const intent = await parseIntent(parsedText, symbols, prior, ground);
+    if (intent.action === "chat") {
+      // GUIDE mode: display-only answer, escaped, with the menu one tap away.
+      await ctx.reply(esc(intent.text), { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("🏠 Menu", "menu:home"), link_preview_options: { is_disabled: true } });
+      return;
+    }
     switch (intent.action) {
       case "swap": return void (await handleSwapIntent(ctx, intent));
       case "portfolio": return void (await handlePortfolio(ctx));

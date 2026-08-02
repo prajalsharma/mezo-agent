@@ -14,23 +14,35 @@ import { Intent, INTENT_TOOL_SCHEMA, normalizeIntentFields, type Intent as Inten
  */
 
 const SYSTEM = [
-  "You are the intent parser for a Mezo DeFi Telegram agent.",
-  "Output exactly one structured intent via the emit_intent tool.",
-  "You never execute anything and never see private keys.",
-  "Valid token symbols: {SYMBOLS}.",
-  "Users often drop the Mezo 'm' prefix — map USDC->mUSDC, USDT->mUSDT, DAI->mDAI, cbBTC->mcbBTC, etc.",
-  "Never invent tokens that cannot be resolved this way.",
-  "For a SWAP use fields: action=swap, amount, fromToken, toToken.",
-  "Do NOT use inputToken/inputAmount for a swap — those are ONLY for zap.",
-  "If the amount, source, or destination is missing or ambiguous, return",
-  "action=clarify with a precise question. Never guess amounts or tokens.",
-].join(" ");
+  "You are Mezo Agent, a friendly Bitcoin-DeFi assistant in Telegram. You have TWO modes:",
+  "",
+  "1) ACTION mode — the user wants to DO something (swap, borrow, zap, lock, vote, claim, dca…):",
+  "call the emit_intent tool with exactly one structured intent.",
+  "Valid token symbols: {SYMBOLS}. Users often drop the Mezo 'm' prefix — map USDC->mUSDC, USDT->mUSDT, DAI->mDAI, cbBTC->mcbBTC.",
+  "Never invent tokens. For a SWAP use amount/fromToken/toToken (inputToken/inputAmount are ONLY for zap).",
+  "Dollar amounts: MUSD and the m-stables are $1; use the BTC price from CONTEXT to convert $ to BTC. If no price is given for a token, ask instead of guessing.",
+  "If a required amount or token is missing or ambiguous, emit action=clarify with ONE precise question.",
+  "",
+  "2) GUIDE mode — the user asks a QUESTION or explores ('what can I do with my BTC?', 'is borrowing risky?', 'put my btc to work'):",
+  "reply with PLAIN TEXT (no tool call). Rules for guide replies:",
+  "- Ground EVERY number and option ONLY in the CONTEXT block below. Never invent APYs, prices, rates, or addresses. No financial advice — present options, not recommendations to buy.",
+  "- Be brief (under 120 words), plain-language, no jargon without a one-line explanation.",
+  "- End with 1-3 concrete next messages the user could send, each on its own line in double quotes, using their REAL balances for example amounts when sensible.",
+  "- You only ever explain and suggest — you can never execute anything yourself, and every action the user takes shows a confirmation card first. You never see private keys.",
+].join("\n");
+
+/** A guide-mode conversational answer (never executes anything). */
+export type ChatReply = { action: "chat"; text: string };
+export type ParsedMessage = IntentT | ChatReply;
 
 export async function parseIntent(
   message: string,
   knownSymbols: string[],
   prior?: string,
-): Promise<IntentT> {
+  /** Lazy grounding context (balances, routes, prices) for guide mode — only
+   *  fetched when the deterministic rules can't handle the message. */
+  ground?: () => Promise<string>,
+): Promise<ParsedMessage> {
   // 1) DETERMINISTIC FIRST. The headline commands (swap/borrow/repay/lock/dca/
   //    zap/stake/…) are precise and structured, so the rule parser nails them
   //    instantly, for free, with zero dependence on any model. This is what makes
@@ -46,35 +58,71 @@ export async function parseIntent(
   if (!llmEnabled) return rule;
 
   let system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
-  // Conversational context: give the model the user's PREVIOUS message so a short
-  // follow-up that references it ("do it to MUSD then", "same but 0.02", "make it
-  // BTC") can inherit the missing amount/tokens. Only used on the LLM fallback
-  // path (self-contained commands already parsed deterministically above).
+  // Grounding context for GUIDE mode — the user's real balances, live routes and
+  // prices — so answers are concrete and can never honestly invent numbers.
+  if (ground) {
+    try {
+      const g = await ground();
+      if (g) system += `\n\nCONTEXT (the ONLY numbers you may use):\n${g}`;
+    } catch { /* grounding is best-effort */ }
+  }
+  // One-turn memory: the user's PREVIOUS message so a short follow-up ("do it to
+  // MUSD then", "same but 0.02") can inherit the missing amount/tokens.
   if (prior) {
     system +=
-      ` For context, the user's previous message was: "${prior}". ` +
-      `If the current message is a short follow-up that refers to it (e.g. "do it to MUSD then", ` +
-      `"same but 0.02", "make it BTC"), carry over the missing amount and tokens from that previous ` +
-      `message. If the current message is self-contained, ignore the previous one.`;
+      `\n\nThe user's previous message was: "${prior}". ` +
+      `If the current message is a short follow-up that refers to it, carry over the missing ` +
+      `amount and tokens. If it is self-contained, ignore the previous one.`;
   }
-  let raw: unknown;
+  let out: ProviderReply;
   try {
-    raw = env.llm.provider === "gemini"
+    out = env.llm.provider === "gemini"
       ? await callGemini(system, message)
       : await callAnthropic(system, message);
   } catch (err) {
     log.warn("llm.call-failed", { provider: env.llm.provider, error: errMsg(err) });
     return rule;
   }
-  if (raw === undefined) return rule;
 
-  // Deterministic validation — the model does not get the last word; the schema
-  // does. normalizeIntentFields remaps loose cross-action aliases first, then we
-  // canonicalize token symbols (USDC->mUSDC) so a valid intent isn't lost to a
-  // prefix the user omitted.
-  const parsed = Intent.safeParse(normalizeIntentFields(raw));
+  // GUIDE mode — a plain-text answer. Deterministic guardrails: hard length cap
+  // and no tool semantics; the text is display-only (escaped by the handler) and
+  // can never execute anything.
+  if (out.kind === "chat") {
+    const text = out.text.trim().slice(0, 1500);
+    return text.length > 0 ? { action: "chat", text } : rule;
+  }
+  if (out.raw === undefined) return rule;
+
+  // ACTION mode — deterministic validation; the model does not get the last
+  // word; the schema does. normalizeIntentFields remaps loose cross-action
+  // aliases first, then we canonicalize token symbols (USDC->mUSDC).
+  const parsed = Intent.safeParse(normalizeIntentFields(out.raw));
   if (!parsed.success) return rule;
   return canonicalizeIntentSymbols(parsed.data, knownSymbols);
+}
+
+type ProviderReply = { kind: "intent"; raw: unknown } | { kind: "chat"; text: string };
+
+/**
+ * Rewrite explicit dollar phrases into token units BEFORE parsing, so both the
+ * rule parser and the LLM see plain amounts: "$50 of BTC" → "0.00052… BTC",
+ * "swap $100 usdc to musd" → "swap 100 mUSDC to musd". Stables are $1; BTC uses
+ * the live Mezo PriceFeed. Unpriced tokens are left untouched (parser/LLM will
+ * ask rather than guess). Deterministic — no model involved.
+ */
+export async function resolveDollarPhrases(text: string, knownSymbols: string[]): Promise<string> {
+  const re = /\$\s?(\d+(?:\.\d+)?)(?:\s*(?:of|worth of|in))?\s+([a-zA-Z0-9]+)/g;
+  let out = text;
+  const matches = [...text.matchAll(re)];
+  for (const m of matches) {
+    const sym = resolveSymbol(m[2]!, knownSymbols);
+    if (!sym) continue;
+    const { usdToTokenAmount } = await import("../core/prices.js");
+    const amt = await usdToTokenAmount(sym, Number(m[1]));
+    if (!amt) continue;
+    out = out.replace(m[0], `${amt} ${sym}`);
+  }
+  return out;
 }
 
 /**
@@ -126,10 +174,12 @@ export async function llmSelfTest(knownSymbols: string[]): Promise<string> {
   if (!llmEnabled) throw new Error("no LLM key set — using deterministic parser");
   const system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
   const model = env.llm.provider === "gemini" ? env.llm.geminiModel : env.llm.anthropicModel;
-  const raw =
+  const out =
     env.llm.provider === "gemini"
       ? await callGemini(system, "swap 1 MUSD to mUSDC")
       : await callAnthropic(system, "swap 1 MUSD to mUSDC");
+  if (out.kind !== "intent") throw new Error(`${env.llm.provider} answered in prose instead of a tool call: ${out.text.slice(0, 80)}`);
+  const raw = out.raw;
   if (raw === undefined) throw new Error(`${env.llm.provider} returned no tool call`);
   // Any schema-valid intent proves the round-trip works; report the action so a
   // weak/over-cautious reply is visible. Only an OFF-schema reply is a failure,
@@ -141,19 +191,21 @@ export async function llmSelfTest(knownSymbols: string[]): Promise<string> {
   return `${env.llm.provider} (${model}) responding — parsed action=${parsed.data.action}`;
 }
 
-/** Anthropic (Claude) backend. Returns the raw tool input, or undefined. */
-async function callAnthropic(system: string, message: string): Promise<unknown> {
+/** Anthropic (Claude) backend: emit_intent tool call OR plain-text guide reply. */
+async function callAnthropic(system: string, message: string): Promise<ProviderReply> {
   const client = new Anthropic({ apiKey: env.llm.anthropicApiKey });
   const res = await client.messages.create({
     model: env.llm.anthropicModel,
-    max_tokens: 512,
+    max_tokens: 700,
     system,
     tools: [INTENT_TOOL_SCHEMA as never],
-    tool_choice: { type: "tool", name: INTENT_TOOL_SCHEMA.name },
+    tool_choice: { type: "auto" },
     messages: [{ role: "user", content: message }],
   });
   const toolUse = res.content.find((c) => c.type === "tool_use");
-  return toolUse && toolUse.type === "tool_use" ? toolUse.input : undefined;
+  if (toolUse && toolUse.type === "tool_use") return { kind: "intent", raw: toolUse.input };
+  const text = res.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
+  return { kind: "chat", text };
 }
 
 /**
@@ -162,7 +214,7 @@ async function callAnthropic(system: string, message: string): Promise<unknown> 
  * needed (native fetch). Gemini has a genuinely free tier (Google AI Studio key),
  * which makes it the zero-cost way to get real conversational parsing.
  */
-async function callGemini(system: string, message: string): Promise<unknown> {
+async function callGemini(system: string, message: string): Promise<ProviderReply> {
   const resp = await fetch(
     "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     {
@@ -188,7 +240,9 @@ async function callGemini(system: string, message: string): Promise<unknown> {
             },
           },
         ],
-        tool_choice: { type: "function", function: { name: INTENT_TOOL_SCHEMA.name } },
+        // "auto" so the model can either call emit_intent (ACTION mode) or
+        // answer in plain text (GUIDE mode).
+        tool_choice: "auto",
       }),
     },
   );
@@ -196,15 +250,15 @@ async function callGemini(system: string, message: string): Promise<unknown> {
     throw new Error(`gemini ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
   }
   const data = (await resp.json()) as {
-    choices?: { message?: { tool_calls?: { function?: { arguments?: string } }[] } }[];
+    choices?: { message?: { content?: string | null; tool_calls?: { function?: { arguments?: string } }[] } }[];
   };
-  const argsJson = data.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-  if (!argsJson) return undefined;
-  try {
-    return JSON.parse(argsJson);
-  } catch {
-    return undefined;
+  const msg = data.choices?.[0]?.message;
+  const argsJson = msg?.tool_calls?.[0]?.function?.arguments;
+  if (argsJson) {
+    try { return { kind: "intent", raw: JSON.parse(argsJson) }; }
+    catch { return { kind: "chat", text: "" }; }
   }
+  return { kind: "chat", text: msg?.content ?? "" };
 }
 
 /**
@@ -266,6 +320,27 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
   // Market
   if (/\bbrowse market\b|\bmarket\b/.test(lower) && !/buy/.test(lower)) return { action: "marketBrowse" };
   { const m = t.match(/buy\s+(?:listing\s+)?([a-z0-9]+)/i); if (m) return { action: "marketBuy", listingId: m[1]! }; }
+
+  // Dollar-into-pool (the bounty's own example: "enter the MUSD/mUSDC pool with
+  // $800"). Every live pool contains a $1 stable, so "$N" maps 1:1 onto the
+  // pool's stable side deterministically — no price feed, no guessing.
+  {
+    const m =
+      t.match(/(?:enter|join|zap|add|put|deposit)[^]*?([a-z0-9]+\/[a-z0-9]+)[^]*?\$(\d+(?:\.\d+)?)/i) ??
+      t.match(/\$(?=\d)(\d+(?:\.\d+)?)[^]*?(?:into|in|to)\s+(?:the\s+)?([a-z0-9]+\/[a-z0-9]+)/i);
+    if (m) {
+      const poolStr = /\//.test(m[1]!) ? m[1]! : m[2]!;
+      const usd = /\//.test(m[1]!) ? m[2]! : m[1]!;
+      const members = poolStr.split("/").map((x) => resolve(x)).filter((x): x is string => Boolean(x));
+      // Prefer MUSD, then any m-stable, as the $1 input side.
+      const stable =
+        members.find((x) => x.toUpperCase() === "MUSD") ??
+        members.find((x) => x.toUpperCase().startsWith("MUSD")); // mUSDC / mUSDT / mUSDe
+      if (members.length === 2 && stable) {
+        return { action: "zap", inputToken: stable, inputAmount: usd, pool: members.join("/").toUpperCase(), stake: true };
+      }
+    }
+  }
 
   // Last-chance swap: "<amount> <token> to <token>" ANYWHERE in the message, no
   // verb required — catches follow-ups like "then do 300 musd to musdt". Runs
