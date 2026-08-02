@@ -7,10 +7,12 @@ import { b, i } from "./format.js";
  * zero hallucination surface. Each ends with the concrete next message(s), in
  * quotes so GUIDE-mode's suggestion buttons pick them up too.
  */
-type Explainer = { match: RegExp; title: string; body: string };
+type Explainer = { key: string; label: string; match: RegExp; title: string; body: string };
 
 const EXPLAINERS: Explainer[] = [
   {
+    key: "liquidation",
+    label: "💥 Liquidation",
     match: /liquidat/i,
     title: "💥 Liquidation, simply",
     body:
@@ -20,6 +22,8 @@ const EXPLAINERS: Explainer[] = [
       'Check yours: "portfolio" · make it safer: "add 0.01 BTC collateral" or "repay 200 MUSD"',
   },
   {
+    key: "ratio",
+    label: "🧮 Collateral ratio",
     match: /collateral\s*ratio|\bicr\b|\bmcr\b/i,
     title: "🧮 Collateral ratio, simply",
     body:
@@ -28,6 +32,8 @@ const EXPLAINERS: Explainer[] = [
       'See your ratio before every borrow, and live via "portfolio".',
   },
   {
+    key: "il",
+    label: "🌊 Impermanent loss",
     match: /impermanent\s*loss|\bIL\b/,
     title: "🌊 Impermanent loss, simply",
     body:
@@ -36,6 +42,8 @@ const EXPLAINERS: Explainer[] = [
       "Stable-stable pools (like MUSD/mUSDC) have almost none of it; BTC/MUSD has more.",
   },
   {
+    key: "epochs",
+    label: "📅 Epochs & bribes",
     match: /epoch|bribe/i,
     title: "📅 Epochs & bribes, simply",
     body:
@@ -45,6 +53,8 @@ const EXPLAINERS: Explainer[] = [
       'Try: "vote optimally with veNFT 1" — it splits your vote to maximize expected earnings from live data.',
   },
   {
+    key: "venft",
+    label: "🔒 veNFTs & locking",
     match: /venft|ve-?btc|ve-?mezo|lock decay|voting power/i,
     title: "🔒 veNFTs, simply",
     body:
@@ -54,6 +64,8 @@ const EXPLAINERS: Explainer[] = [
       'Try: "lock 0.01 BTC for 28 days" · then "vote optimally"',
   },
   {
+    key: "slippage",
+    label: "📉 Slippage",
     match: /slippage/i,
     title: "📉 Slippage, simply",
     body:
@@ -61,6 +73,8 @@ const EXPLAINERS: Explainer[] = [
       "This bot defaults to 0.5%: the confirmation card shows a 'Min received' — if the pool can't give you at least that, the swap cancels itself instead of filling badly. Nothing is lost on a cancelled swap.",
   },
   {
+    key: "zap",
+    label: "⚡ Zap",
     match: /\bzap\b|zapping/i,
     title: "⚡ Zap, simply",
     body:
@@ -69,6 +83,8 @@ const EXPLAINERS: Explainer[] = [
       'Try: "zap 0.01 BTC into BTC/MUSD"',
   },
   {
+    key: "rebase",
+    label: "🔁 Rebases",
     match: /rebase/i,
     title: "🔁 Rebases, simply",
     body:
@@ -78,11 +94,25 @@ const EXPLAINERS: Explainer[] = [
   },
 ];
 
+/** All explainers, for the browsable Learn menu. */
+export function explainerList(): Array<{ key: string; label: string }> {
+  return EXPLAINERS.map((e) => ({ key: e.key, label: e.label }));
+}
+
+/** Render one explainer by key (Learn-menu taps). */
+export function explainerByKey(key: string): string | undefined {
+  const hit = EXPLAINERS.find((e) => e.key === key);
+  return hit ? render(hit) : undefined;
+}
+
+function render(e: Explainer): string {
+  return `${b(e.title)}\n\n${e.body}\n\n${i("Hand-written explainer — not generated. Ask anything else, or /help.")}`;
+}
+
 /** Return the explainer for a "what is X / explain X" style question, if any. */
 export function explainerFor(text: string): string | undefined {
   const asking = /\bwhat(?:'s| is| are)\b|\bexplain\b|\beli5\b|\bmean[s]?\b|\bhow do(?:es)?\b.*\bwork/i.test(text);
   if (!asking) return undefined;
   const hit = EXPLAINERS.find((e) => e.match.test(text));
-  if (!hit) return undefined;
-  return `${b(hit.title)}\n\n${hit.body}\n\n${i("Hand-written explainer — not generated. Ask anything else, or /help.")}`;
+  return hit ? render(hit) : undefined;
 }

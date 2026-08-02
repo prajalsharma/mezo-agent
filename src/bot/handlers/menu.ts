@@ -2,6 +2,7 @@ import { InlineKeyboard, type Context } from "grammy";
 import { env, feesEnabled } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
 import { store } from "../../db/store.js";
+import { explainerByKey } from "../explainers.js";
 import { registry } from "../../registry/registry.js";
 import { homeCard, screenCard, tipCard, feesText, helpText, swapToCard, swapAmountCard, presetSwapAmount, type Card } from "../menu.js";
 import { b, i, code } from "../format.js";
@@ -106,6 +107,14 @@ export async function handleMenuCallback(ctx: Context): Promise<void> {
   if (rest.startsWith("tip:")) {
     const card = tipCard(rest.slice("tip:".length));
     if (card) await edit(card);
+    return;
+  }
+
+  // Learn menu → render a static explainer (with its suggested commands as
+  // tappable buttons, same as the Q&A path).
+  if (rest.startsWith("learn:")) {
+    const body = explainerByKey(rest.slice("learn:".length));
+    if (body) await edit({ text: body, keyboard: new InlineKeyboard().text("‹ Back", "menu:nav:learn").text("🏠 Menu", "menu:home") });
     return;
   }
 

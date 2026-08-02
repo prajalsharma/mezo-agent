@@ -114,6 +114,7 @@ export function buildBot(): Bot {
   bot.command("automate", openScreen("automate"));
   bot.command("settings", openScreen("settings"));
   bot.command("alerts", openScreen("alerts"));
+  bot.command("learn", openScreen("learn"));
 
   // Emergency stop for scheduled automation (bounty: access controls / kill-switch).
   bot.command("pause", async (ctx) => {

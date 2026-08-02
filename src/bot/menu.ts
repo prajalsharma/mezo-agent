@@ -7,6 +7,7 @@ import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
 import { registry } from "../registry/registry.js";
 import { publicClient } from "../chain/client.js";
 import { b, i, code } from "./format.js";
+import { explainerList } from "./explainers.js";
 
 /**
  * Navigation. Modeled on the pattern shared by every well-regarded Telegram
@@ -107,6 +108,23 @@ async function accountsCard(telegramId: number): Promise<Card> {
   return {
     text: `${b("👥 Accounts")}\n\n${list}\n\n${i("The ● is your active account. Deposits & actions use it.")}`,
     keyboard: chrome(kb),
+  };
+}
+
+/** 📚 Learn — every ELI5 explainer, browsable. Static hand-written content. */
+function learnCard(): Card {
+  const kb = new InlineKeyboard();
+  explainerList().forEach((e, idx) => {
+    kb.text(e.label, `menu:learn:${e.key}`);
+    if (idx % 2 === 1) kb.row();
+  });
+  if (explainerList().length % 2 === 1) kb.row();
+  return {
+    text: `${b("📚 Learn — DeFi in plain English")}\n\n` +
+      `Tap any topic for a short, jargon-free explanation:\n` +
+      explainerList().map((e) => `• ${e.label.replace(/^\S+\s/, "")}`).join("\n") + "\n\n" +
+      i("You can also just ask, e.g. \"what is liquidation?\". These are hand-written, never AI-generated."),
+    keyboard: chrome(kb, "help"),
   };
 }
 
@@ -380,7 +398,8 @@ export async function screenCard(screen: string, telegramId: number): Promise<Ca
     case "alerts": return alertsCard(telegramId);
     case "accounts": return accountsCard(telegramId);
     case "settings": return settingsCard();
-    case "help": return { text: helpText(), keyboard: chrome(new InlineKeyboard()) };
+    case "help": return { text: helpText(), keyboard: chrome(new InlineKeyboard().text("📚 Learn the basics", "menu:nav:learn")) };
+    case "learn": return learnCard();
     default: return undefined;
   }
 }
@@ -509,6 +528,7 @@ export async function installBotProfile(bot: Bot): Promise<void> {
     { command: "vote", description: "🔒 Lock & vote (veBTC)" },
     { command: "automate", description: "⚡ DCA & auto-compound" },
     { command: "alerts", description: "🔔 Opt-in warnings & reminders" },
+    { command: "learn", description: "📚 DeFi basics, explained simply" },
     { command: "deposit", description: "📥 Deposit address + QR" },
     { command: "accounts", description: "👥 Manage wallets" },
     { command: "settings", description: "⚙️ Limits, fees, referral, upgrade" },
