@@ -335,6 +335,24 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
   { const m = t.match(new RegExp(`repay\\s+${num}\\s+musd`, "i")); if (m) return { action: "repay", repayMUSD: m[1]! }; }
   if (loose && /\bclose\s+trove\b/.test(lower)) return { action: "closeTrove" };
 
+  // Adjust Trove — the tip card teaches EXACTLY these phrasings ("add 0.05 BTC
+  // collateral", "withdraw 0.02 BTC", "mint 500 MUSD"), but no rule existed, so
+  // every one of them fell through to "I didn't catch that". Combinations in one
+  // message are supported too. Runs AFTER borrow/repay so those keep priority.
+  {
+    const addM = t.match(new RegExp(`add\\s+${num}\\s*btc`, "i"));
+    const wdM = t.match(new RegExp(`(?:withdraw|remove|take out)\\s+${num}\\s*btc`, "i"));
+    const mintM = t.match(new RegExp(`(?:mint|borrow more)\\s+${num}\\s*musd`, "i"));
+    if (addM || wdM || mintM) {
+      return {
+        action: "adjust",
+        ...(addM ? { addCollateralBTC: addM[1]! } : {}),
+        ...(wdM ? { withdrawCollateralBTC: wdM[1]! } : {}),
+        ...(mintM ? { mintMUSD: mintM[1]! } : {}),
+      };
+    }
+  }
+
   // Lock: "lock 0.2 BTC for 28 days" / "lock 1000 MEZO for 2 years"
   { const m = t.match(new RegExp(`lock\\s+${num}\\s+(btc|mezo)\\s+for\\s+${num}\\s*(day|days|week|weeks|year|years)`, "i"));
     if (m) { const unit = m[4]!.toLowerCase(); const n = Number(m[3]);

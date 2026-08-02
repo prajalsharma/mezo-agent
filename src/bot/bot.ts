@@ -6,7 +6,7 @@ import { registry } from "../registry/registry.js";
 import { parseIntent, resolveDollarPhrases } from "../llm/adapter.js";
 import { btcPriceUsd } from "../core/prices.js";
 import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
-import { esc } from "./format.js";
+import { esc, mdToHtml, b, i, code } from "./format.js";
 import {
   handleStart,
   handleCreate,
@@ -233,6 +233,46 @@ export function buildBot(): Bot {
       }
     }
 
+    // "borrow 2500 MUSD" with NO collateral named used to dead-end on a bare
+    // "how much BTC?" question. Answer it: compute the BTC actually required at
+    // the live price (150% target = comfortable buffer over the 110% minimum)
+    // and hand back a ready-to-tap command.
+    {
+      const m = text.match(/\bborrow\s+([\d,]+(?:\.\d+)?)\s*musd\b/i);
+      const hasCollateral = /\b(against|with|using)\b/i.test(text);
+      if (m && !hasCollateral) {
+        const debt = Number(m[1]!.replace(/,/g, ""));
+        const MIN_DEBT = 1800;
+        if (debt > 0 && debt < MIN_DEBT) {
+          await ctx.reply(
+            `⚠️ Mezo's minimum loan is ${b("1,800 MUSD")} — ${debt.toLocaleString()} is below it.\n\n` +
+              `Try: ${code(`borrow 1800 MUSD against 0.05 BTC`)}`,
+            { parse_mode: "HTML" },
+          );
+          return;
+        }
+        const price = await btcPriceUsd().catch(() => undefined);
+        if (debt >= MIN_DEBT && price) {
+          const gross = debt * 1.01; // ~1% borrow fee
+          const minBtc = (1.1 * gross) / price;
+          const safeBtc = Number(((1.5 * gross) / price).toFixed(4));
+          const cmd = `borrow ${debt} MUSD against ${safeBtc} BTC`;
+          if (uid) suggestionCache.set(uid, [cmd]);
+          await ctx.reply(
+            `${b(`To borrow ${debt.toLocaleString()} MUSD you need BTC collateral:`)}\n\n` +
+              `• Bare minimum (110%): ${b(`${minBtc.toFixed(4)} BTC`)} — liquidated on any dip\n` +
+              `• ${b("Recommended")} (150% buffer): ${b(`${safeBtc} BTC`)}\n\n` +
+              i(`At the live price of $${Math.round(price).toLocaleString()}/BTC. You'll see the exact ratio and confirm before anything signs.`),
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard().text(`▶ ${cmd}`, "sugg:0").row().text("🏠 Menu", "menu:home"),
+            },
+          );
+          return;
+        }
+      }
+    }
+
     // Dollar-denominated phrasing ("swap $50 of BTC…") → token units, before any
     // parsing. Deterministic (stables $1, BTC via the live PriceFeed).
     const symbols = registry.knownTokenSymbols();
@@ -308,7 +348,7 @@ export function buildBot(): Bot {
         suggestions.forEach((s, idx) => kb.text(`▶ ${s.length > 40 ? s.slice(0, 39) + "…" : s}`, `sugg:${idx}`).row());
       }
       kb.text("🏠 Menu", "menu:home");
-      await ctx.reply(esc(intent.text), { parse_mode: "HTML", reply_markup: kb, link_preview_options: { is_disabled: true } });
+      await ctx.reply(mdToHtml(intent.text), { parse_mode: "HTML", reply_markup: kb, link_preview_options: { is_disabled: true } });
       return;
     }
     await routeIntent(ctx, intent, uid, hasAccount);
@@ -356,7 +396,7 @@ export function buildBot(): Bot {
     if (!text) { await ctx.reply("That suggestion expired — just type what you want."); return; }
     const symbols = registry.knownTokenSymbols();
     const parsed = await parseIntent(await resolveDollarPhrases(text, symbols).catch(() => text), symbols);
-    if (parsed.action === "chat") { await ctx.reply(esc(parsed.text), { parse_mode: "HTML" }); return; }
+    if (parsed.action === "chat") { await ctx.reply(mdToHtml(parsed.text), { parse_mode: "HTML" }); return; }
     await routeIntent(ctx, parsed, uid, Boolean(getUser(uid)));
   });
 

@@ -28,6 +28,13 @@ const cases: { msg: string; want: Expect }[] = [
   { msg: "borrow 500 MUSD against 0.1 BTC", want: { action: "borrow", mintMUSD: "500", collateralBTC: "0.1" } },
   { msg: "repay 200 musd",                  want: { action: "repay", repayMUSD: "200" } },
   { msg: "close trove",                     want: { action: "closeTrove" } },
+  // Adjust Trove — the tip card teaches these exact phrasings; they used to all
+  // fall through to "I didn't catch that".
+  { msg: "add 0.05 BTC collateral",  want: { action: "adjust", addCollateralBTC: "0.05" } },
+  { msg: "withdraw 0.02 BTC",        want: { action: "adjust", withdrawCollateralBTC: "0.02" } },
+  { msg: "mint 500 MUSD",            want: { action: "adjust", mintMUSD: "500" } },
+  { msg: "Add 0.05 btc collateral withdraw 0.02 BTC and mint 500 musd",
+    want: { action: "adjust", addCollateralBTC: "0.05", withdrawCollateralBTC: "0.02", mintMUSD: "500" } },
 
   // ── Lock (days / weeks / years) ───────────────────────────────────────────
   { msg: "lock 0.2 BTC for 28 days",   want: { action: "lock", asset: "BTC", amount: "0.2", lockDays: 28 } },
