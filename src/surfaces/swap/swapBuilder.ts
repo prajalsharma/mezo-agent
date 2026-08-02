@@ -248,7 +248,10 @@ export async function buildSwap(params: {
       data: encodeFunctionData({
         abi: feeRouterAbi,
         functionName: "swapWithFee",
-        args: [amountIn, minOut, [route], deadline, (referral?.recipient ?? ZERO_ADDRESS) as Address, referralShareBps, effectiveBps],
+        // feeBpsOverride = 0: the CONTRACT decides the rate (discounted only for an
+        // attested referrer). Passing our own belief could revert when the chain
+        // disagrees about referrer status, and would let it drift from the quote.
+        args: [amountIn, minOut, [route], deadline, (referral?.recipient ?? ZERO_ADDRESS) as Address, referralShareBps, 0],
       }),
       describe:
         `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol} ` +

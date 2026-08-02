@@ -63,6 +63,17 @@ contract FeeRouter {
     uint16 public referredFeeBps;
     /// @dev Max share of the fee (in bps of the fee) a referrer may receive.
     uint16 public maxReferralShareBps;
+    /**
+     * @dev Owner-attested referrers. `referrer` is unauthenticated calldata, so
+     *      without this ANY caller could name an address to (a) unlock the
+     *      discounted floor with no referral at all, and (b) rebate the referral
+     *      share to a second wallet they control. Comparing against msg.sender
+     *      is not enough — one throwaway EOA defeats it, and under EIP-7702
+     *      msg.sender is the user's own account so the comparison is
+     *      structurally inapplicable. Only registered referrers unlock either
+     *      the discount or the payout. (Audit: 4 independent agents.)
+     */
+    mapping(address => bool) public isReferrer;
 
     bool private _entered;
 
@@ -76,6 +87,8 @@ contract FeeRouter {
     );
     event ConfigChanged(address feeRecipient, uint16 feeBps, uint16 maxReferralShareBps);
     event OwnerChanged(address indexed newOwner);
+    event ReferrerSet(address indexed referrer, bool allowed);
+    event ReferredFeeBpsChanged(uint16 referredFeeBps);
 
     error NotOwner();
     error Reentered();
@@ -137,9 +150,7 @@ contract FeeRouter {
         // (non-self) referrer is named and a discount is configured — otherwise
         // it is the full rate. This blocks the "pass 1 bps and underpay" attack
         // WITHOUT breaking the advertised referred-trader discount.
-        uint16 floorBps = (referrer != address(0) && referrer != msg.sender && referredFeeBps != 0)
-            ? referredFeeBps
-            : feeBps;
+        uint16 floorBps = _baseBps(referrer, referralShareBps);
         if (feeBpsOverride != 0 && (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < floorBps)) {
             revert FeeTooHigh();
         }
@@ -154,12 +165,34 @@ contract FeeRouter {
         amountOut = amounts[amounts.length - 1];
     }
 
+    /// @dev The rate this caller actually pays before any override: the
+    ///      discounted rate for an attested referral, otherwise the headline.
+    ///      Used for BOTH the floor and the charged amount, so the discount is
+    ///      a RATE, not merely a lower bound. (Audit: previously referredFeeBps
+    ///      was only a floor, so a genuine referral calling with override=0 paid
+    ///      FULL price while an attacker who passed the override got the
+    ///      discount — exactly inverted.)
+    function _baseBps(address referrer, uint16 referralShareBps) private view returns (uint16) {
+        return (_referralActive(referrer, referralShareBps) && referredFeeBps != 0) ? referredFeeBps : feeBps;
+    }
+
+    /// @dev A referral is only real when the referrer is owner-attested, is not
+    ///      the caller, and an actual share is being paid. The discounted FLOOR
+    ///      and the PAYOUT must agree on this — gating them on different
+    ///      conditions let callers take the discount while paying no referrer.
+    function _referralActive(address referrer, uint16 referralShareBps) private view returns (bool) {
+        return referrer != address(0) && referrer != msg.sender && isReferrer[referrer] && referralShareBps > 0;
+    }
+
     /// @dev Split the fee between referrer (clamped share) and the operator.
     function _takeFee(address tokenIn, uint256 amountIn, address referrer, uint16 referralShareBps, uint16 bpsOverride)
         private
         returns (uint256 fee)
     {
-        fee = (amountIn * (bpsOverride > 0 ? bpsOverride : feeBps)) / BPS;
+        // Same base as the floor: an attested referral is CHARGED the discount
+        // even when the caller passes no override.
+        uint16 base = _baseBps(referrer, referralShareBps);
+        fee = (amountIn * (bpsOverride > 0 ? bpsOverride : base)) / BPS;
         uint256 referrerShare = 0;
         if (fee > 0) {
             // Self-referral is rejected: `referrer` is unauthenticated calldata,
@@ -167,7 +200,7 @@ contract FeeRouter {
             // maxReferralShareBps of their own fee — a permanent discount to
             // anyone who reads the ABI (audit finding). Referrals are a growth
             // incentive for bringing OTHER traders, never a self-discount.
-            if (referrer != address(0) && referrer != msg.sender && referralShareBps > 0) {
+            if (_referralActive(referrer, referralShareBps)) {
                 uint16 share = referralShareBps > maxReferralShareBps ? maxReferralShareBps : referralShareBps;
                 referrerShare = (fee * share) / BPS;
                 if (referrerShare > 0) _push(tokenIn, referrer, referrerShare);
@@ -185,8 +218,11 @@ contract FeeRouter {
         if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > BPS) revert FeeTooHigh();
         feeRecipient = feeRecipient_;
         feeBps = feeBps_;
-        // Keep the discount representable and never above the headline rate.
-        if (referredFeeBps > feeBps_) referredFeeBps = feeBps_;
+        // RE-DERIVE, never one-way clamp: clamping only downward meant a
+        // temporary promo (fee 100 -> 40) permanently latched the discounted
+        // floor at 40 even after the headline returned to 100. (Audit finding.)
+        referredFeeBps = uint16((uint256(feeBps_) * 90) / 100);
+        emit ReferredFeeBpsChanged(referredFeeBps);
         maxReferralShareBps = maxReferralShareBps_;
         emit ConfigChanged(feeRecipient_, feeBps_, maxReferralShareBps_);
     }
@@ -195,6 +231,17 @@ contract FeeRouter {
     function setReferredFeeBps(uint16 bps) external onlyOwner {
         if (bps > feeBps) revert FeeTooHigh();
         referredFeeBps = bps;
+        emit ReferredFeeBpsChanged(bps);
+    }
+
+    /// @notice Attest (or revoke) referrers in bulk. Only these unlock the
+    ///         discounted rate and the referral payout.
+    function setReferrers(address[] calldata referrers, bool allowed) external onlyOwner {
+        for (uint256 i = 0; i < referrers.length; i++) {
+            if (referrers[i] == address(0)) revert ZeroAddress();
+            isReferrer[referrers[i]] = allowed;
+            emit ReferrerSet(referrers[i], allowed);
+        }
     }
 
     function setOwner(address newOwner) external onlyOwner {

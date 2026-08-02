@@ -59,6 +59,9 @@ contract FeeRouterTest is Test {
         tokenOut = new MockERC20();
         router = new MockRouter(tokenOut);
         fr = new FeeRouter(address(router), operator, 50, 3000); // 0.5% fee, 30% max referral
+        address[] memory refs = new address[](1);
+        refs[0] = referrer;
+        fr.setReferrers(refs, true); // referrals must now be owner-attested
         tokenIn.mint(user, 1_000e18);
         vm.prank(user);
         tokenIn.approve(address(fr), type(uint256).max);
@@ -82,14 +85,16 @@ contract FeeRouterTest is Test {
     function test_referralSplitAtSource() public {
         vm.prank(user);
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
-        assertEq(tokenIn.balanceOf(referrer), 0.15e18, "referrer 30% of fee");
-        assertEq(tokenIn.balanceOf(operator), 0.35e18, "operator 70% of fee");
+        // Attested referral is CHARGED the discounted 45 bps (not the 50 headline):
+        // fee 0.45; referrer 30% = 0.135; operator 0.315.
+        assertEq(tokenIn.balanceOf(referrer), 0.135e18, "referrer 30% of the discounted fee");
+        assertEq(tokenIn.balanceOf(operator), 0.315e18, "operator 70% of the discounted fee");
     }
 
     function test_referralShareClampedToMax() public {
         vm.prank(user);
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 9000, 0); // asks 90%
-        assertEq(tokenIn.balanceOf(referrer), 0.15e18, "clamped to 30% max");
+        assertEq(tokenIn.balanceOf(referrer), 0.135e18, "clamped to 30% of the discounted fee");
     }
 
     /// THE property this contract exists for: swap fails => fee reverts too.
@@ -213,5 +218,50 @@ contract FeeRouterTest is Test {
         assertEq(tokenIn.balanceOf(operator), 0.5e18, "operator keeps the WHOLE fee");
         // user's only tokenIn movement is the 100e18 they swapped — no rebate back.
         assertEq(tokenIn.balanceOf(user), 900e18, "no self-rebate");
+    }
+
+    // ── Re-audit regressions ─────────────────────────────────────────────────
+
+    /// AUDIT: naming an UNREGISTERED address must not unlock the discount.
+    /// Previously any caller passed referrer=0xdEaD, referralShareBps=0 and paid
+    /// the discounted floor with no referral occurring at all.
+    function test_audit_unattestedReferrerGetsNoDiscount() public {
+        vm.prank(user);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0xdEaD), 0, 45);
+
+        // ...and with no override it is charged the FULL headline rate.
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0xdEaD), 3000, 0);
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "full 50 bps, no discount");
+        assertEq(tokenIn.balanceOf(address(0xdEaD)), 0, "unattested referrer paid nothing");
+    }
+
+    /// AUDIT: setConfig must RE-DERIVE the discount, not clamp one-way. A promo
+    /// (100 -> 40) then restore (-> 100) used to latch the floor at 40 forever.
+    function test_audit_setConfigReDerivesDiscount() public {
+        fr.setConfig(operator, 40, 3000);
+        assertEq(fr.referredFeeBps(), 36, "re-derived to 90% of 40");
+        fr.setConfig(operator, 100, 3000);
+        assertEq(fr.referredFeeBps(), 90, "restored to 90% of 100, not latched at 36");
+    }
+
+    /// AUDIT: the discount is the charged RATE for an attested referral, so a
+    /// referred trader who passes no override still pays the reduced rate.
+    function test_audit_discountIsRateNotOnlyFloor() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
+        assertEq(tokenIn.balanceOf(operator) + tokenIn.balanceOf(referrer), 0.45e18, "45 bps total, not 50");
+    }
+
+    /// Revoking attestation removes both the discount and the payout.
+    function test_audit_revokedReferrerLosesBoth() public {
+        address[] memory refs = new address[](1);
+        refs[0] = referrer;
+        fr.setReferrers(refs, false);
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "full rate after revocation");
+        assertEq(tokenIn.balanceOf(referrer), 0, "no payout after revocation");
     }
 }
