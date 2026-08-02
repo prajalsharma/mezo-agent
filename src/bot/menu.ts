@@ -338,7 +338,9 @@ function lockVoteCard(): Card {
   const kb = new InlineKeyboard()
     .text("🔒 Lock", "menu:tip:lock").text("⏫ Extend", "menu:tip:extendlock")
     .row()
-    .text("🗳️ Vote", "menu:tip:vote").text("🌾 Claim", "menu:do:claim");
+    .text("🗳️ Vote", "menu:tip:vote").text("🌾 Claim", "menu:do:claim")
+    .row()
+    .text("🧰 veNFT tools", "menu:tip:venft_tools");
   return {
     text: `${b("🔒 Lock & Vote — veBTC / veMEZO")}\n\n` +
       `Lock BTC or MEZO for voting power, then direct emissions to pools.\n` +
@@ -429,6 +431,10 @@ function tipContent(key: string): { parent: string; text: string } | undefined {
     }
     case "earn_zap": return { parent: "earn", text: `${b("⚡ Zap into a pool")}\nPools: ${pools.join(", ")}\n\nType:\n${code(`zap 0.01 BTC into ${pool0}`)}\n\n${i("Splits one asset into a staked LP position in a single flow.")}` };
     case "lock": return { parent: "lockvote", text: `${b("🔒 Lock")}\nType:\n${code("lock 0.2 BTC for 28 days")}\n${code("lock 1000 MEZO for 2 years")}\n\n${i("veBTC locks run up to 28 days; veMEZO up to 4 years. Longer lock = more voting power.")}` };
+    case "venft_tools": return { parent: "lockvote", text: `${b("🧰 veNFT tools")}\nManage the lock NFTs you already own:\n\n` +
+      `${code("merge veNFT 1 into veNFT 2")}\n${i("combine two locks into one position")}\n\n` +
+      `${code("transfer veNFT 1 to 0x…")}\n${i("send a lock to another address")}\n\n` +
+      `${code("pair veNFT 1 with veMEZO 2: 100% " + (registry.pools()[0]?.pair.join("/") ?? "BTC/MUSD"))}\n${i("Matchbox boost — point veMEZO power at a pool")}` };
     case "extendlock": return { parent: "lockvote", text: `${b("⏫ Extend a lock")}\nType:\n${code("extend lock 3 by 30 days")}` };
     case "vote": return { parent: "lockvote", text: `${b("🗳️ Vote")}\nType:\n${code("vote optimally with veNFT 3")}\n${code(`vote with veNFT 3: 60% ${pool0}${pools[1] ? `, 40% ${pools[1]}` : ""}`)}\n\n${i("\"optimally\" splits your votes across gauges to maximize expected rewards, using live incentive data.")}` };
     case "dca": return { parent: "automate", text: `${b("➕ New DCA schedule")}\nType:\n${code("dca 50 MUSD to BTC every 24h")}\n${code("dca 100 MUSD to mUSDC every 7 days for 4 times")}` };

@@ -47,6 +47,14 @@ const cases: { msg: string; want: Expect }[] = [
   // ── Zap / stake LP ────────────────────────────────────────────────────────
   { msg: "zap 0.01 BTC into MUSD/mUSDC", want: { action: "zap", inputToken: "BTC", inputAmount: "0.01", pool: "MUSD/MUSDC" } },
   { msg: "stake LP MUSD/mUSDC",          want: { action: "stakeLp", pool: "MUSD/MUSDC" } },
+  // Dead-end audit regressions: capabilities that had NO parser rule, so users
+  // could never reach them by typing (two were taught by tip cards).
+  { msg: "deposit 100 MUSD into vault", want: { action: "vaultDeposit", token: "MUSD", amount: "100" } },
+  { msg: "extend lock 3 by 30 days",    want: { action: "extendLock", tokenId: 3, addDays: 30 } },
+  { msg: "merge veNFT 1 into veNFT 2",  want: { action: "veMerge", fromTokenId: 1, toTokenId: 2 } },
+  { msg: "transfer veNFT 1 to 0x1111111111111111111111111111111111111111",
+    want: { action: "veTransfer", tokenId: 1 } },
+  { msg: "pair veNFT 1 with veMEZO 2",  want: { action: "matchbox", op: "pair", veBtcId: 1, veMezoId: 2 } },
 
   // ── Vote / claim / market ─────────────────────────────────────────────────
   { msg: "vote",           want: { action: "vote", mode: "optimal" } },

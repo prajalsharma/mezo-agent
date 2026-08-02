@@ -374,6 +374,34 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
   { const m = t.match(/(stake|unstake)\s+(?:lp\s+)?([a-z0-9]+\/[a-z0-9]+)/i);
     if (m) return m[1]!.toLowerCase() === "stake" ? { action: "stakeLp", pool: m[2]!.toUpperCase() } : { action: "unstakeLp", pool: m[2]!.toUpperCase() }; }
 
+  // Vault deposit: "deposit 100 MUSD into vault" — TAUGHT by the Earn tip card
+  // but had no rule, so it always fell through to "I didn't catch that".
+  { const m = t.match(new RegExp(`deposit\\s+${num}\\s+([a-z0-9]+)\\s+(?:in|into)\\s+(?:the\\s+)?vault`, "i"));
+    if (m) { const tok = resolve(m[2]!); if (tok) return { action: "vaultDeposit", token: tok, amount: m[1]! }; } }
+
+  // Extend lock: "extend lock 3 by 30 days" / "add 100 MEZO to lock 3" — also
+  // taught by a tip card with no rule behind it.
+  { const m = t.match(new RegExp(`extend\\s+(?:lock|venft|ve-?nft)\\s*#?(\\d+)\\s+by\\s+${num}\\s*(day|days|week|weeks|year|years)`, "i"));
+    if (m) { const unit = m[3]!.toLowerCase(); const n = Number(m[2]);
+      const days = unit.startsWith("year") ? Math.round(n * 365) : unit.startsWith("week") ? n * 7 : n;
+      return { action: "extendLock", tokenId: Number(m[1]), addDays: days }; } }
+  { const m = t.match(new RegExp(`add\\s+${num}\\s+([a-z0-9]+)\\s+to\\s+(?:lock|venft|ve-?nft)\\s*#?(\\d+)`, "i"));
+    if (m) return { action: "extendLock", tokenId: Number(m[3]), addAmount: m[1]! }; }
+
+  // Matchbox pair/unpair: "pair veNFT 1 with veMEZO 2" / "unpair veNFT 1".
+  { const m = t.match(/pair\s+(?:ve-?btc|ve-?nft)?\s*#?(\d+)\s+with\s+(?:ve-?mezo)?\s*#?(\d+)/i);
+    if (m && !/unpair/i.test(t)) return { action: "matchbox", op: "pair", veBtcId: Number(m[1]), veMezoId: Number(m[2]) }; }
+  { const m = t.match(/unpair\s+(?:ve-?btc|ve-?nft)?\s*#?(\d+)/i);
+    if (m) return { action: "matchbox", op: "unpair", veBtcId: Number(m[1]) }; }
+
+  // veNFT transfer: "transfer veNFT 1 to 0x…" / "send venft 1 to 0x…".
+  { const m = t.match(/(?:transfer|send)\s+(?:ve-?nft|ve-?btc|ve-?mezo)\s*#?(\d+)\s+to\s+(0x[0-9a-fA-F]{40})/i);
+    if (m) return { action: "veTransfer", tokenId: Number(m[1]), to: m[2]! }; }
+
+  // veNFT merge: "merge veNFT 1 into veNFT 2".
+  { const m = t.match(/merge\s+(?:ve-?nft|ve-?btc|ve-?mezo)?\s*#?(\d+)\s+(?:into|with|to)\s+(?:ve-?nft|ve-?btc|ve-?mezo)?\s*#?(\d+)/i);
+    if (m) return { action: "veMerge", fromTokenId: Number(m[1]), toTokenId: Number(m[2]) }; }
+
   // Market
   if (loose && /\bbrowse market\b|\bmarket\b/.test(lower) && !/buy/.test(lower)) return { action: "marketBrowse" };
   if (loose) { const m = t.match(/buy\s+listing\s+([a-z0-9]+)/i); if (m) return { action: "marketBuy", listingId: m[1]! }; }
