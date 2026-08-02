@@ -39,7 +39,7 @@ export function buildLock(intent: LockIntent): ActionPlan {
 
   if (!registry.hasContract(key)) {
     return gatedPlan({ action: "lock", title: `🔒 Lock ${intent.asset} (ve${intent.asset})`, summary,
-      reason: `Preview only — ${key} isn't confirmed on this deployment yet. Calldata is built to the VotingEscrow interface and executes once the address lands.` });
+      reason: `Preview only - ${key} isn't confirmed on this deployment yet. Calldata is built to the VotingEscrow interface and executes once the address lands.` });
   }
 
   const ve = registry.contract(key);
@@ -66,7 +66,7 @@ export function buildLock(intent: LockIntent): ActionPlan {
   return {
     action: "lock", title: `🔒 Lock ${intent.asset} (ve${intent.asset})`, summary,
     // Plain-language risk line: the ONE thing lockers must understand.
-    warnings: [`Locked ${intent.asset} CANNOT be unlocked early — it stays committed until the full ${intent.lockDays} days pass.`],
+    warnings: [`Locked ${intent.asset} CANNOT be unlocked early - it stays committed until the full ${intent.lockDays} days pass.`],
     steps, allowedTargets: [...steps.filter((s) => s.kind !== "fee").map((s) => s.to), ...(agentFee.target ? [agentFee.target] : [])],
     executable: true,
     // Step-up threshold is BTC-denominated; only a BTC lock counts (fee included).
@@ -87,7 +87,7 @@ export async function buildExtendLock(intent: ExtendLockIntent, owner: Address):
   if (!registry.hasContract("VotingEscrowBTC")) {
     return gatedPlan({
       action: "extendLock", title: "⏳ Extend lock", summary,
-      reason: "Preview only — the VotingEscrow address isn't confirmed on this deployment yet.",
+      reason: "Preview only - the VotingEscrow address isn't confirmed on this deployment yet.",
     });
   }
 

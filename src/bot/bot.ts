@@ -122,7 +122,7 @@ export function buildBot(): Bot {
     store.setUserPaused(ctx.from.id, true);
     await ctx.reply(
       "🛑 <b>Automation paused.</b>\nAll your DCA / auto-compound runs are frozen. " +
-        "Your schedules are kept — send /resume to re-enable. Manual actions still work.",
+        "Your schedules are kept - send /resume to re-enable. Manual actions still work.",
       { parse_mode: "HTML" },
     );
   });
@@ -248,7 +248,7 @@ export function buildBot(): Bot {
         const MIN_DEBT = 1800;
         if (debt > 0 && debt < MIN_DEBT) {
           await ctx.reply(
-            `⚠️ Mezo's minimum loan is ${b("1,800 MUSD")} — ${debt.toLocaleString()} is below it.\n\n` +
+            `⚠️ Mezo's minimum loan is ${b("1,800 MUSD")} - ${debt.toLocaleString()} is below it.\n\n` +
               `Try: ${code(`borrow 1800 MUSD against 0.05 BTC`)}`,
             { parse_mode: "HTML" },
           );
@@ -263,7 +263,7 @@ export function buildBot(): Bot {
           if (uid) suggestionCache.set(uid, [cmd]);
           await ctx.reply(
             `${b(`To borrow ${debt.toLocaleString()} MUSD you need BTC collateral:`)}\n\n` +
-              `• Bare minimum (110%): ${b(`${minBtc.toFixed(4)} BTC`)} — liquidated on any dip\n` +
+              `• Bare minimum (110%): ${b(`${minBtc.toFixed(4)} BTC`)} - liquidated on any dip\n` +
               `• ${b("Recommended")} (150% buffer): ${b(`${safeBtc} BTC`)}\n\n` +
               i(`At the live price of $${Math.round(price).toLocaleString()}/BTC. You'll see the exact ratio and confirm before anything signs.`),
             {
@@ -303,7 +303,7 @@ export function buildBot(): Bot {
           if (raw <= 0n) return whole;
           return `${formatUnits(raw, h.token.decimals)} ${h.token.symbol}`;
         });
-      } catch { /* balances unavailable — leave the phrase for clarify/LLM */ }
+      } catch { /* balances unavailable - leave the phrase for clarify/LLM */ }
     }
 
     // Conversational context: remember the last message per user so a follow-up
@@ -328,7 +328,7 @@ export function buildBot(): Bot {
             : "User balances: empty (needs to deposit first).");
         } catch { /* balances unavailable */ }
       } else {
-        lines.push("User has NO wallet yet — first step is /start to create one.");
+        lines.push("User has NO wallet yet - first step is /start to create one.");
       }
       lines.push(
         "Facts: borrow mints MUSD against BTC (min debt 1,800 MUSD, keep collateral ≥110% or risk liquidation). " +
@@ -396,7 +396,7 @@ export function buildBot(): Bot {
     const uid = ctx.from?.id;
     if (!uid) return;
     const text = suggestionCache.get(uid)?.[Number(ctx.match![1])];
-    if (!text) { await ctx.reply("That suggestion expired — just type what you want."); return; }
+    if (!text) { await ctx.reply("That suggestion expired - just type what you want."); return; }
     const symbols = registry.knownTokenSymbols();
     const parsed = await parseIntent(await resolveDollarPhrases(text, symbols).catch(() => text), symbols);
     if (parsed.action === "chat") { await ctx.reply(mdToHtml(parsed.text), { parse_mode: "HTML" }); return; }
@@ -420,7 +420,7 @@ export function startupBanner(): string {
     `  access  : ${
       accessRestricted
         ? `restricted to ${env.allowedUserIds.size} allowlisted user id(s)`
-        : "⚠️  OPEN — anyone who finds the bot username can use it"
+        : "⚠️  OPEN - anyone who finds the bot username can use it"
     }`
   );
 }

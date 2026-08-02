@@ -36,7 +36,7 @@ export async function handleUpgrade(ctx: Context): Promise<void> {
         "Our security audit found that the session-key delegate's on-chain spending caps " +
         "can be bypassed in some cases, so we've turned the upgrade off rather than ship a " +
         "weaker guarantee than we advertise.\n\n" +
-        "Nothing else is affected — swaps, borrowing, earning, locking and voting all work " +
+        "Nothing else is affected - swaps, borrowing, earning, locking and voting all work " +
         "normally on your existing account, and every action still shows a confirmation " +
         "before it signs.",
       { parse_mode: "HTML" },

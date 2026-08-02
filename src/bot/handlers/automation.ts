@@ -80,7 +80,7 @@ export async function handleDcaCancel(ctx: Context, intent: DcaCancelIntent): Pr
       );
       return;
     }
-    const lines = schedules.map((s) => `• ${code(s.id.slice(0, 8))} — ${s.amount} ${s.fromToken}→${s.toToken} every ${s.everyHours}h`);
+    const lines = schedules.map((s) => `• ${code(s.id.slice(0, 8))} - ${s.amount} ${s.fromToken}→${s.toToken} every ${s.everyHours}h`);
     await ctx.reply([b("Active DCA schedules"), ...lines, "", i("Cancel one: \"cancel dca <id>\".")].join("\n"), { parse_mode: "HTML" });
     return;
   }

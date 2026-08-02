@@ -32,18 +32,18 @@ export async function buildMarketBrowse(query?: string): Promise<ActionPlan> {
       const out = (await c.readContract({
         address: p.address, abi: poolAbi, functionName: "getAmountOut", args: [10n ** BigInt(tokA.decimals), registry.routingAddress(tokA)],
       })) as bigint;
-      priceLine += ` — 1 ${a} ≈ ${Number(formatUnits(out, tokB.decimals)).toFixed(4)} ${b}`;
+      priceLine += ` - 1 ${a} ≈ ${Number(formatUnits(out, tokB.decimals)).toFixed(4)} ${b}`;
     } catch { /* pool read best-effort */ }
     return `• ${priceLine}`;
   }));
-  const lines: string[] = ["Mezo Market — live tradeable pairs (swap any of these):", ...quoted.filter((x): x is string => !!x)];
+  const lines: string[] = ["Mezo Market - live tradeable pairs (swap any of these):", ...quoted.filter((x): x is string => !!x)];
   lines.push("", `To buy: just say e.g. "swap 100 MUSD to mUSDC".`);
-  if (query) lines.unshift(`(filter "${query}" — showing all pairs)`);
+  if (query) lines.unshift(`(filter "${query}" - showing all pairs)`);
   // Browsing is read-only; return a non-signable plan carrying the listing.
   return {
     action: "marketBrowse", title: "🛍️ Mezo Market", summary: lines,
     warnings: [], steps: [], allowedTargets: [], executable: false, nativeValue: 0n,
-    gatedReason: "Browsing is read-only — pick a pair and swap to purchase.",
+    gatedReason: "Browsing is read-only - pick a pair and swap to purchase.",
   };
 }
 
@@ -61,7 +61,7 @@ export function buildMatchbox(intent: MatchboxIntent): ActionPlan {
     return gatedPlan({
       action: "matchbox", title: "🧩 Matchbox (boost)",
       summary: ["Direct your veMEZO boost onto veBTC gauges."],
-      reason: "Preview only — the BoostVoter address isn't confirmed on this deployment yet.",
+      reason: "Preview only - the BoostVoter address isn't confirmed on this deployment yet.",
     });
   }
   const boostVoter = registry.contract("Matchbox");
@@ -77,7 +77,7 @@ export function buildMatchbox(intent: MatchboxIntent): ActionPlan {
       describe: `Clear veMEZO #${intent.veMezoId} boost votes`,
     };
     return {
-      action: "matchbox", title: "🧩 Matchbox — unpair", warnings: [],
+      action: "matchbox", title: "🧩 Matchbox - unpair", warnings: [],
       summary: [`Clear all boost votes from veMEZO #${intent.veMezoId}.`],
       steps: [step], allowedTargets: [boostVoter], executable: true, nativeValue: 0n,
     };
@@ -113,7 +113,7 @@ export function buildMatchbox(intent: MatchboxIntent): ActionPlan {
     describe: `Boost with veMEZO #${intent.veMezoId}: ${entries.map(([p, w]) => `${p} ${(w / 100).toFixed(0)}%`).join(", ")}`,
   };
   return {
-    action: "matchbox", title: "🧩 Matchbox — boost", warnings: ["Boost votes persist across epochs until changed or reset."],
+    action: "matchbox", title: "🧩 Matchbox - boost", warnings: ["Boost votes persist across epochs until changed or reset."],
     summary: [
       `Point veMEZO #${intent.veMezoId} boost at: ${entries.map(([p, w]) => `${p} ${(w / 100).toFixed(0)}%`).join(", ")}.`,
       "Boosting raises a veBTC voter's fees + bribes per vote (up to 5×).",
@@ -134,12 +134,12 @@ async function escrowOwning(owner: `0x${string}`, tokenId: bigint): Promise<{ ve
   const candidates: [Address, "BTC" | "MEZO"][] = [];
   if (registry.hasContract("VotingEscrowBTC")) candidates.push([registry.contract("VotingEscrowBTC"), "BTC"]);
   if (registry.hasContract("VotingEscrowMEZO")) candidates.push([registry.contract("VotingEscrowMEZO"), "MEZO"]);
-  if (candidates.length === 0) throw new ActionUnavailableError("Preview only — no VotingEscrow address is confirmed on this deployment yet.");
+  if (candidates.length === 0) throw new ActionUnavailableError("Preview only - no VotingEscrow address is confirmed on this deployment yet.");
   for (const [ve, asset] of candidates) {
     try {
       const nftOwner = (await c.readContract({ address: ve, abi: votingEscrowAbi, functionName: "ownerOf", args: [tokenId] })) as Address;
       if (nftOwner.toLowerCase() === owner.toLowerCase()) return { ve, asset };
-    } catch { /* ownerOf reverts for a non-existent id — try the other collection */ }
+    } catch { /* ownerOf reverts for a non-existent id - try the other collection */ }
   }
   throw new ActionUnavailableError(
     `Your account doesn't own veNFT #${tokenId} in either veBTC or veMEZO. Check the id (each collection numbers from 1).`,
@@ -164,7 +164,7 @@ export async function buildVeMerge(intent: VeMergeIntent, owner: `0x${string}`):
   const from = await escrowOwning(owner, BigInt(intent.fromTokenId));
   const to = await escrowOwning(owner, BigInt(intent.toTokenId));
   if (from.ve.toLowerCase() !== to.ve.toLowerCase()) {
-    throw new ActionUnavailableError(`Can't merge across collections — #${intent.fromTokenId} is ve${from.asset} but #${intent.toTokenId} is ve${to.asset}.`);
+    throw new ActionUnavailableError(`Can't merge across collections - #${intent.fromTokenId} is ve${from.asset} but #${intent.toTokenId} is ve${to.asset}.`);
   }
   const summary = [`Merge ve${from.asset} #${intent.fromTokenId} into #${intent.toTokenId}.`,
     "The two locks combine; the longer unlock time applies to the merged position."];

@@ -32,7 +32,7 @@ export async function handlePortfolio(ctx: Context): Promise<void> {
     .join("\n");
 
   await ctx.reply(
-    `${b(`Portfolio — ${netLabel}`)}\n${code(user.address)}\n\n${lines}\n\n${await positionsBlock(user.address)}`,
+    `${b(`Portfolio - ${netLabel}`)}\n${code(user.address)}\n\n${lines}\n\n${await positionsBlock(user.address)}`,
     { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }
@@ -49,7 +49,7 @@ export async function handleDeposit(ctx: Context): Promise<void> {
   kb.text("🏠 Menu", "menu:home");
   await ctx.replyWithPhoto(new InputFile(png, "deposit.png"), {
     caption:
-      `${b(`Deposit address — ${netLabel}`)}\n${code(user.address)}\n\n` +
+      `${b(`Deposit address - ${netLabel}`)}\n${code(user.address)}\n\n` +
       `Send BTC (native gas asset) or any Mezo token to this address.\n` +
       (env.network !== "mainnet" ? `${i("Tap the faucet button below, then paste the address above to get test BTC.")}\n` : "") +
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}`,

@@ -185,7 +185,7 @@ export async function executeActionPlan(
       try {
         receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });
       } catch {
-        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} not confirmed within 90s (tx ${hash}); stopping. It may still land — check before retrying.` });
+        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} not confirmed within 90s (tx ${hash}); stopping. It may still land - check before retrying.` });
         return { outcomes, aborted: true };
       }
       store.updateTxByHash(hash, receipt.status === "success" ? "confirmed" : "failed");

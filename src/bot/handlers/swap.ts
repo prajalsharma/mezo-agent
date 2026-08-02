@@ -74,7 +74,7 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
   // Quote-only path: show the LIVE quote but do not offer to sign.
   if (!plan.executable) {
     await ctx.reply(
-      `${b(`Live quote — ${netTag}`)}\n\n${quoteBody}\n\n${i(plan.gatedReason ?? "Execution is not available yet.")}`,
+      `${b(`Live quote - ${netTag}`)}\n\n${quoteBody}\n\n${i(plan.gatedReason ?? "Execution is not available yet.")}`,
       { parse_mode: "HTML" },
     );
     return;
@@ -118,7 +118,7 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
   const kb = new InlineKeyboard().text("✅ Confirm", "swap:confirm").text("✖️ Cancel", "swap:cancel");
 
   await ctx.reply(
-    `${b(`Confirm swap — ${netTag}`)}\n\n` +
+    `${b(`Confirm swap - ${netTag}`)}\n\n` +
       `${quoteBody}\n` +
       (needsApproval ? `Steps: approve → swap\n` : `Steps: swap\n`) +
       `\n${esc(simLine)}\n\n` +
@@ -151,7 +151,7 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
       .text("✅ Yes, execute", "swap:confirm")
       .text("✖️ Cancel", "swap:cancel");
     await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
-    await ctx.reply("⚠️ High-value action — tap “Yes, execute” to proceed, or Cancel.");
+    await ctx.reply("⚠️ High-value action - tap “Yes, execute” to proceed, or Cancel.");
     return;
   }
 
@@ -187,7 +187,7 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
     if (failed && !failed.ok && (failed.kind === "fee" || failed.kind === "referral") && actionLanded(result.outcomes)) {
       const hash = actionHashOf(result.outcomes)!;
       const note = failed.kind === "referral"
-        ? `Your swap and the agent fee settled, but the referral payout couldn't be delivered (${friendlyReason(failed.reason)}) — it's logged and owed to your referrer.`
+        ? `Your swap and the agent fee settled, but the referral payout couldn't be delivered (${friendlyReason(failed.reason)}) - it's logged and owed to your referrer.`
         : `The agent fee couldn't be applied (${friendlyReason(failed.reason)}), but your swap went through.`;
       await ctx.reply(
         renderSuccess({ title: "Swap complete", lines: successLines, hash, network: env.network, note }),

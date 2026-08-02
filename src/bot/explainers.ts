@@ -17,7 +17,7 @@ const EXPLAINERS: Explainer[] = [
     title: "💥 Liquidation, simply",
     body:
       "When you borrow MUSD, your BTC is the guarantee (collateral). The rule: your BTC must stay worth at least 110% of your debt.\n\n" +
-      "If BTC's price falls far enough that your collateral is worth less than that, ANYONE can close your position and you lose the BTC — that's liquidation.\n\n" +
+      "If BTC's price falls far enough that your collateral is worth less than that, ANYONE can close your position and you lose the BTC - that's liquidation.\n\n" +
       "Your confirmation card always shows your live ratio and the BTC price where liquidation would happen. Staying above ~150% gives you a comfortable buffer.\n\n" +
       'Check yours: "portfolio" · make it safer: "add 0.01 BTC collateral" or "repay 200 MUSD"',
   },
@@ -28,7 +28,7 @@ const EXPLAINERS: Explainer[] = [
     title: "🧮 Collateral ratio, simply",
     body:
       "Collateral ratio = value of your locked BTC ÷ your MUSD debt.\n\n" +
-      "200% means your BTC is worth twice your debt (comfortable). 110% is the minimum the protocol allows — below that you can be liquidated.\n\n" +
+      "200% means your BTC is worth twice your debt (comfortable). 110% is the minimum the protocol allows - below that you can be liquidated.\n\n" +
       'See your ratio before every borrow, and live via "portfolio".',
   },
   {
@@ -37,7 +37,7 @@ const EXPLAINERS: Explainer[] = [
     match: /impermanent\s*loss|\bIL\b/,
     title: "🌊 Impermanent loss, simply",
     body:
-      "When you provide two tokens to a pool, the pool constantly rebalances them. If one token's price moves a lot versus the other, you end up with more of the weaker one — so your LP can be worth less than if you'd just held both tokens.\n\n" +
+      "When you provide two tokens to a pool, the pool constantly rebalances them. If one token's price moves a lot versus the other, you end up with more of the weaker one - so your LP can be worth less than if you'd just held both tokens.\n\n" +
       "It's called 'impermanent' because it shrinks if prices come back together. Trading fees and rewards are what compensate you for taking this risk.\n\n" +
       "Stable-stable pools (like MUSD/mUSDC) have almost none of it; BTC/MUSD has more.",
   },
@@ -50,7 +50,7 @@ const EXPLAINERS: Explainer[] = [
       "Mezo's rewards run in weekly rounds called epochs (they flip every Thursday 00:00 UTC).\n\n" +
       "Each epoch, veNFT holders vote on which pools get rewards. Projects add extra incentives ('bribes') to attract votes. Voters earn a share of fees + bribes from the pools they voted for.\n\n" +
       "Votes persist between epochs, but re-voting each week captures the freshest incentives.\n\n" +
-      'Try: "vote optimally with veNFT 1" — it splits your vote to maximize expected earnings from live data.',
+      'Try: "vote optimally with veNFT 1" - it splits your vote to maximize expected earnings from live data.',
   },
   {
     key: "venft",
@@ -58,8 +58,8 @@ const EXPLAINERS: Explainer[] = [
     match: /venft|ve-?btc|ve-?mezo|lock decay|voting power/i,
     title: "🔒 veNFTs, simply",
     body:
-      "Lock BTC (1–28 days) or MEZO (up to 4 years) and you get a veNFT — a position NFT that carries voting power.\n\n" +
-      "Longer lock = more power. Power decays as expiry approaches. You CANNOT unlock early — the tokens are committed until the lock ends.\n\n" +
+      "Lock BTC (1–28 days) or MEZO (up to 4 years) and you get a veNFT - a position NFT that carries voting power.\n\n" +
+      "Longer lock = more power. Power decays as expiry approaches. You CANNOT unlock early - the tokens are committed until the lock ends.\n\n" +
       "With a veNFT you vote weekly on pool rewards and earn fees + bribes for it.\n\n" +
       'Try: "lock 0.01 BTC for 28 days" · then "vote optimally"',
   },
@@ -70,7 +70,7 @@ const EXPLAINERS: Explainer[] = [
     title: "📉 Slippage, simply",
     body:
       "Between your quote and the moment your swap lands, the pool price can move. Slippage tolerance is the worst deal you're willing to accept.\n\n" +
-      "This bot defaults to 0.5%: the confirmation card shows a 'Min received' — if the pool can't give you at least that, the swap cancels itself instead of filling badly. Nothing is lost on a cancelled swap.",
+      "This bot defaults to 0.5%: the confirmation card shows a 'Min received' - if the pool can't give you at least that, the swap cancels itself instead of filling badly. Nothing is lost on a cancelled swap.",
   },
   {
     key: "zap",
@@ -88,9 +88,9 @@ const EXPLAINERS: Explainer[] = [
     match: /rebase/i,
     title: "🔁 Rebases, simply",
     body:
-      "veNFT holders receive periodic rebase rewards — extra locked tokens that offset dilution from emissions. They accumulate whether you do anything or not, but they sit UNCLAIMED until you collect them.\n\n" +
+      "veNFT holders receive periodic rebase rewards - extra locked tokens that offset dilution from emissions. They accumulate whether you do anything or not, but they sit UNCLAIMED until you collect them.\n\n" +
       "Most holders never claim. Claiming here is free of agent fees.\n\n" +
-      'Try: "claim all" — it sweeps rebases, voting rewards and pool earnings in one flow.',
+      'Try: "claim all" - it sweeps rebases, voting rewards and pool earnings in one flow.',
   },
 ];
 
@@ -106,7 +106,7 @@ export function explainerByKey(key: string): string | undefined {
 }
 
 function render(e: Explainer): string {
-  return `${b(e.title)}\n\n${e.body}\n\n${i("Hand-written explainer — not generated. Ask anything else, or /help.")}`;
+  return `${b(e.title)}\n\n${e.body}\n\n${i("Hand-written explainer - not generated. Ask anything else, or /help.")}`;
 }
 
 /** Return the explainer for a "what is X / explain X" style question, if any. */

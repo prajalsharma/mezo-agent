@@ -28,7 +28,7 @@ export async function buildVote(intent: VoteIntent): Promise<ActionPlan> {
 
     if (!registry.hasContract("Voter")) {
       return gatedPlan({ action: "vote", title: "🗳️ Vote (manual)", summary,
-        reason: "Preview only — the Voter address isn't confirmed on this deployment yet. Votes persist across epochs once submitted." });
+        reason: "Preview only - the Voter address isn't confirmed on this deployment yet. Votes persist across epochs once submitted." });
     }
     // On-chain submission needs the veBTC NFT that carries the voting power.
     // We never guess a token id — the user names it ("vote with veNFT 3").
@@ -96,7 +96,7 @@ async function buildOptimalVote(intent: VoteIntent): Promise<ActionPlan> {
     return gatedPlan({
       action: "vote", title: "🗳️ Vote (optimal)",
       summary: ["The optimizer allocates your veBTC to maximize expected fees + bribes per vote this epoch."],
-      reason: "Preview only — the Voter address isn't confirmed on this deployment yet.",
+      reason: "Preview only - the Voter address isn't confirmed on this deployment yet.",
     });
   }
 
@@ -178,7 +178,7 @@ async function buildOptimalVote(intent: VoteIntent): Promise<ActionPlan> {
     action: "vote", title: "🗳️ Vote (optimal)", summary,
     warnings: [
       "Votes persist across epochs until changed.",
-      "Incentive values are a live snapshot and can move; the raw per-gauge numbers are shown above — reject if they look wrong.",
+      "Incentive values are a live snapshot and can move; the raw per-gauge numbers are shown above - reject if they look wrong.",
     ],
     steps: [step], allowedTargets: [voter], executable: true, nativeValue: 0n,
   };

@@ -157,9 +157,9 @@ export async function buildSwap(params: {
     } catch { /* fall through to generic message */ }
     throw new SwapUnavailableError(
       emptyPool
-        ? `The ${tokenIn.symbol}/${tokenOut.symbol} pool has NO liquidity on ${env.network} yet — no amount can swap there until someone seeds it. ` +
+        ? `The ${tokenIn.symbol}/${tokenOut.symbol} pool has NO liquidity on ${env.network} yet - no amount can swap there until someone seeds it. ` +
           (alternatives.length ? `Routes that work right now: ${alternatives.join(", ")}.` : "")
-        : `The pool returned a zero quote for ${tokenIn.symbol} → ${tokenOut.symbol} (amount too small for the pool's liquidity — try a larger amount).`,
+        : `The pool returned a zero quote for ${tokenIn.symbol} → ${tokenOut.symbol} (amount too small for the pool's liquidity - try a larger amount).`,
     );
   }
   const minOut = applySlippage(expectedOut, slippagePct);
@@ -203,7 +203,7 @@ export async function buildSwap(params: {
   if (!routerReady) {
     return {
       ...base, steps: [], executable: false,
-      gatedReason: "Live quote only — the DEX Router address isn't confirmed in the registry yet, so execution is gated. Set it to enable signing.",
+      gatedReason: "Live quote only - the DEX Router address isn't confirmed in the registry yet, so execution is gated. Set it to enable signing.",
     };
   }
   const router = registry.contract("Router");

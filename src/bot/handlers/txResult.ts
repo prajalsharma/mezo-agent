@@ -107,9 +107,9 @@ export function friendlyReason(reason: string): string {
   if (/transfer amount exceeds balance|exceeds balance|insufficient balance|subtraction overflow/i.test(r))
     return "You don't have enough of that token for this. Check /portfolio.";
   if (/insufficient allowance|exceeds allowance/i.test(r))
-    return "Token approval fell short — please try the action again.";
+    return "Token approval fell short - please try the action again.";
   if (/ICR < MCR|MCR is not permitted|collateral ratio|below the minimum collateral|minimum net debt/i.test(r))
-    return "This borrow would be under-collateralized. Add more BTC collateral, or mint less MUSD — your collateral must stay worth at least 110% of the debt.";
+    return "This borrow would be under-collateralized. Add more BTC collateral, or mint less MUSD - your collateral must stay worth at least 110% of the debt.";
   if (/troveManager|BorrowerOps|does not exist|already active/i.test(r))
     return "That Trove operation isn't valid for your current position (e.g. no open Trove, or it already exists). Check /portfolio.";
   if (/not confirmed within|reverted on-chain/i.test(r)) return r; // already clear
@@ -117,7 +117,7 @@ export function friendlyReason(reason: string): string {
   if (/missing or invalid parameters|invalid parameters|-32602|underpriced|fee too low/i.test(r))
     return "The network rejected the transaction (often a temporary node hiccup or a fee that's too low). Please try again in a moment.";
   if (/code = unknown|unknown reason|rpc error|execution reverted with reason:\s*\.?\s*$/i.test(r))
-    return "The transaction reverted on-chain — this can be a Mezo testnet node hiccup, or the amount being too large for the pool's liquidity. Please try again, or use a smaller amount.";
+    return "The transaction reverted on-chain - this can be a Mezo testnet node hiccup, or the amount being too large for the pool's liquidity. Please try again, or use a smaller amount.";
   return r.split("\n")[0]!.slice(0, 180);
 }
 

@@ -48,7 +48,7 @@ function borrowGated(title: string, action: string, summary: string[], warnings:
   return gatedPlan({
     action, title, summary, warnings,
     reason:
-      `Preview only — Mezo Borrow isn't wired on this deployment yet ` +
+      `Preview only - Mezo Borrow isn't wired on this deployment yet ` +
       `(${missing.join(", ")} not in the canonical reference). Calldata is built to the ` +
       `Liquity interface and will execute once these addresses are confirmed.`,
   });
@@ -109,7 +109,7 @@ export async function buildBorrow(intent: BorrowIntent): Promise<ActionPlan> {
           : `${intent.collateralBTC} BTC isn't enough to open a Trove at all (minimum debt is ${MIN_NET_DEBT_MUSD.toLocaleString()} MUSD).`;
       throw new ActionUnavailableError(
         `Under-collateralized. ${intent.collateralBTC} BTC (~$${Math.round(collateralUsd).toLocaleString()}) can't back ` +
-          `${intent.mintMUSD} MUSD debt — the 110% minimum needs ~$${Math.round(MCR * grossDebt).toLocaleString()} of collateral. ` +
+          `${intent.mintMUSD} MUSD debt - the 110% minimum needs ~$${Math.round(MCR * grossDebt).toLocaleString()} of collateral. ` +
           `To mint ${intent.mintMUSD} MUSD you'd need ≥ ${minColl.toFixed(4)} BTC. ${hint} ` +
           `Tip: aim for 150%+ so a price dip doesn't liquidate you.`,
       );
@@ -204,7 +204,7 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
   const mint = intent.mintMUSD ? Number(intent.mintMUSD) : 0;
   const repay = intent.repayMUSD ? Number(intent.repayMUSD) : 0;
   if (addColl + withdrawColl + mint + repay === 0) {
-    throw new ActionUnavailableError("Nothing to adjust — specify collateral or debt change.");
+    throw new ActionUnavailableError("Nothing to adjust - specify collateral or debt change.");
   }
   if (addColl > 0 && withdrawColl > 0) throw new ActionUnavailableError("Can't add and withdraw collateral in one action.");
   if (mint > 0 && repay > 0) throw new ActionUnavailableError("Can't mint and repay in one action.");
@@ -239,7 +239,7 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
     summary.push(`Resulting collateral ratio: ~${(newIcr * 100).toFixed(0)}% ${ok ? "✅" : "❌"} (min ${(MCR * 100).toFixed(0)}%)`);
     if (!ok) {
       throw new ActionUnavailableError(
-        `That adjustment would drop your collateral ratio to ~${(newIcr * 100).toFixed(0)}% — below the ${(MCR * 100).toFixed(0)}% minimum, which the protocol rejects. ` +
+        `That adjustment would drop your collateral ratio to ~${(newIcr * 100).toFixed(0)}% - below the ${(MCR * 100).toFixed(0)}% minimum, which the protocol rejects. ` +
           `Add more BTC, mint less, or repay some MUSD first. (Current: ${trove.collBTC.toFixed(4)} BTC / ${Math.round(trove.debtMUSD).toLocaleString()} MUSD.)`,
       );
     }
@@ -350,7 +350,7 @@ export async function buildCloseTrove(owner: Address): Promise<ActionPlan> {
   const step: ActionStep = {
     kind: "closeTrove", to: bo, value: 0n,
     data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "closeTrove", args: [] }),
-    describe: "Close Trove — repay all debt, withdraw all collateral",
+    describe: "Close Trove - repay all debt, withdraw all collateral",
   };
   return {
     action: "closeTrove", title: "🔒 Close Trove", summary,

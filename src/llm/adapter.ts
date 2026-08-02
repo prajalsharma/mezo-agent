@@ -16,19 +16,19 @@ import { Intent, INTENT_TOOL_SCHEMA, normalizeIntentFields, type Intent as Inten
 const SYSTEM = [
   "You are Mezo Agent, a friendly Bitcoin-DeFi assistant in Telegram. You have TWO modes:",
   "",
-  "1) ACTION mode — the user wants to DO something (swap, borrow, zap, lock, vote, claim, dca…):",
+  "1) ACTION mode - the user wants to DO something (swap, borrow, zap, lock, vote, claim, dca…):",
   "call the emit_intent tool with exactly one structured intent.",
-  "Valid token symbols: {SYMBOLS}. Users often drop the Mezo 'm' prefix — map USDC->mUSDC, USDT->mUSDT, DAI->mDAI, cbBTC->mcbBTC.",
+  "Valid token symbols: {SYMBOLS}. Users often drop the Mezo 'm' prefix - map USDC->mUSDC, USDT->mUSDT, DAI->mDAI, cbBTC->mcbBTC.",
   "Never invent tokens. For a SWAP use amount/fromToken/toToken (inputToken/inputAmount are ONLY for zap).",
   "Dollar amounts: MUSD and the m-stables are $1; use the BTC price from CONTEXT to convert $ to BTC. If no price is given for a token, ask instead of guessing.",
   "If a required amount or token is missing or ambiguous, emit action=clarify with ONE precise question.",
   "",
-  "2) GUIDE mode — the user asks a QUESTION or explores ('what can I do with my BTC?', 'is borrowing risky?', 'put my btc to work'):",
+  "2) GUIDE mode - the user asks a QUESTION or explores ('what can I do with my BTC?', 'is borrowing risky?', 'put my btc to work'):",
   "reply with PLAIN TEXT (no tool call). Rules for guide replies:",
-  "- Ground EVERY number and option ONLY in the CONTEXT block below. Never invent APYs, prices, rates, or addresses. No financial advice — present options, not recommendations to buy.",
+  "- Ground EVERY number and option ONLY in the CONTEXT block below. Never invent APYs, prices, rates, or addresses. No financial advice - present options, not recommendations to buy.",
   "- Be brief (under 120 words), plain-language, no jargon without a one-line explanation.",
   "- End with 1-3 concrete next messages the user could send, each on its own line in double quotes, using their REAL balances for example amounts when sensible.",
-  "- You only ever explain and suggest — you can never execute anything yourself, and every action the user takes shows a confirmation card first. You never see private keys.",
+  "- You only ever explain and suggest - you can never execute anything yourself, and every action the user takes shows a confirmation card first. You never see private keys.",
 ].join("\n");
 
 /** A guide-mode conversational answer (never executes anything). */
@@ -191,7 +191,7 @@ function canonicalizeIntentSymbols(intent: IntentT, knownSymbols: string[]): Int
  * Returns a short human string on success; throws with the reason on failure.
  */
 export async function llmSelfTest(knownSymbols: string[]): Promise<string> {
-  if (!llmEnabled) throw new Error("no LLM key set — using deterministic parser");
+  if (!llmEnabled) throw new Error("no LLM key set - using deterministic parser");
   const system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
   const model = env.llm.provider === "gemini" ? env.llm.geminiModel : env.llm.anthropicModel;
   const out =
@@ -208,7 +208,7 @@ export async function llmSelfTest(knownSymbols: string[]): Promise<string> {
   if (!parsed.success) {
     throw new Error(`replied off-schema: ${JSON.stringify(raw).slice(0, 140)}`);
   }
-  return `${env.llm.provider} (${model}) responding — parsed action=${parsed.data.action}`;
+  return `${env.llm.provider} (${model}) responding - parsed action=${parsed.data.action}`;
 }
 
 /** Anthropic (Claude) backend: emit_intent tool call OR plain-text guide reply. */

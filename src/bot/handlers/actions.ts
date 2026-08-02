@@ -119,7 +119,7 @@ export async function handleActionConfirm(ctx: Context): Promise<void> {
     setPending(telegramId, { kind: "action", plan: pending.plan, stepUpPending: false });
     const kb = new InlineKeyboard().text("✅ Yes, execute", "action:confirm").text("✖️ Cancel", "action:cancel");
     await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
-    await ctx.reply("⚠️ High-value action — tap “Yes, execute” to proceed, or Cancel.");
+    await ctx.reply("⚠️ High-value action - tap “Yes, execute” to proceed, or Cancel.");
     return;
   }
 

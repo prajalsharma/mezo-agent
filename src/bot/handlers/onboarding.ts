@@ -35,10 +35,10 @@ export async function handleStart(ctx: Context): Promise<void> {
     .text("📥 Import existing (advanced)", "wallet:import");
 
   await ctx.reply(
-    `👋 ${b("Mezo Agent")} — operate the Mezo Bitcoin-DeFi stack in plain language.\n\n` +
+    `👋 ${b("Mezo Agent")} - operate the Mezo Bitcoin-DeFi stack in plain language.\n\n` +
       `Network: ${netLabel}\n\n` +
-      (pendingRef !== undefined ? i(`🎁 Referred by a friend — you're both set up for referral rewards.`) + "\n\n" : "") +
-      `Borrow · Swap · Zap · Stake · Lock & Vote — all in chat, every action confirmed.\n\n` +
+      (pendingRef !== undefined ? i(`🎁 Referred by a friend - you're both set up for referral rewards.`) + "\n\n" : "") +
+      `Borrow · Swap · Zap · Stake · Lock & Vote - all in chat, every action confirmed.\n\n` +
       i("🔒 Keys are encrypted, never shown in chat, and every transaction needs your explicit confirmation. Set spending caps anytime with /limits."),
     { parse_mode: "HTML", reply_markup: kb },
   );
@@ -103,7 +103,7 @@ export async function handleCreate(ctx: Context): Promise<void> {
     `✅ ${b("Wallet created.")}\n\n` +
       `Your address:\n${code(user.address)}\n\n` +
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}\n\n` +
-      `⚠️ ${b("Back up your key now")} — tap below or run /export and save it somewhere safe. ` +
+      `⚠️ ${b("Back up your key now")} - tap below or run /export and save it somewhere safe. ` +
       `Your key lives only on this bot's server; backing it up is the ONLY way to recover this wallet if anything happens to the host.\n\n` +
       `🔒 It's encrypted at rest and never logged or sent to any AI model.\n\n` +
       `Then fund it with /deposit.`,
@@ -140,7 +140,7 @@ export async function handleExportPrompt(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
   if (!getUser(telegramId)) {
-    await ctx.reply("No account yet — create one with /start first.");
+    await ctx.reply("No account yet - create one with /start first.");
     return;
   }
   const kb = new InlineKeyboard()
@@ -149,11 +149,11 @@ export async function handleExportPrompt(ctx: Context): Promise<void> {
     .text("Cancel", "wallet:export-cancel");
   await ctx.reply(
     `⚠️ ${b("Export private key?")}\n\n` +
-      `Anyone who sees this key ${b("fully controls your funds")} — no confirmation, no limits, nothing this bot enforces applies to them.\n\n` +
+      `Anyone who sees this key ${b("fully controls your funds")} - no confirmation, no limits, nothing this bot enforces applies to them.\n\n` +
       `• It will appear in this chat for ${b("60 seconds")}, then auto-delete.\n` +
       `• Telegram chat history syncs to every device you're logged in on.\n` +
       `• Best done in private, then imported straight into MetaMask/Rabby.\n\n` +
-      `${i("Note: in-bot wallets are raw keys — there is no 12-word phrase to show. A seed phrase only exists for accounts you imported FROM a phrase.")}`,
+      `${i("Note: in-bot wallets are raw keys - there is no 12-word phrase to show. A seed phrase only exists for accounts you imported FROM a phrase.")}`,
     { parse_mode: "HTML", reply_markup: kb },
   );
 }

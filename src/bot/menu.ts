@@ -48,14 +48,14 @@ export async function homeCard(telegramId: number): Promise<{ text: string; menu
     const nonzero = holdings.filter((h) => Number(h.formatted) > 0);
     balLine = nonzero.length
       ? nonzero.map((h) => `• ${b(h.token.symbol)}: ${prettyAmount(h.formatted)}`).join("\n")
-      : i("No balance yet — tap Deposit to fund your wallet.");
+      : i("No balance yet - tap Deposit to fund your wallet.");
   } catch {
-    balLine = i("(couldn't read balances just now — tap Refresh)");
+    balLine = i("(couldn't read balances just now - tap Refresh)");
   }
   const text =
-    `${b(`Mezo Agent — ${netLabel}`)}\n${code(user.address)}\n\n` +
+    `${b(`Mezo Agent - ${netLabel}`)}\n${code(user.address)}\n\n` +
     `${balLine}\n\n` +
-    i(`Tap a button, or just type what you want — e.g. "${swapExample()}".`);
+    i(`Tap a button, or just type what you want - e.g. "${swapExample()}".`);
   return { text, menu: mainMenu() };
 }
 
@@ -82,9 +82,9 @@ async function portfolioCard(telegramId: number): Promise<Card> {
     const nonzero = holdings.filter((h) => Number(h.formatted) > 0);
     body = nonzero.length
       ? nonzero.map((h) => `• ${b(h.token.symbol)}: ${prettyAmount(h.formatted)}`).join("\n")
-      : i("No balance yet — tap Deposit to fund your wallet.");
+      : i("No balance yet - tap Deposit to fund your wallet.");
   } catch {
-    body = i("(couldn't read balances just now — tap Refresh)");
+    body = i("(couldn't read balances just now - tap Refresh)");
   }
   const kb = new InlineKeyboard()
     .text("🔄 Refresh", "menu:nav:portfolio").text("🌾 Claim rewards", "menu:do:claim");
@@ -120,7 +120,7 @@ function learnCard(): Card {
   });
   if (explainerList().length % 2 === 1) kb.row();
   return {
-    text: `${b("📚 Learn — DeFi in plain English")}\n\n` +
+    text: `${b("📚 Learn - DeFi in plain English")}\n\n` +
       `Tap any topic for a short, jargon-free explanation:\n` +
       explainerList().map((e) => `• ${e.label.replace(/^\S+\s/, "")}`).join("\n") + "\n\n" +
       i("You can also just ask, e.g. \"what is liquidation?\". These are hand-written, never AI-generated."),
@@ -135,10 +135,10 @@ function settingsCard(): Card {
     .text("🎁 Referral", "menu:act:referral").text("🔐 Upgrade", "menu:tip:upgrade");
   return {
     text: `${b("⚙️ Settings")}\n\n` +
-      `• ${b("Limits")} — spending caps & watch-only mode\n` +
-      `• ${b("Fees")} — what the agent charges (and gas)\n` +
-      `• ${b("Referral")} — your link & rewards\n` +
-      `• ${b("Upgrade")} — EIP-7702 scoped smart account`,
+      `• ${b("Limits")} - spending caps & watch-only mode\n` +
+      `• ${b("Fees")} - what the agent charges (and gas)\n` +
+      `• ${b("Referral")} - your link & rewards\n` +
+      `• ${b("Upgrade")} - EIP-7702 scoped smart account`,
     keyboard: chrome(kb),
   };
 }
@@ -179,7 +179,7 @@ async function emptyPoolAddresses(): Promise<Set<string>> {
 export async function routeListLive(): Promise<string> {
   const empty = await emptyPoolAddresses();
   return registry.pools()
-    .map((p) => `${p.pair[0]} ⇄ ${p.pair[1]}${empty.has(p.address.toLowerCase()) ? " — ⚠️ no liquidity yet" : p.stable ? " (stable)" : ""}`)
+    .map((p) => `${p.pair[0]} ⇄ ${p.pair[1]}${empty.has(p.address.toLowerCase()) ? " - ⚠️ no liquidity yet" : p.stable ? " (stable)" : ""}`)
     .join("\n• ");
 }
 
@@ -227,13 +227,13 @@ async function swapFromCard(telegramId: number): Promise<Card> {
     if (idx % 2 === 1) kb.row();
   });
   if (sellable.length % 2 === 1) kb.row();
-  const header = `${b("💱 Swap")} — routes on ${netLabel}:\n• ${routes}\n\n`;
+  const header = `${b("💱 Swap")} - routes on ${netLabel}:\n• ${routes}\n\n`;
   const text = sellable.length
     ? header +
       `${b("Pick the token to sell:")}\n\n` +
-      (unpooled.length ? i(`(${unpooled.map((h) => h.token.symbol).join(", ")} — no funded swap pool on this network yet.)`) + "\n" : "") +
+      (unpooled.length ? i(`(${unpooled.map((h) => h.token.symbol).join(", ")} - no funded swap pool on this network yet.)`) + "\n" : "") +
       i(`Or just type it, e.g. "${swapExample()}".`)
-    : header + i("No swappable balance yet — tap Deposit to fund your wallet, then come back.");
+    : header + i("No swappable balance yet - tap Deposit to fund your wallet, then come back.");
   return { text, keyboard: chrome(kb) };
 }
 
@@ -265,7 +265,7 @@ export async function swapToCard(from: string): Promise<Card> {
 /** Step 3 — pick a preset amount (% of balance) or type a custom one. */
 export async function swapAmountCard(from: string, to: string, telegramId: number): Promise<Card> {
   const user = getUser(telegramId);
-  let bal = "—";
+  let bal = "-";
   // A realistic custom-amount example derived from the ACTUAL balance (25%), so
   // it never suggests an amount the user doesn't have (e.g. "swap 12.5 BTC").
   let example = from === "BTC" ? "0.01" : "100";
@@ -310,7 +310,7 @@ function borrowCard(): Card {
     .row()
     .text("🔧 Adjust", "menu:tip:borrow_adjust").text("🔒 Close ⚠️", "menu:do:closeTrove");
   return {
-    text: `${b("🏦 Borrow — MUSD against BTC")}\n\n` +
+    text: `${b("🏦 Borrow - MUSD against BTC")}\n\n` +
       `Deposit BTC as collateral and mint MUSD.\n` +
       i("Min debt 1,800 MUSD; keep your collateral ratio above 110% or risk liquidation. The live ratio is shown before you confirm."),
     keyboard: chrome(kb),
@@ -323,13 +323,13 @@ async function earnCard(): Promise<Card> {
   if (vaults.length) kb.text("🏛️ Vault", "menu:tip:earn_vault");
   kb.text("🌾 Claim", "menu:do:claim");
   const vaultLine = vaults.length
-    ? `${b("Vaults:")}\n• ${vaults.map((v) => `${v.name} — deposit ${v.assetSymbol}`).join("\n• ")}`
-    : i(`No vaults are published on ${netLabel} yet — LP staking and zaps are live.`);
+    ? `${b("Vaults:")}\n• ${vaults.map((v) => `${v.name} - deposit ${v.assetSymbol}`).join("\n• ")}`
+    : i(`No vaults are published on ${netLabel} yet - LP staking and zaps are live.`);
   return {
-    text: `${b("🌱 Earn — yield on your assets")}\n\n` +
+    text: `${b("🌱 Earn - yield on your assets")}\n\n` +
       `${b("LP pools you can enter:")}\n• ${await routeListLive()}\n\n` +
       `${vaultLine}\n\n` +
-      i("Zap turns ONE asset into a staked LP position in a single flow — the easiest way in."),
+      i("Zap turns ONE asset into a staked LP position in a single flow - the easiest way in."),
     keyboard: chrome(kb),
   };
 }
@@ -342,7 +342,7 @@ function lockVoteCard(): Card {
     .row()
     .text("🧰 veNFT tools", "menu:tip:venft_tools");
   return {
-    text: `${b("🔒 Lock & Vote — veBTC / veMEZO")}\n\n` +
+    text: `${b("🔒 Lock & Vote - veBTC / veMEZO")}\n\n` +
       `Lock BTC or MEZO for voting power, then direct emissions to pools.\n` +
       i("\"vote optimally\" runs the transparent water-filling allocator over live incentives."),
     keyboard: chrome(kb),
@@ -358,9 +358,9 @@ function automateCard(): Card {
     .text("🔔 Alerts", "menu:nav:alerts");
   return {
     text: `${b("⚡ Automate")}\n\n` +
-      `• ${b("DCA")} — buy a fixed amount on a repeating schedule\n` +
-      `• ${b("Auto-compound")} — claim & reinvest rewards each epoch\n` +
-      `• ${b("Alerts")} — opt-in warnings: Trove health, unclaimed rewards, epoch votes\n\n` +
+      `• ${b("DCA")} - buy a fixed amount on a repeating schedule\n` +
+      `• ${b("Auto-compound")} - claim & reinvest rewards each epoch\n` +
+      `• ${b("Alerts")} - opt-in warnings: Trove health, unclaimed rewards, epoch votes\n\n` +
       i("Each automated run is scoped by your spending limits and can be paused any time (/pause)."),
     keyboard: chrome(kb),
   };
@@ -379,11 +379,11 @@ function alertsCard(telegramId: number): Card {
     .row()
     .text(`${dot(p.epoch)} Epoch vote reminder`, "menu:alert:epoch");
   return {
-    text: `${b("🔔 Alerts — the bot messages you first ONLY for these")}\n\n` +
-      `${dot(p.trove)} ${b("Trove health")} — warns when your collateral ratio drops under 150%, with your live liquidation price.\n` +
-      `${dot(p.rewards)} ${b("Unclaimed rewards")} — a nudge (max once a day) when you have rewards sitting unclaimed.\n` +
-      `${dot(p.epoch)} ${b("Epoch vote reminder")} — in the final 24h of each weekly epoch, if you hold veNFTs.\n\n` +
-      i("Tap to toggle. Checks run every ~30 minutes. Outside these, the bot never initiates a message — treat any unsolicited DM claiming to be us as a scam."),
+    text: `${b("🔔 Alerts - the bot messages you first ONLY for these")}\n\n` +
+      `${dot(p.trove)} ${b("Trove health")} - warns when your collateral ratio drops under 150%, with your live liquidation price.\n` +
+      `${dot(p.rewards)} ${b("Unclaimed rewards")} - a nudge (max once a day) when you have rewards sitting unclaimed.\n` +
+      `${dot(p.epoch)} ${b("Epoch vote reminder")} - in the final 24h of each weekly epoch, if you hold veNFTs.\n\n` +
+      i("Tap to toggle. Checks run every ~30 minutes. Outside these, the bot never initiates a message - treat any unsolicited DM claiming to be us as a scam."),
     keyboard: chrome(kb, "automate"),
   };
 }
@@ -421,25 +421,25 @@ function tipContent(key: string): { parent: string; text: string } | undefined {
   const pool0 = pools[0] ?? "BTC/MUSD";
   switch (key) {
     case "borrow_open": return { parent: "borrow", text: `${b("➕ Open Trove")}\nType, e.g.:\n${code("borrow 2000 MUSD against 0.1 BTC")}\n\n${i("Minimum debt 1,800 MUSD. You'll see the live collateral ratio and confirm before signing.")}` };
-    case "borrow_repay": return { parent: "borrow", text: `${b("💵 Repay")}\nType:\n${code("repay 500 MUSD")}\n\n${i("Repaying below the 1,800 MUSD minimum debt isn't allowed — use \"close trove\" to repay everything.")}` };
+    case "borrow_repay": return { parent: "borrow", text: `${b("💵 Repay")}\nType:\n${code("repay 500 MUSD")}\n\n${i("Repaying below the 1,800 MUSD minimum debt isn't allowed - use \"close trove\" to repay everything.")}` };
     case "borrow_adjust": return { parent: "borrow", text: `${b("🔧 Adjust Trove")}\nType any of:\n${code("add 0.05 BTC collateral")}\n${code("withdraw 0.02 BTC")}\n${code("mint 500 MUSD")}` };
-    case "earn_stake": return { parent: "earn", text: `${b("🌊 Stake LP")}\nPools: ${pools.join(", ")}\n\nType:\n${code(`stake LP ${pool0}`)}\n\n${i("You need LP tokens first — get them with a zap or by adding liquidity.")}` };
+    case "earn_stake": return { parent: "earn", text: `${b("🌊 Stake LP")}\nPools: ${pools.join(", ")}\n\nType:\n${code(`stake LP ${pool0}`)}\n\n${i("You need LP tokens first - get them with a zap or by adding liquidity.")}` };
     case "earn_vault": {
       const vaults = registry.vaults();
-      if (!vaults.length) return { parent: "earn", text: `${b("🏛️ Vaults")}\n\n${i(`No vaults are published on ${netLabel} yet. LP staking and zaps are live — try those instead.`)}` };
-      return { parent: "earn", text: `${b("🏛️ Vault deposit")}\n${vaults.map((v) => `• ${v.name} — deposit ${v.assetSymbol}`).join("\n")}\n\nType:\n${code(`deposit ${exAmt(vaults[0]!.assetSymbol)} ${vaults[0]!.assetSymbol} into vault`)}` };
+      if (!vaults.length) return { parent: "earn", text: `${b("🏛️ Vaults")}\n\n${i(`No vaults are published on ${netLabel} yet. LP staking and zaps are live - try those instead.`)}` };
+      return { parent: "earn", text: `${b("🏛️ Vault deposit")}\n${vaults.map((v) => `• ${v.name} - deposit ${v.assetSymbol}`).join("\n")}\n\nType:\n${code(`deposit ${exAmt(vaults[0]!.assetSymbol)} ${vaults[0]!.assetSymbol} into vault`)}` };
     }
     case "earn_zap": return { parent: "earn", text: `${b("⚡ Zap into a pool")}\nPools: ${pools.join(", ")}\n\nType:\n${code(`zap 0.01 BTC into ${pool0}`)}\n\n${i("Splits one asset into a staked LP position in a single flow.")}` };
     case "lock": return { parent: "lockvote", text: `${b("🔒 Lock")}\nType:\n${code("lock 0.2 BTC for 28 days")}\n${code("lock 1000 MEZO for 2 years")}\n\n${i("veBTC locks run up to 28 days; veMEZO up to 4 years. Longer lock = more voting power.")}` };
     case "venft_tools": return { parent: "lockvote", text: `${b("🧰 veNFT tools")}\nManage the lock NFTs you already own:\n\n` +
       `${code("merge veNFT 1 into veNFT 2")}\n${i("combine two locks into one position")}\n\n` +
       `${code("transfer veNFT 1 to 0x…")}\n${i("send a lock to another address")}\n\n` +
-      `${code("pair veNFT 1 with veMEZO 2: 100% " + (registry.pools()[0]?.pair.join("/") ?? "BTC/MUSD"))}\n${i("Matchbox boost — point veMEZO power at a pool")}` };
+      `${code("pair veNFT 1 with veMEZO 2: 100% " + (registry.pools()[0]?.pair.join("/") ?? "BTC/MUSD"))}\n${i("Matchbox boost - point veMEZO power at a pool")}` };
     case "extendlock": return { parent: "lockvote", text: `${b("⏫ Extend a lock")}\nType:\n${code("extend lock 3 by 30 days")}` };
     case "vote": return { parent: "lockvote", text: `${b("🗳️ Vote")}\nType:\n${code("vote optimally with veNFT 3")}\n${code(`vote with veNFT 3: 60% ${pool0}${pools[1] ? `, 40% ${pools[1]}` : ""}`)}\n\n${i("\"optimally\" splits your votes across gauges to maximize expected rewards, using live incentive data.")}` };
     case "dca": return { parent: "automate", text: `${b("➕ New DCA schedule")}\nType:\n${code("dca 50 MUSD to BTC every 24h")}\n${code("dca 100 MUSD to mUSDC every 7 days for 4 times")}` };
     case "switch": return { parent: "accounts", text: `${b("🔀 Switch account")}\nType:\n${code("switch to account 2")}\n\n${i("Indices are shown in the account list.")}` };
-    case "export": return { parent: "accounts", text: `${b("🔑 Export private key")}\n${i("This reveals your key — anyone who sees it controls your funds. Only in a private chat.")}\n\nSend ${code("/export")} to start the guarded reveal.` };
+    case "export": return { parent: "accounts", text: `${b("🔑 Export private key")}\n${i("This reveals your key - anyone who sees it controls your funds. Only in a private chat.")}\n\nSend ${code("/export")} to start the guarded reveal.` };
     case "upgrade": return { parent: "settings", text: `${b("🔐 Smart-account upgrade (EIP-7702)")}\n${i("A scoped, revocable session key signs routine ops within on-chain caps, so your root key stays cold.")}\n\nSend ${code("/upgrade")} to enable it.` };
     default: return undefined;
   }
@@ -494,7 +494,7 @@ async function borrowOpenTip(telegramId?: number): Promise<Card> {
     if (user && btcHeld > 0) {
       lines.push(
         affordable
-          ? `You hold ${b(`${btcHeld} BTC`)} — enough. Suggested:`
+          ? `You hold ${b(`${btcHeld} BTC`)} - enough. Suggested:`
           : `You hold ${b(`${btcHeld} BTC`)}, which is below that. Add more via Deposit, or borrow once funded:`,
         code(cmd),
         "",
@@ -516,7 +516,7 @@ async function borrowOpenTip(telegramId?: number): Promise<Card> {
  * what is actually charged, and a worked example makes the rates concrete.
  */
 export function feesText(): string {
-  const lines = [b("💸 Fees — complete breakdown"), ""];
+  const lines = [b("💸 Fees - complete breakdown"), ""];
   if (feesEnabled) {
     const swapPct = env.fees.swapBps / 100;
     const refPct = env.fees.referredBps / 100;
@@ -525,12 +525,12 @@ export function feesText(): string {
       b("What you pay:"),
       `• Swaps & zaps: ${b(`${swapPct}%`)} of the amount you put in, taken in that same token.`,
       ...(hasDiscount
-        ? [`• …but if you joined via a referral link: ${b(`${refPct}%`)} on swaps & zaps — ${b("for life")}.`]
+        ? [`• …but if you joined via a referral link: ${b(`${refPct}%`)} on swaps & zaps - ${b("for life")}.`]
         : []),
       ...(env.fees.txnBps > 0
         ? [`• Borrow / vault deposit / lock: ${b(`${env.fees.txnBps / 100}%`)} of the amount, in that token.`]
         : []),
-      `• Claiming rewards, voting, deposits, portfolio, DCA setup: ${b("free")} — no agent fee, ever.`,
+      `• Claiming rewards, voting, deposits, portfolio, DCA setup: ${b("free")} - no agent fee, ever.`,
       "",
       b("How it's collected:"),
       ...(registry.hasContract("FeeRouter")
@@ -540,13 +540,13 @@ export function feesText(): string {
       `• The exact fee amount is shown on ${b("every confirmation card")} before you approve.`,
       "",
       b("Referral split (swaps & zaps; from the fee, not from you):"),
-      `• ${b(`${env.fees.referralSharePct}%`)} of your swap/zap fee goes to whoever referred you — paid instantly, on-chain, in the same transaction. It costs you nothing extra.`,
+      `• ${b(`${env.fees.referralSharePct}%`)} of your swap/zap fee goes to whoever referred you - paid instantly, on-chain, in the same transaction. It costs you nothing extra.`,
       `• The remaining ${100 - env.fees.referralSharePct}% goes to the operator: ${code(env.fees.recipient)}`,
       ...(env.fees.txnBps > 0 ? [`• Borrow/vault/lock fees carry no referral split.`] : []),
       "",
-      b("Worked example — swap 1,000 MUSD:"),
+      b("Worked example - swap 1,000 MUSD:"),
       `• Fee: ${b(`${((1000 * env.fees.swapBps) / 10_000).toFixed(2)} MUSD`)} (${swapPct}%)` +
-        (hasDiscount ? ` — or ${b(`${((1000 * env.fees.referredBps) / 10_000).toFixed(2)} MUSD`)} (${refPct}%) if you were referred` : ""),
+        (hasDiscount ? ` - or ${b(`${((1000 * env.fees.referredBps) / 10_000).toFixed(2)} MUSD`)} (${refPct}%) if you were referred` : ""),
       `• Of that fee, your referrer would receive ${((1000 * env.fees.referredBps * env.fees.referralSharePct) / 1_000_000).toFixed(3)} MUSD instantly.`,
       `• The other ${(1000 - (1000 * env.fees.swapBps) / 10_000).toFixed(2)} MUSD is swapped for you in full.`,
     );
@@ -554,7 +554,7 @@ export function feesText(): string {
     lines.push("• No agent fee is currently charged on this deployment. Trades, borrows, and locks are free of agent fees.");
   }
   if (env.fees.automationNote) lines.push("", `• Automation (DCA / auto-compound): ${env.fees.automationNote}`);
-  lines.push("", i("Network gas (BTC) is separate — it's paid to the chain, not the agent, on every transaction."));
+  lines.push("", i("Network gas (BTC) is separate - it's paid to the chain, not the agent, on every transaction."));
   return lines.join("\n");
 }
 
@@ -568,7 +568,7 @@ export function helpText(): string {
     `${b("On this network")} (${netLabel}): ${registry.knownTokenSymbols().length} tokens ` +
     `(${registry.knownTokenSymbols().join(", ")}), ${pools.length} swap route${pools.length === 1 ? "" : "s"} ` +
     `(${pools.join(", ")})${vaults.length ? `, ${vaults.length} vault${vaults.length === 1 ? "" : "s"}` : ""}.\n\n` +
-    `Tap a menu button, or just type what you want — I turn it into a simulated, confirmable transaction:\n` +
+    `Tap a menu button, or just type what you want - I turn it into a simulated, confirmable transaction:\n` +
     `• ${swapExample()}\n• borrow 2000 MUSD against 0.1 BTC\n` +
     `• zap 0.01 BTC into ${pool0} · stake LP ${pool0}\n` +
     `• lock 0.2 BTC for 28 days · vote optimally with veNFT 3 · claim all\n` +
@@ -584,7 +584,7 @@ export function helpText(): string {
  */
 export async function installBotProfile(bot: Bot): Promise<void> {
   await bot.api.setMyCommands([
-    { command: "start", description: "🏠 Home — wallet, balances, menu" },
+    { command: "start", description: "🏠 Home - wallet, balances, menu" },
     { command: "portfolio", description: "💼 Balances & positions" },
     { command: "swap", description: "💱 Swap tokens" },
     { command: "borrow", description: "🏦 Borrow MUSD against BTC" },
@@ -603,7 +603,7 @@ export async function installBotProfile(bot: Bot): Promise<void> {
   ]).catch(() => {});
 
   await bot.api.setMyShortDescription(
-    "Operate the full Mezo Bitcoin-DeFi stack in plain language — borrow, swap, earn, lock & vote. Non-custodial, every action confirmed.",
+    "Operate the full Mezo Bitcoin-DeFi stack in plain language - borrow, swap, earn, lock & vote. Non-custodial, every action confirmed.",
   ).catch(() => {});
 
   await bot.api.setMyDescription(

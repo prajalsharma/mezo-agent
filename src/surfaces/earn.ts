@@ -45,14 +45,14 @@ async function gaugeFor(poolAddr: Address): Promise<Address | undefined> {
 
   const code = await publicClient().getCode({ address: g });
   if (!code || code === "0x") {
-    throw new ActionUnavailableError("The resolved gauge address has no code — refusing to use it.");
+    throw new ActionUnavailableError("The resolved gauge address has no code - refusing to use it.");
   }
   const staking = (await publicClient().readContract({
     address: g, abi: gaugeAbi, functionName: "stakingToken",
   }).catch(() => ZERO_ADDR)) as Address;
   if (staking.toLowerCase() !== poolAddr.toLowerCase()) {
     throw new ActionUnavailableError(
-      `Gauge identity check failed (stakingToken != pool) — refusing to approve or stake against it.`,
+      `Gauge identity check failed (stakingToken != pool) - refusing to approve or stake against it.`,
     );
   }
   return g;
@@ -67,7 +67,7 @@ export async function buildStakeLp(intent: StakeLpIntent, owner: Address): Promi
   ];
   if (!registry.hasContract("Voter")) {
     return gatedPlan({ action: "stakeLp", title: "🌱 Stake LP", summary,
-      reason: "Preview only — the Voter address isn't confirmed on this deployment yet." });
+      reason: "Preview only - the Voter address isn't confirmed on this deployment yet." });
   }
 
   const gauge = await gaugeFor(p.address);
@@ -115,7 +115,7 @@ export async function buildUnstakeLp(intent: UnstakeLpIntent, owner: Address): P
   const summary = [`Unstake ${intent.amount ? intent.amount + " " : "all "}LP from the ${pair} gauge.`];
   if (!registry.hasContract("Voter")) {
     return gatedPlan({ action: "unstakeLp", title: "🍂 Unstake LP", summary,
-      reason: "Preview only — the Voter address isn't confirmed on this deployment yet." });
+      reason: "Preview only - the Voter address isn't confirmed on this deployment yet." });
   }
 
   const gauge = await gaugeFor(p.address);
@@ -201,7 +201,7 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
   const summary = [`Claim ${scopeLabel} across your positions.`];
   if (!registry.hasContract("Voter")) {
     return gatedPlan({ action: "claim", title: "🎁 Claim rewards", summary,
-      reason: "Preview only — the Voter address isn't confirmed on this deployment yet." });
+      reason: "Preview only - the Voter address isn't confirmed on this deployment yet." });
   }
 
   // The bounty's "claim everything" flow: one confirmed plan aggregating
@@ -296,7 +296,7 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
 
   if (steps.length === 0) {
     throw new ActionUnavailableError(
-      `Nothing claimable right now for ${scopeLabel} — all live balances are zero.`,
+      `Nothing claimable right now for ${scopeLabel} - all live balances are zero.`,
     );
   }
 

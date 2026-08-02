@@ -79,7 +79,7 @@ export async function handleLimits(ctx: Context): Promise<void> {
       pendingRaise.set(telegramId, { field, wei });
       await ctx.reply(
         `⚠️ Raise your ${field} limit from ${fmtBtc(current)} to ${fmtBtc(wei)}?\n\n` +
-          `A higher limit lets a single ${field === "daily" ? "day" : "transaction"} move more BTC — this is exactly what a compromised session would try. Confirm only if you meant to.`,
+          `A higher limit lets a single ${field === "daily" ? "day" : "transaction"} move more BTC - this is exactly what a compromised session would try. Confirm only if you meant to.`,
         { reply_markup: new InlineKeyboard().text("Confirm raise", "limits:confirm").row().text("Cancel", "limits:cancel"), parse_mode: "HTML" },
       );
       return;

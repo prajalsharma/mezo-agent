@@ -12,7 +12,7 @@ export async function positionsBlock(owner: Address): Promise<string> {
   try {
     p = await readPositions(owner);
   } catch {
-    return i("(couldn't read positions just now — tap Refresh)");
+    return i("(couldn't read positions just now - tap Refresh)");
   }
   const out: string[] = [];
 
@@ -20,7 +20,7 @@ export async function positionsBlock(owner: Address): Promise<string> {
     const health =
       p.trove.icrPct === undefined
         ? ""
-        : ` — ratio ${b(`${p.trove.icrPct.toFixed(0)}%`)} ${p.trove.icrPct >= 150 ? "✅" : p.trove.icrPct >= 110 ? "⚠️" : "🚨"}`;
+        : ` - ratio ${b(`${p.trove.icrPct.toFixed(0)}%`)} ${p.trove.icrPct >= 150 ? "✅" : p.trove.icrPct >= 110 ? "⚠️" : "🚨"}`;
     out.push(`${b("🏦 Trove")}${health}`);
     out.push(`• Collateral: ${p.trove.collBTC.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")} BTC`);
     out.push(`• Debt: ${Math.round(p.trove.debtMUSD).toLocaleString()} MUSD`);
@@ -50,16 +50,16 @@ export async function positionsBlock(owner: Address): Promise<string> {
       if (Number(v.rebase) > 0) bits.push(`rebase ${v.rebase}`);
       out.push(`• ${b(`${v.kind} #${v.id}`)}: ${bits.join(" · ")}`);
     }
-    if (p.veTruncated) out.push(i("(showing the first few — you hold more)"));
+    if (p.veTruncated) out.push(i("(showing the first few - you hold more)"));
     out.push("");
   }
 
   const claimable =
     p.lps.some((l) => Number(l.earned) > 0) || p.veNfts.some((v) => Number(v.rebase) > 0);
-  if (claimable) out.push(i('Rewards waiting — send "claim all" to sweep them.'));
+  if (claimable) out.push(i('Rewards waiting - send "claim all" to sweep them.'));
 
   if (!p.trove && !p.lps.length && !p.veNfts.length) {
-    out.push(i("No open positions yet — borrow, zap into a pool, or lock to get started."));
+    out.push(i("No open positions yet - borrow, zap into a pool, or lock to get started."));
   }
   if (p.unavailable.length) out.push(i(`(couldn't read: ${p.unavailable.join(", ")})`));
   return out.join("\n").trim();

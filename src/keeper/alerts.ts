@@ -103,7 +103,7 @@ async function checkRewards(telegramId: number, owner: `0x${string}`, notify: No
   await notify(
     telegramId,
     `🌾 You have unclaimed rewards waiting.\n\n` +
-      `Most holders never claim — you opted in to be reminded. Claiming is free of agent fees.\n\n` +
+      `Most holders never claim - you opted in to be reminded. Claiming is free of agent fees.\n\n` +
       `Send: "claim all"`,
   );
   store.patchAlertState(telegramId, { rewardsAt: now });
@@ -119,7 +119,7 @@ async function checkEpoch(telegramId: number, owner: `0x${string}`, notify: Noti
   const hours = Math.max(1, Math.round(remaining / 3_600_000));
   await notify(
     telegramId,
-    `🗳️ Epoch closes in ~${hours}h — your veNFT vote isn't locked in for nothing.\n\n` +
+    `🗳️ Epoch closes in ~${hours}h - your veNFT vote isn't locked in for nothing.\n\n` +
       `Votes persist across epochs, but re-voting optimally captures this epoch's live incentives.\n\n` +
       `Send: "vote optimally with veNFT ${nfts[0]}"`,
   );

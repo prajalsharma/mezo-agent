@@ -40,7 +40,7 @@ export async function buildZap(
     return gatedPlan({
       action: "zap", title: "⚡ Zap into pool",
       summary: [`Zapping ${intent.inputAmount} ${inSym} into ${p.pair.join("/")} needs a multi-hop route (input isn't a pool token).`],
-      reason: "Multi-hop zap routing (input token outside the pool pair) isn't implemented yet — zap with one of the pool's own tokens, or swap first.",
+      reason: "Multi-hop zap routing (input token outside the pool pair) isn't implemented yet - zap with one of the pool's own tokens, or swap first.",
     });
   }
 
@@ -91,14 +91,14 @@ export async function buildZap(
   const summary = [
     `Zap ${intent.inputAmount} ${inSym} into ${p.pair.join("/")} (${p.stable ? "stable" : "volatile"}):`,
     ...(zapFee > 0n
-      ? [`• Agent fee: ${formatUnits(zapFee, input.decimals)} ${inSym} (${effBps / 100}%)${atomicFee ? " — collected atomically in the swap leg" : ""}`]
+      ? [`• Agent fee: ${formatUnits(zapFee, input.decimals)} ${inSym} (${effBps / 100}%)${atomicFee ? " - collected atomically in the swap leg" : ""}`]
       : []),
     `• Keep ~${formatUnits(half, input.decimals)} ${inSym}`,
     `• Swap ~${formatUnits(half, input.decimals)} ${inSym} → ${otherOut > 0n ? "~" + Number(formatUnits(otherOut, other.decimals)).toFixed(4) : ""} ${otherSym}`,
     `• Add both as liquidity.`,
   ];
   if (intent.stake) {
-    summary.push(`Then: say "stake LP ${p.pair.join("/")}" — the exact LP amount is only known after the deposit lands, so staking is its own confirmed action.`);
+    summary.push(`Then: say "stake LP ${p.pair.join("/")}" - the exact LP amount is only known after the deposit lands, so staking is its own confirmed action.`);
   }
 
   const routerReady = registry.hasContract("Router") && registry.hasContract("PoolFactory");
@@ -106,7 +106,7 @@ export async function buildZap(
     return gatedPlan({
       action: "zap", title: "⚡ Zap into pool", summary,
       reason: !routerReady
-        ? "Preview only — the Router address isn't confirmed on this deployment yet."
+        ? "Preview only - the Router address isn't confirmed on this deployment yet."
         : "The pool returned a zero quote (no liquidity for this size), so there is nothing safe to execute.",
     });
   }
@@ -235,7 +235,7 @@ export async function buildZap(
 
   return {
     action: "zap", title: "⚡ Zap into pool", summary,
-    warnings: [worstCaseLine, p.stable ? "Stable pool: impermanent loss is minimal while both sides hold their peg." : "If the two tokens' prices diverge, your LP can be worth less than just holding them (impermanent loss) — fees and rewards are the compensation.", "Multi-tx zap is not atomic; a failed leg halts the remaining steps and may leave a residual allowance."],
+    warnings: [worstCaseLine, p.stable ? "Stable pool: impermanent loss is minimal while both sides hold their peg." : "If the two tokens' prices diverge, your LP can be worth less than just holding them (impermanent loss) - fees and rewards are the compensation.", "Multi-tx zap is not atomic; a failed leg halts the remaining steps and may leave a residual allowance."],
     steps, allowedTargets: [router, inAddr, otherAddr, ...(feeRouter ? [feeRouter] : []), ...feeTargets],
     // Step-up threshold is BTC-denominated: a BTC-input zap moves the full gross input.
     executable: true, nativeValue: input.native ? grossInput : 0n,
