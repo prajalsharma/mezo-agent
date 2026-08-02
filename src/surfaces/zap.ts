@@ -171,7 +171,12 @@ export async function buildZap(
       kind: "swap", to: swapLegTarget, value: 0n,
       data: feeRouter
         ? encodeFunctionData({
-            abi: feeRouterAbi, functionName: "swapWithFee",
+            // A zap leg pays 2x the plain-swap rate (the fee for BOTH halves is
+            // charged on the half that gets swapped). Routing it through the
+            // dedicated entrypoint means the contract enforces that doubled
+            // floor itself - swapWithFee cannot tell the two apart, so a raw
+            // caller could have paid half the intended zap fee (audit).
+            abi: feeRouterAbi, functionName: "zapLegWithFee",
             // Referral split at source on the zap fee too (parity with swaps).
             args: [half, minOther, [route], deadline,
               (referral?.recipient ?? ZERO_ADDRESS) as Address,

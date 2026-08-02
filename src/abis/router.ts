@@ -164,6 +164,32 @@ export const feeRouterAbi = [
     ],
     outputs: [{ name: "amountOut", type: "uint256" }],
   },
+  // Identical signature to swapWithFee, but the contract enforces the DOUBLED
+  // floor a zap leg requires (its fee covers the un-swapped half too).
+  {
+    type: "function",
+    name: "zapLegWithFee",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amountIn", type: "uint256" },
+      { name: "amountOutMin", type: "uint256" },
+      {
+        name: "routes",
+        type: "tuple[]",
+        components: [
+          { name: "from", type: "address" },
+          { name: "to", type: "address" },
+          { name: "stable", type: "bool" },
+          { name: "factory", type: "address" },
+        ],
+      },
+      { name: "deadline", type: "uint256" },
+      { name: "referrer", type: "address" },
+      { name: "referralShareBps", type: "uint16" },
+      { name: "feeBpsOverride", type: "uint16" },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
   { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   // The trader -> referrer binding. The bot MUST consult this before quoting a

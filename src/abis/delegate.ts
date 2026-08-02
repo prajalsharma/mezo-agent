@@ -15,6 +15,7 @@ const TARGET_POLICY = {
     { name: "selectors", type: "bytes4[]" },
     { name: "tokenPerTxCap", type: "uint128" },
     { name: "tokenDailyCap", type: "uint128" },
+    { name: "allowUndecodedSelectors", type: "bool" },
   ],
 } as const;
 
@@ -53,6 +54,7 @@ export const sessionKeyDelegateAbi = [
           { name: "selectors", type: "bytes4[]" },
           { name: "tokenPerTxCap", type: "uint128" },
           { name: "tokenDailyCap", type: "uint128" },
+          { name: "allowUndecodedSelectors", type: "bool" },
         ],
       },
     ],

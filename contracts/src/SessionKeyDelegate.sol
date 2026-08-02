@@ -61,7 +61,20 @@ pragma solidity 0.8.24;
  *   3. Router swap calldata (amountOutMin, Route.factory) is unconstrained, so a
  *      key can route its whole allowance through a pool it controls.
  *   4. setTargetPolicy clears the target's spend ring, so TIGHTENING a policy
- *      under attack refills the attacker's budget.
+ *      under attack refills the attacker's budget. registerSession does the same
+ *      to BOTH the token rings and the native ring, so re-registering a key also
+ *      refills it - the balance-delta rewrite must fix all three call sites.
+ *   5. revokeSession/removeTarget have no caller in the bot, so a leaked key
+ *      stays live until it expires (SESSION_TTL_DAYS). enableSmartAccount also
+ *      mints a fresh key without revoking the previous one.
+ *
+ * CLOSED since that audit (kept here so the list stays honest about what moved):
+ *   - Undecodable selectors used to hit `else { return; }`, a free pass, because
+ *     the target allowlist gates who is CALLED and never who gets PAID. The
+ *     default is now DENY, with an explicit per-target opt-in that is ignored on
+ *     any target carrying token caps.
+ *   - swapWithFee is now decoded: its feeBpsOverride must be 0, so a stolen key
+ *     cannot burn up to MAX_OVERRIDE_BPS of the account's principal per swap.
  *
  * The correct fix is balance-delta accounting — snapshot the account's balance
  * of each capped token around `_call` and charge the realized decrease — which
@@ -88,6 +101,13 @@ contract SessionKeyDelegate {
         uint128 tokenPerTxCap;
         /// @dev Max decoded ERC-20 amount per trailing 24h.
         uint128 tokenDailyCap;
+        /// @dev Opt-in escape hatch for targets that expose selectors the policy
+        ///      engine cannot decode (e.g. a plain payable call whose value is
+        ///      already metered by the native ring). Default FALSE: an undecoded
+        ///      selector is denied, because the target allowlist gates who is
+        ///      CALLED and never who gets PAID. Setting this true on a target
+        ///      that can move ERC-20s reopens that hole - do not.
+        bool allowUndecodedSelectors;
     }
 
     /**
@@ -119,6 +139,9 @@ contract SessionKeyDelegate {
     //
     // ABI head layout is fixed even though `Route[]` is dynamic (the array is a
     // tail offset), so `to` sits at a constant word index per selector.
+    bytes4 private constant SEL_SWAP_WITH_FEE = bytes4(
+        keccak256("swapWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)")
+    );
     bytes4 private constant SEL_SWAP_TOKENS_FOR_TOKENS =
         bytes4(keccak256("swapExactTokensForTokens(uint256,uint256,(address,address,bool,address)[],address,uint256)"));
     bytes4 private constant SEL_SWAP_ETH_FOR_TOKENS =
@@ -137,6 +160,7 @@ contract SessionKeyDelegate {
     /// @dev key => target => decoded-amount caps
     mapping(address => mapping(address => uint128)) private _tokenPerTxCap;
     mapping(address => mapping(address => uint128)) private _tokenDailyCap;
+    mapping(address => mapping(address => bool)) private _allowUndecoded;
     /// @dev key => native spend ring
     mapping(address => uint256[BUCKET_COUNT]) private _nativeBuckets;
     /// @dev key => token => token spend ring
@@ -170,6 +194,10 @@ contract SessionKeyDelegate {
     error SpenderNotAllowed(address spender);
     error ForeignSourceForbidden(address from);
     error UncappedSelectorOnToken(bytes4 selector);
+    /// A selector the policy engine cannot decode is never safe to allow: the
+    /// target allowlist gates who is CALLED, never who gets PAID.
+    error UndecodableSelector(bytes4 selector);
+    error FeeOverrideForbidden(uint16 bps);
     error DuplicateTarget();
     error MalformedCalldata();
     error AmountTooLarge();
@@ -310,8 +338,26 @@ contract SessionKeyDelegate {
             address to = abi.decode(data[off:off + 32], (address));
             if (to != address(this)) revert SpenderNotAllowed(to);
             return; // amount is metered by the approval that funds the swap
+        } else if (selector == SEL_SWAP_WITH_FEE) {
+            // The FeeRouter hardcodes the payout to msg.sender, so proceeds
+            // cannot be redirected - but `referrer` and `feeBpsOverride` are
+            // caller-chosen. The FeeRouter only pays a referrer it has BOUND to
+            // this trader, so the referrer leg is already inert for a stolen
+            // key; the override is not, and lets a key burn up to
+            // MAX_OVERRIDE_BPS of the account's own principal per swap.
+            // feeBpsOverride is head word 6 (offset 4 + 6*32).
+            if (data.length < 228) revert MalformedCalldata();
+            uint16 feeBpsOverride = uint16(uint256(bytes32(data[196:228])));
+            if (feeBpsOverride != 0) revert FeeOverrideForbidden(feeBpsOverride);
+            return; // amount is metered by the approval that funds the swap
         } else {
-            return; // non-value-moving selector: already gated by the allowlist
+            // DEFAULT DENY. This branch used to `return`, on the theory that an
+            // unrecognised selector could not move value - false: the allowlist
+            // constrains the CALLEE, never the PAYEE, so any undecoded selector
+            // carrying a `to`/`referrer` word was a free pass (audit, 4 agents).
+            // Adding a selector to a policy now requires teaching the decoder.
+            if (!_allowUndecoded[key][token]) revert UndecodableSelector(selector);
+            return;
         }
 
         if (counterparty == token) revert SpenderNotAllowed(counterparty);
@@ -382,6 +428,9 @@ contract SessionKeyDelegate {
         }
         _tokenPerTxCap[key][p.target] = p.tokenPerTxCap;
         _tokenDailyCap[key][p.target] = p.tokenDailyCap;
+        // A target with token caps can move ERC-20s; the escape hatch must never
+        // apply there, whatever the caller passed.
+        _allowUndecoded[key][p.target] = p.allowUndecodedSelectors && !isTokenTarget;
         for (uint256 i = 0; i < p.selectors.length; i++) {
             bytes4 sel = p.selectors[i];
             // A target carrying token caps may only expose selectors we decode —

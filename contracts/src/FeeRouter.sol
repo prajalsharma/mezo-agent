@@ -95,6 +95,9 @@ contract FeeRouter {
      */
     mapping(address => bool) public isFeeToken;
     uint256 public feeTokenCount;
+    /// @dev True once setReferredFeeBps is called, so setConfig stops
+    ///      overwriting a deliberately-chosen promo rate.
+    bool public referredFeeBpsPinned;
 
     bool private _entered;
 
@@ -119,6 +122,7 @@ contract FeeRouter {
     error EmptyRoute();
     error TransferFailed();
     error FeeTokenNotAllowed(address token);
+    error NotAContract(address token);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -168,19 +172,51 @@ contract FeeRouter {
         uint16 referralShareBps,
         uint16 feeBpsOverride
     ) external nonReentrant returns (uint256 amountOut) {
+        return _swap(amountIn, amountOutMin, routes, deadline, referrer, referralShareBps, feeBpsOverride, 1);
+    }
+
+    /**
+     * @notice The swap leg of a zap. A zap charges the whole zap's fee on the
+     *         HALF that gets swapped, so its correct rate is 2x the plain-swap
+     *         rate. `swapWithFee` cannot tell a zap leg apart from a normal
+     *         swap, so its floor was the single rate - letting anyone route a
+     *         zap through it and pay half the intended fee (audit). This
+     *         entrypoint doubles the floor so the leg kind is no longer
+     *         calldata the caller chooses.
+     */
+    function zapLegWithFee(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        Route[] calldata routes,
+        uint256 deadline,
+        address referrer,
+        uint16 referralShareBps,
+        uint16 feeBpsOverride
+    ) external nonReentrant returns (uint256 amountOut) {
+        return _swap(amountIn, amountOutMin, routes, deadline, referrer, referralShareBps, feeBpsOverride, 2);
+    }
+
+    function _swap(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        Route[] calldata routes,
+        uint256 deadline,
+        address referrer,
+        uint16 referralShareBps,
+        uint16 feeBpsOverride,
+        uint16 floorMultiplier
+    ) private returns (uint256 amountOut) {
         if (routes.length == 0) revert EmptyRoute();
         // Two-sided bound. The FLOOR is the discounted rate only when a genuine
         // (non-self) referrer is named and a discount is configured — otherwise
         // it is the full rate. This blocks the "pass 1 bps and underpay" attack
         // WITHOUT breaking the advertised referred-trader discount.
-        uint16 floorBps = _baseBps(referrer, referralShareBps);
-        if (feeBpsOverride != 0 && (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < floorBps)) {
-            revert FeeTooHigh();
-        }
+        _checkFloor(referrer, referralShareBps, feeBpsOverride, floorMultiplier);
         address tokenIn = routes[0].from;
         // The fee's UNIT must be trustworthy, not just its rate. Once fee tokens
         // are configured, hop 0 must be one of them.
         if (feeTokenCount != 0 && !isFeeToken[tokenIn]) revert FeeTokenNotAllowed(tokenIn);
+        _requireContract(tokenIn);
 
         _pull(tokenIn, msg.sender, amountIn);
         uint256 fee = _takeFee(tokenIn, amountIn, referrer, referralShareBps, feeBpsOverride);
@@ -198,6 +234,20 @@ contract FeeRouter {
     ///      was only a floor, so a genuine referral calling with override=0 paid
     ///      FULL price while an attacker who passed the override got the
     ///      discount — exactly inverted.)
+    /// @dev Two-sided bound on the caller-supplied rate. The FLOOR is the
+    ///      discounted rate only for a trader BOUND to the named referrer,
+    ///      otherwise the full rate - and 2x that for a zap leg, whose fee
+    ///      covers the un-swapped half too.
+    function _checkFloor(address referrer, uint16 referralShareBps, uint16 feeBpsOverride, uint16 floorMultiplier)
+        private
+        view
+    {
+        if (feeBpsOverride == 0) return; // 0 => the contract picks the rate
+        uint256 rawFloor = uint256(_baseBps(referrer, referralShareBps)) * floorMultiplier;
+        uint16 floorBps = rawFloor > MAX_OVERRIDE_BPS ? MAX_OVERRIDE_BPS : uint16(rawFloor);
+        if (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < floorBps) revert FeeTooHigh();
+    }
+
     function _baseBps(address referrer, uint16 referralShareBps) private view returns (uint16) {
         return (_referralActive(referrer, referralShareBps) && referredFeeBps != 0) ? referredFeeBps : feeBps;
     }
@@ -247,8 +297,18 @@ contract FeeRouter {
         // RE-DERIVE, never one-way clamp: clamping only downward meant a
         // temporary promo (fee 100 -> 40) permanently latched the discounted
         // floor at 40 even after the headline returned to 100. (Audit finding.)
-        referredFeeBps = uint16((uint256(feeBps_) * 90) / 100);
-        emit ReferredFeeBpsChanged(referredFeeBps);
+        // Only re-derive when the owner has never set the referred rate
+        // explicitly. The previous unconditional re-derivation silently
+        // discarded setReferredFeeBps on any unrelated change (e.g. rotating
+        // the fee recipient), which could brick referred swaps (audit).
+        if (!referredFeeBpsPinned) {
+            referredFeeBps = uint16((uint256(feeBps_) * 90) / 100);
+            emit ReferredFeeBpsChanged(referredFeeBps);
+        } else if (referredFeeBps > feeBps_) {
+            // A pinned discount must never exceed the headline rate.
+            referredFeeBps = feeBps_;
+            emit ReferredFeeBpsChanged(referredFeeBps);
+        }
         maxReferralShareBps = maxReferralShareBps_;
         emit ConfigChanged(feeRecipient_, feeBps_, maxReferralShareBps_);
     }
@@ -257,6 +317,7 @@ contract FeeRouter {
     function setReferredFeeBps(uint16 bps) external onlyOwner {
         if (bps > feeBps) revert FeeTooHigh();
         referredFeeBps = bps;
+        referredFeeBpsPinned = true; // setConfig must stop re-deriving over this
         emit ReferredFeeBpsChanged(bps);
     }
 
@@ -302,6 +363,18 @@ contract FeeRouter {
     }
 
     // ── Minimal safe-ERC20 (handles missing/false return values) ─────────────
+
+    /// @dev A low-level call to an address with NO CODE returns ok=true with
+    ///      empty returndata, which the success check below reads as a
+    ///      successful transfer. Without this, a caller could pass a codeless
+    ///      address as routes[0].from and emit a fully successful-looking
+    ///      SwappedWithFee with zero tokens moved, poisoning volume and
+    ///      referral analytics (audit).
+    function _requireContract(address token) private view {
+        uint256 size;
+        assembly { size := extcodesize(token) }
+        if (size == 0) revert NotAContract(token);
+    }
 
     function _pull(address token, address from, uint256 amount) private {
         (bool ok, bytes memory ret) =

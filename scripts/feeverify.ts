@@ -1,4 +1,5 @@
 export {};
+import "./_testenv.js"; // MUST be first: seeds env before config/env.js evaluates
 // Full fee-logic verification at the COMMITTED rates: 50 bps swap/zap, 10 bps txn.
 const owner='0x2B325c6768a11B2E7Cc9cF3EF8513A426677Bde9'; // funded deployer (has BTC+MUSD)
 const { registry } = await import('../src/registry/registry.js');

@@ -85,7 +85,8 @@ contract SessionKeyDelegateTest is Test {
             target: address(target),
             selectors: sels,
             tokenPerTxCap: 0,
-            tokenDailyCap: 0
+            tokenDailyCap: 0,
+            allowUndecodedSelectors: true
         });
     }
 
@@ -192,7 +193,8 @@ contract SessionKeyDelegateTest is Test {
         bytes4[] memory sels = new bytes4[](0);
         SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](1);
         p[0] = SessionKeyDelegate.TargetPolicy({
-            target: address(delegate), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0
+            target: address(delegate), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0,
+            allowUndecodedSelectors: true
         });
         vm.prank(address(delegate));
         vm.expectRevert(SessionKeyDelegate.SelfTargetForbidden.selector);
@@ -217,7 +219,8 @@ contract SessionKeyDelegateTest is Test {
         sels[0] = SEL_PING;
         SessionKeyDelegate.TargetPolicy[] memory p2 = new SessionKeyDelegate.TargetPolicy[](1);
         p2[0] = SessionKeyDelegate.TargetPolicy({
-            target: address(other), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0
+            target: address(other), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0,
+            allowUndecodedSelectors: true
         });
         vm.prank(address(delegate));
         delegate.registerSession(sessionKey, expiry, PER_TX, DAILY, p2);
@@ -244,11 +247,13 @@ contract SessionKeyDelegateTest is Test {
         bytes4[] memory noSels = new bytes4[](0);
         p = new SessionKeyDelegate.TargetPolicy[](2);
         p[0] = SessionKeyDelegate.TargetPolicy({
-            target: address(token), selectors: tokSels, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY
+            target: address(token), selectors: tokSels, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY,
+            allowUndecodedSelectors: true
         });
         // `spender` is allowlisted purely so it is a legal approve/transfer counterparty.
         p[1] = SessionKeyDelegate.TargetPolicy({
-            target: spender, selectors: noSels, tokenPerTxCap: 0, tokenDailyCap: 0
+            target: spender, selectors: noSels, tokenPerTxCap: 0, tokenDailyCap: 0,
+            allowUndecodedSelectors: true
         });
     }
 
@@ -346,7 +351,8 @@ contract SessionKeyDelegateTest is Test {
         bytes4[] memory sels = new bytes4[](3);
         sels[0] = SEL_TRANSFER; sels[1] = SEL_APPROVE; sels[2] = selTransferFrom;
         SessionKeyDelegate.TargetPolicy memory p = SessionKeyDelegate.TargetPolicy({
-            target: address(token), selectors: sels, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY
+            target: address(token), selectors: sels, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY,
+            allowUndecodedSelectors: true
         });
         vm.prank(address(delegate));
         delegate.setTargetPolicy(sessionKey, p);
@@ -365,7 +371,8 @@ contract SessionKeyDelegateTest is Test {
             bytes4[] memory sels = new bytes4[](1);
             sels[0] = SEL_PING;
             SessionKeyDelegate.TargetPolicy memory p = SessionKeyDelegate.TargetPolicy({
-                target: address(target), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0
+                target: address(target), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0,
+            allowUndecodedSelectors: true
             });
             vm.prank(address(delegate));
             delegate.setTargetPolicy(sessionKey, p);
@@ -392,7 +399,8 @@ contract SessionKeyDelegateTest is Test {
         sels[0] = SEL_PING; // not one of transfer/approve/transferFrom
         SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](1);
         p[0] = SessionKeyDelegate.TargetPolicy({
-            target: address(token), selectors: sels, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY
+            target: address(token), selectors: sels, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY,
+            allowUndecodedSelectors: true
         });
         vm.prank(address(delegate));
         vm.expectRevert(abi.encodeWithSelector(SessionKeyDelegate.UncappedSelectorOnToken.selector, SEL_PING));
@@ -426,15 +434,58 @@ contract SessionKeyDelegateTest is Test {
         SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](2);
         // Entry 1: zero caps => isTokenTarget false => guard short-circuits.
         p[0] = SessionKeyDelegate.TargetPolicy({
-            target: address(token), selectors: uncapped, tokenPerTxCap: 0, tokenDailyCap: 0
+            target: address(token), selectors: uncapped, tokenPerTxCap: 0, tokenDailyCap: 0,
+            allowUndecodedSelectors: true
         });
         // Entry 2: same target, now WITH caps.
         p[1] = SessionKeyDelegate.TargetPolicy({
-            target: address(token), selectors: decoded, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY
+            target: address(token), selectors: decoded, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY,
+            allowUndecodedSelectors: true
         });
 
         vm.prank(address(delegate));
         vm.expectRevert(SessionKeyDelegate.DuplicateTarget.selector);
         delegate.registerSession(sessionKey, expiry, PER_TX, DAILY, p);
+    }
+
+    /// AUDIT (4 agents): an undecoded selector used to hit `else { return; }`,
+    /// which was a free pass - the target allowlist gates who is CALLED, never
+    /// who gets PAID. Default is now DENY unless explicitly opted in.
+    function test_audit_undecodedSelectorDeniedByDefault() public {
+        bytes4[] memory sels = new bytes4[](1);
+        sels[0] = SEL_PING;
+        SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](1);
+        p[0] = SessionKeyDelegate.TargetPolicy({
+            target: address(target),
+            selectors: sels,
+            tokenPerTxCap: 0,
+            tokenDailyCap: 0,
+            allowUndecodedSelectors: false // the new default
+        });
+        _register(sessionKey, p);
+
+        vm.prank(sessionKey);
+        vm.expectRevert(abi.encodeWithSelector(SessionKeyDelegate.UndecodableSelector.selector, SEL_PING));
+        delegate.execute(address(target), 0.1 ether, _ping());
+    }
+
+    /// AUDIT: the escape hatch must never apply to a target that can move ERC-20s,
+    /// whatever the caller passed.
+    function test_audit_escapeHatchIgnoredOnTokenTargets() public {
+        bytes4[] memory sels = new bytes4[](1);
+        sels[0] = SEL_TRANSFER;
+        SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](1);
+        p[0] = SessionKeyDelegate.TargetPolicy({
+            target: address(token),
+            selectors: sels,
+            tokenPerTxCap: TOK_PER_TX,
+            tokenDailyCap: TOK_DAILY,
+            allowUndecodedSelectors: true // asked for, must be ignored
+        });
+        _register(sessionKey, p);
+        // transfer IS decoded, so the recipient guard still fires as before.
+        vm.prank(sessionKey);
+        vm.expectRevert(abi.encodeWithSelector(SessionKeyDelegate.SpenderNotAllowed.selector, address(0xBAD)));
+        delegate.execute(address(token), 0, abi.encodeWithSelector(SEL_TRANSFER, address(0xBAD), 0.1 ether));
     }
 }

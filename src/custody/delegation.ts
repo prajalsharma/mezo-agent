@@ -60,6 +60,10 @@ type TargetPolicy = {
   selectors: Hex[];
   tokenPerTxCap: bigint;
   tokenDailyCap: bigint;
+  /** Opt-in for targets exposing selectors the delegate cannot decode. Keep
+   *  FALSE: the delegate denies undecodable selectors by default because the
+   *  target allowlist gates who is CALLED, never who gets PAID (audit). */
+  allowUndecodedSelectors: boolean;
 };
 
 // Selectors the agent needs. Anything not listed reverts on-chain.
@@ -125,6 +129,7 @@ function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
       selectors: [SEL_SWAP_TOKENS, SEL_SWAP_ETH, SEL_SWAP_FOR_ETH],
       tokenPerTxCap: 0n, // the router is not an ERC-20; no decoded transfers
       tokenDailyCap: 0n,
+      allowUndecodedSelectors: false,
     });
   }
   // FeeRouter (atomic swap+fee wrapper). Must be a TARGET both to be called and
@@ -136,6 +141,7 @@ function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
       selectors: [SEL_SWAP_WITH_FEE],
       tokenPerTxCap: 0n,
       tokenDailyCap: 0n,
+      allowUndecodedSelectors: false,
     });
   }
   for (const t of registry.allTokens()) {
@@ -153,6 +159,7 @@ function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
       selectors: [SEL_APPROVE, SEL_TRANSFER],
       tokenPerTxCap: caps.perTx,
       tokenDailyCap: caps.daily,
+      allowUndecodedSelectors: false,
     });
   }
   return policies;
@@ -198,7 +205,7 @@ export async function ensureSessionTargets(user: UserRecord): Promise<number> {
       const data = encodeFunctionData({
         abi: sessionKeyDelegateAbi,
         functionName: "setTargetPolicy",
-        args: [session, { target: p.target, selectors: p.selectors, tokenPerTxCap: p.tokenPerTxCap, tokenDailyCap: p.tokenDailyCap }],
+        args: [session, { target: p.target, selectors: p.selectors, tokenPerTxCap: p.tokenPerTxCap, tokenDailyCap: p.tokenDailyCap, allowUndecodedSelectors: p.allowUndecodedSelectors }],
       });
       const hash = await wallet.sendTransaction({ to: user.address, data, gas: 500_000n } as never);
       await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });

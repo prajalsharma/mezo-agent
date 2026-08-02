@@ -6,6 +6,7 @@
  * This is the reliability floor: whatever the LLM does, these headline commands
  * must always parse. Symbol aliasing (USDC->mUSDC) is covered too.
  */
+import "./_testenv.js"; // MUST be first: seeds env before config/env.js evaluates
 import { fallbackParse, resolveSymbol } from "../src/llm/adapter.js";
 import { Intent } from "../src/llm/intent.js";
 

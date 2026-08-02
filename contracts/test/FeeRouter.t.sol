@@ -299,4 +299,42 @@ contract FeeRouterTest is Test {
         assertEq(tokenIn.balanceOf(referrer), 0, "unbound referrer must be paid 0");
         assertEq(tokenIn.balanceOf(operator), 0.5e18, "operator must get the FULL 50 bps, not the 45 bps referred rate");
     }
+
+    /// AUDIT: swapWithFee cannot tell a zap leg from a plain swap, so its floor
+    /// was the single rate - anyone could route a zap through it and pay half
+    /// the intended fee. zapLegWithFee enforces the doubled floor.
+    function test_audit_zapLegCannotBeUnderpaidViaPlainSwapFloor() public {
+        // 50 bps clears swapWithFee's floor but is HALF a zap leg's correct rate.
+        vm.prank(user);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.zapLegWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 50);
+
+        // The correct doubled rate is accepted, and charged.
+        vm.prank(user);
+        fr.zapLegWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 100);
+        assertEq(tokenIn.balanceOf(operator), 1e18, "zap leg must pay 2x the plain-swap rate");
+    }
+
+    /// AUDIT: a codeless address makes every low-level token call return
+    /// ok=true with empty returndata, so a swap could "succeed" moving nothing.
+    function test_audit_codelessTokenRejected() public {
+        address ghost = address(0x6057);
+        address[] memory fts = new address[](1);
+        fts[0] = ghost;
+        fr.setFeeTokens(fts, true); // even explicitly allowed, it has no code
+
+        Route[] memory r = new Route[](1);
+        r[0] = Route({from: ghost, to: address(tokenOut), stable: false, factory: address(0xFAC)});
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.NotAContract.selector, ghost));
+        fr.swapWithFee(1e18, 0, r, block.timestamp + 600, address(0), 0, 0);
+    }
+
+    /// AUDIT: setConfig used to re-derive referredFeeBps unconditionally,
+    /// silently discarding a deliberately-set promo rate on an unrelated change.
+    function test_audit_setConfigKeepsAnExplicitlyPinnedReferredRate() public {
+        fr.setReferredFeeBps(20);
+        fr.setConfig(operator, 50, 3000); // rotate recipient, unrelated to the promo
+        assertEq(fr.referredFeeBps(), 20, "pinned promo rate must survive setConfig");
+    }
 }

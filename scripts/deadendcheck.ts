@@ -1,4 +1,5 @@
 export {};
+import "./_testenv.js"; // MUST be first: seeds env before config/env.js evaluates
 /**
  * DEAD-END AUDIT — every capability the bot advertises must be reachable AND
  * executable. Checks, per intent action:
