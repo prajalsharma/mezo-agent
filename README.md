@@ -1,4 +1,4 @@
-# Mezo Agent — Telegram bot for the Mezo Bitcoin-DeFi stack
+# Mezo Agent - Telegram bot for the Mezo Bitcoin-DeFi stack
 
 A conversational agent that lets a user operate the Mezo ecosystem (Borrow, Swap,
 Earn, veBTC/veMEZO locking + voting, Matchbox, Market) in plain language, with
@@ -19,33 +19,33 @@ This repository is built in phases. **Phases 1–5 are implemented.**
 | Feature | Status |
 | --- | --- |
 | Wallet creation (in-bot) | ✅ |
-| Import existing account — private key **or** BIP-39 seed phrase (opt-in, warned) | ✅ |
+| Import existing account - private key **or** BIP-39 seed phrase (opt-in, warned) | ✅ |
 | Deposit address + scannable QR | ✅ |
 | Live portfolio view (BTC + tokens) | ✅ |
 | Telegram conversational UI | ✅ |
-| DEX swap — live quote → simulate → confirm → sign | ✅ live quotes (token↔token **and** native BTC, read from pool reserves); execution enabled by setting the confirmed `MEZO_ROUTER_ADDRESS` |
+| DEX swap - live quote → simulate → confirm → sign | ✅ live quotes (token↔token **and** native BTC, read from pool reserves); execution enabled by setting the confirmed `MEZO_ROUTER_ADDRESS` |
 | Spending limits (per-tx + rolling 24h cap) & watch-only mode | ✅ enforced in the signer (`/limits`, `/watch`) |
 | Health self-test | ✅ `/diag` |
 
 ## Phases 2–5 scope
 
 "Status" below means **executability**, not "code written". Run
-`npm run phaseaudit` to reproduce this table against the live registry — it
+`npm run phaseaudit` to reproduce this table against the live registry - it
 builds every surface and reports whether it can sign or is preview-only and why.
 A surface is preview-only when its contract address is not published in the
 canonical reference; nothing here is gated by missing code.
 
 | Phase | Feature | Status |
 | --- | --- | --- |
-| **2** | Borrow (open Trove) — min-net-debt + MCR guardrails, borrowing-fee preview | ✅ **executable** (simulated on testnet + mainnet) |
+| **2** | Borrow (open Trove) - min-net-debt + MCR guardrails, borrowing-fee preview | ✅ **executable** (simulated on testnet + mainnet) |
 | 2 | Repay / Adjust / Close Trove | ✅ **executable** |
 | 2 | Stake / Unstake LP · Claim gauge earnings | ✅ **executable** (gauge from Voter, live) |
 | 2 | Vault deposit | 🔒 preview (ERC-4626 wiring pending) |
 | **3** | Lock veBTC (1–28d), Extend | ✅ **executable** (via BTC ERC-20 precompile) |
 | 3 | Lock veMEZO (≤4y) | 🔒 preview (escrow unpublished) |
-| 3 | Vote — manual weights | ✅ **executable** (Voter.vote) |
-| 3 | Vote — **optimal** (water-filling) | ✅ optimizer live & tested; needs incentives indexer |
-| 3 | Mezo Market — browse / buy | 🔒 preview (no published contract) |
+| 3 | Vote - manual weights | ✅ **executable** (Voter.vote) |
+| 3 | Vote - **optimal** (water-filling) | ✅ optimizer live & tested; needs incentives indexer |
+| 3 | Mezo Market - browse / buy | 🔒 preview (no published contract) |
 | **4** | Zap-to-enter (single asset → LP) | ✅ **executable** (swap + addLiquidity, slippage-floored) |
 | 4 | veNFT transfer / merge | ✅ **executable** |
 | 4 | Matchbox pairing | 🔒 preview (community project) |
@@ -58,8 +58,8 @@ on every step, explicit confirmation + step-up, the three-layer security model, 
 tests (`smoke`, `policycheck`, `phasecheck`, `swapcheck`, `contracts:test`).
 
 The natural-language parser understands all of the above (LLM path + a
-deterministic fallback that needs no model vendor). Every fund-moving action —
-manual or scheduled — passes through the same signer caps/allowlist, so a
+deterministic fallback that needs no model vendor). Every fund-moving action -
+manual or scheduled - passes through the same signer caps/allowlist, so a
 schedule can never exceed what a manual action could.
 
 ### Address provenance and verification
@@ -67,18 +67,18 @@ schedule can never exceed what a manual action could.
 Addresses are read from the canonical reference, never hardcoded from memory:
 
 - **Borrow** (`BorrowerOperations`, `TroveManager`, `HintHelpers`, `SortedTroves`,
-  `PriceFeed`) — from the MUSD developer reference, then **verified on-chain** by
+  `PriceFeed`) - from the MUSD developer reference, then **verified on-chain** by
   `npm run verifyaddrs`: each has deployed code, answers its own interface, and
   all five cross-references agree (`BorrowerOperations.troveManager ==
   TroveManager`, `TroveManager.borrowerOperations == BorrowerOperations`, and so
   on). `BorrowerOperations.musd()` also matches the MUSD token in the registry.
   Cross-referencing is the part that distinguishes "code exists here" from "this
   is the live, linked deployment".
-- **DEX pools / PoolFactory** — from the contracts reference, verified live
+- **DEX pools / PoolFactory** - from the contracts reference, verified live
   (`getAmountOut` returns non-zero, `factory()` matches).
-- **Router** — from `docs/developers/features/mezo-pools.md`, verified on-chain
+- **Router** - from `docs/developers/features/mezo-pools.md`, verified on-chain
   (`Router.factory == PoolFactory`; `getAmountsOut` answers over our routes).
-- **ve(3,3) suite** (`VotingEscrowBTC`, `Voter`, `RewardsDistributor`) — the
+- **ve(3,3) suite** (`VotingEscrowBTC`, `Voter`, `RewardsDistributor`) - the
   docs page lists a deployment that is a **stale ghost on mainnet** (its VeBTC
   holds 0.00096 BTC; its Voter has zero gauges). The production system was
   found by following the official docs' ValidatorsVoter (validator-gauge.md):
@@ -89,48 +89,48 @@ Addresses are read from the canonical reference, never hardcoded from memory:
   pass again. Testnet's documented deployment IS the live one (16/16). This is
   the "do not hardcode stale values" requirement biting in the wild: the doc
   value itself was stale, and on-chain linkage + usage decided.
-- **VotingEscrowMEZO, Matchbox, Market** — genuinely unpublished: veMEZO has no
+- **VotingEscrowMEZO, Matchbox, Market** - genuinely unpublished: veMEZO has no
   documented contract, Matchbox is an external community project
   (matchbox.markets), and Mezo Market has no published contract. These stay
   preview-only rather than guessing. (`PoolFactory.voter()` resolving to a
-  Gnosis Safe 5-of-N is the admin, not the ve(3,3) Voter — the real Voter came
+  Gnosis Safe 5-of-N is the admin, not the ve(3,3) Voter - the real Voter came
   from the docs page and proved itself via the cross-references above.)
 
 > A signature mismatch found this way: Mezo's MUSD fork drops Liquity's leading
 > `_maxFeePercentage` argument from `openTrove` and `withdrawMUSD`. The upstream
 > 4-argument form encodes a selector no function matches, so it reverts with **no
-> reason string** — indistinguishable at a glance from a collateral or balance
+> reason string** - indistinguishable at a glance from a collateral or balance
 > problem. Simulation caught it: a correct selector produces a decoded protocol
 > revert. `npm run simcheck` is the regression guard.
 
-### Enabling gated surfaces — feature → env key
+### Enabling gated surfaces - feature → env key
 
-Every surface activates by supplying its confirmed contract address via env —
+Every surface activates by supplying its confirmed contract address via env -
 no code change. The bot refuses to act against an unconfirmed address rather
 than invent one. `npm run phaseaudit` prints this table live for the configured
 network.
 
 | Feature | Status today | Env key (override) |
 | --- | --- | --- |
-| Wallet / portfolio / deposit QR | ✅ live | — |
+| Wallet / portfolio / deposit QR | ✅ live | - |
 | Borrow / Repay / Adjust / Close Trove | ✅ **executable** (verified + simulated, both networks) | `MEZO_ADDR_BORROWEROPERATIONS` … |
 | Swap quotes + **execution** (incl. native BTC via precompile) | ✅ **executable** | `MEZO_ADDR_ROUTER` |
 | Zap into pool (single asset → LP) | ✅ **executable** (pool-member input; multi-hop preview) | `MEZO_ADDR_ROUTER` |
-| Stake / Unstake LP | ✅ **executable** — gauge resolved live from Voter¹ | `MEZO_ADDR_VOTER` |
+| Stake / Unstake LP | ✅ **executable** - gauge resolved live from Voter¹ | `MEZO_ADDR_VOTER` |
 | Claim gauge earnings | ✅ **executable** (enumerates gauges, claims where earned > 0)¹ | `MEZO_ADDR_VOTER` |
-| Claim rebases / bribes | 🔒 preview — needs veNFT enumeration (indexer) | `MEZO_ADDR_REWARDSDISTRIBUTOR` |
-| Vote — manual weights | ✅ **executable** (`vote with veNFT <id>: 60% MUSD/mUSDC …`) | `MEZO_ADDR_VOTER` |
-| Vote — optimal | 🔒 preview — optimizer live, needs the incentives indexer | — |
+| Claim rebases / bribes | 🔒 preview - needs veNFT enumeration (indexer) | `MEZO_ADDR_REWARDSDISTRIBUTOR` |
+| Vote - manual weights | ✅ **executable** (`vote with veNFT <id>: 60% MUSD/mUSDC …`) | `MEZO_ADDR_VOTER` |
+| Vote - optimal | 🔒 preview - optimizer live, needs the incentives indexer | - |
 | Lock veBTC / extend / veNFT transfer & merge | ✅ **executable** (BTC via ERC-20 precompile) | `MEZO_ADDR_VOTINGESCROWBTC` |
-| Lock veMEZO | 🔒 preview — escrow address genuinely unpublished | `MEZO_ADDR_VOTINGESCROWMEZO` |
-| Matchbox pairing | 🔒 preview — community project, external contracts | `MEZO_ADDR_MATCHBOX` |
-| Mezo Market browse / buy | 🔒 preview — no published contract | `MEZO_ADDR_MARKET` |
-| Vault deposits | 🔒 preview — vault addresses published but ERC-4626 wiring pending | — |
+| Lock veMEZO | 🔒 preview - escrow address genuinely unpublished | `MEZO_ADDR_VOTINGESCROWMEZO` |
+| Matchbox pairing | 🔒 preview - community project, external contracts | `MEZO_ADDR_MATCHBOX` |
+| Mezo Market browse / buy | 🔒 preview - no published contract | `MEZO_ADDR_MARKET` |
+| Vault deposits | 🔒 preview - vault addresses published but ERC-4626 wiring pending | - |
 | EIP-7702 `/upgrade` (session keys) | 🔒 preview | `DELEGATE7702_ADDRESS` (deploy `contracts/` first) |
-| DCA / auto-compound scheduling | ✅ live — trades land now that the Router is wired | `KEEPER_ENABLED=true` |
-| Multi-account, limits, watch-only, optimal-voting math | ✅ live | — |
+| DCA / auto-compound scheduling | ✅ live - trades land now that the Router is wired | `KEEPER_ENABLED=true` |
+| Multi-account, limits, watch-only, optimal-voting math | ✅ live | - |
 
-¹ Live on **both networks** — testnet Voter has 4 gauges, mainnet Voter has 26
+¹ Live on **both networks** - testnet Voter has 4 gauges, mainnet Voter has 26
 (gauges exist for all three registry pools; resolved live per action, never
 hardcoded).
 
@@ -177,15 +177,15 @@ the tiered custody design:
   native-BTC cap and a rolling 24h cap (defaults 0.05 / 0.2 BTC, tunable via
   `/limits`), plus a **watch-only** mode (`/watch on`) that blocks all signing. So
   even a compromised session cannot exceed these caps. (Per-token USD caps arrive
-  with the price-feed integration in a later phase — documented, not hidden.)
+  with the price-feed integration in a later phase - documented, not hidden.)
 
 **What the operator can/cannot do, and host-compromise blast radius:** with the
 Tier 3 model, a compromised host that also has `MASTER_ENCRYPTION_KEY` could sign
-for users — which is exactly why this is a *stopgap for local development*, not
+for users - which is exactly why this is a *stopgap for local development*, not
 the mainnet custody model.
 
 > ⚠️ **Application-level encryption alone is NOT acceptable for mainnet.** The
-> production target is **non-custodial, scoped, revocable delegation** — a smart
+> production target is **non-custodial, scoped, revocable delegation** - a smart
 > account with an on-chain session-key module (ERC-7579/4337) or EIP-7702
 > delegation, where the agent holds only a narrowly-scoped, time-bound,
 > revocable permission and the user keeps custody. The `KeyStore` interface
@@ -200,14 +200,14 @@ the mainnet custody model.
 src/
   config/env.ts            validated env, single source of config
   chain/                   Mezo network params (from canonical docs) + read client
-  registry/                ContractRegistry — the ONLY source of addresses
+  registry/                ContractRegistry - the ONLY source of addresses
   abis/                    ERC-20 + Velodrome-style Router V2 ABIs
   custody/
     keystore.ts            KeyStore interface (no plaintext export by design)
     localKeystore.ts       AES-256-GCM at rest (Tier 3 stopgap; KMS-swappable)
     signer.ts              isolated writer; re-checks policy; key never escapes
   wallet/walletService.ts  create / import (opt-in) onboarding
-  portfolio/               read path — balances (separate from write path)
+  portfolio/               read path - balances (separate from write path)
   core/simulator.ts        eth_call dry-run + revert decoding
   surfaces/swap/           deterministic swap builder + executor
   llm/                     provider-agnostic intent parser + typed Intent schema
@@ -227,7 +227,7 @@ npm run smoke           # verifies custody + a live testnet portfolio read
 npm run dev             # starts the bot (long-polling)
 ```
 
-`ANTHROPIC_API_KEY` is optional — without it, the bot uses a deterministic regex
+`ANTHROPIC_API_KEY` is optional - without it, the bot uses a deterministic regex
 parser (`swap <amount> <TOKEN> to <TOKEN>`), so it is fully usable with no model
 vendor. The LLM layer is provider-agnostic (`src/llm/adapter.ts`).
 
@@ -244,7 +244,7 @@ A Telegram bot has no unlisted mode: anyone who learns the username can message
 it. `TELEGRAM_ALLOWED_USER_IDS` (comma-separated) restricts the bot to specific
 Telegram user IDs; everyone else is dropped before any handler runs, with no
 reply at all (an error reply would confirm to a scanner that the token is live).
-Leave it empty and the bot is open to everyone — the startup banner says which
+Leave it empty and the bot is open to everyone - the startup banner says which
 mode is active.
 
 To find your own ID, start the bot with the allowlist set to any value and
@@ -255,12 +255,12 @@ handlers are unreachable rather than individually permission-checked.
 `ctx.from.id` is stamped by Telegram's servers, not the sender's client, so it
 cannot be forged by a caller. It is authorization, not concealment: strangers can
 still message the bot, they just get no response. It does not mitigate a leaked
-token — anyone holding the token can redirect updates, so rotate via BotFather
+token - anyone holding the token can redirect updates, so rotate via BotFather
 `/revoke` if it is ever exposed.
 
 ## Deployment
 
-The bot long-polls, so it needs **outbound network only** — no public URL, no
+The bot long-polls, so it needs **outbound network only** - no public URL, no
 inbound ports, no TLS certificate. A `Dockerfile` is included and runs on any
 container host.
 
@@ -268,14 +268,14 @@ Three things that will cause data loss or silent breakage if missed:
 
 - **Mount a persistent volume at `/data`.** It holds users' encrypted key
   material. On an ephemeral filesystem (the default on several PaaS providers)
-  every redeploy destroys every wallet — and because there is deliberately no
+  every redeploy destroys every wallet - and because there is deliberately no
   plaintext export path, those funds are unrecoverable.
 - **Reuse the same `MASTER_ENCRYPTION_KEY`.** Regenerating it makes an existing
   keystore permanently undecryptable.
 - **Run exactly one instance.** Two processes polling the same token compete for
   updates and both misbehave. Do not autoscale; pin replicas to 1.
 
-Avoid free tiers that idle-stop the process — a stopped poller is an unresponsive
+Avoid free tiers that idle-stop the process - a stopped poller is an unresponsive
 bot. Note that deploying with `MEZO_NETWORK=mainnet` and an empty allowlist means
 an unattended agent custodying strangers' real BTC on the Tier-3 stopgap
 described under "Trust model"; prefer testnet, or an allowlist, until the custody
@@ -284,7 +284,7 @@ tier is upgraded and independently audited.
 ## Verifying it works
 
 All checks below run with **no Telegram token and no network dependency on
-Telegram** — `scripts/_testenv.ts` stubs the environment and must be the first
+Telegram** - `scripts/_testenv.ts` stubs the environment and must be the first
 import in any check (ESM evaluates every `import` before the module body, so
 assigning `process.env` inside a script's own body runs too late).
 
@@ -319,7 +319,7 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
 
 ## Known Phase 1 limitations (tracked, not hidden)
 
-- **Swap quoting is LIVE** — read directly from each pool's on-chain reserves
+- **Swap quoting is LIVE** - read directly from each pool's on-chain reserves
   (`getAmountOut`), so real quotes (token↔token and native BTC) work today on
   mainnet, with slippage → min-out. The registry is seeded with the canonical
   tokens, `PoolFactory`, and the confirmed BTC/MUSD, MUSD/mUSDC, MUSD/mUSDT pools.
@@ -337,7 +337,7 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
 - Datastore is a local JSON file (encrypted key material only). Production is
   Postgres + Redis.
 - Custody is Tier 3 (see trust model). **Custody roadmap:** Tier 3 (app-level
-  AES) is a deliberate Phase-1 stopgap; the committed mainnet target is Tier 1 —
+  AES) is a deliberate Phase-1 stopgap; the committed mainnet target is Tier 1 -
   a smart account with an on-chain session-key module (ERC-7579/4337) or EIP-7702
   delegation, where the user keeps custody and the agent holds only a scoped,
   revocable permission. The `KeyStore` interface is built for that swap.
@@ -350,7 +350,7 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
   `signer.ts`. The root key still lives in the app-level store in this step (hence
   *semi*-custodial); moving root custody to the user (fully non-custodial "Option
   B") reuses the same delegate and signer seams. The delegate is unaudited and
-  must be deployed + registered per network before `/upgrade` is available —
+  must be deployed + registered per network before `/upgrade` is available -
   see `contracts/README.md`.
 - Spending caps bind **native BTC** value plus an opt-in raw per-token cap;
   true USD-denominated caps come with the price feed. Seed-phrase import uses the
@@ -359,7 +359,7 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
   (`npm run contracts:test`, **25 tests**, 14 of them audit regressions). It went
   through **two rounds** of adversarial audit (Pashov `solidity-auditor`: 12 agents
   on the original, 6 on the hardened rewrite). **Every finding from both rounds is
-  fixed and regression-tested** — self-call escalation, stale allowlist, ERC-20
+  fixed and regression-tested** - self-call escalation, stale allowlist, ERC-20
   calldata caps, trailing-24h window, `transferFrom` source validation, and a
   revocation-DoS. See **[AUDIT.md](AUDIT.md)**. Deploy it with
   `contracts/script/Deploy.s.sol` and set `DELEGATE7702_ADDRESS` to enable
