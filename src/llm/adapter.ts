@@ -67,6 +67,15 @@ export async function parseIntent(
       if (groundText) system += `\n\nCONTEXT (the ONLY numbers you may use):\n${groundText}`;
     } catch { /* grounding is best-effort */ }
   }
+  // Strong GUIDE-mode bias for question-phrased messages: the model should
+  // ANSWER, not silently pick an action, unless the user clearly asked to
+  // execute something with real amounts.
+  if (isQuestionLike(message)) {
+    system +=
+      "\n\nThe user's message is phrased as a QUESTION. Answer in GUIDE mode with plain text. " +
+      "Do NOT call emit_intent unless they explicitly asked to execute an action with a concrete amount.";
+  }
+
   // One-turn memory: the user's PREVIOUS message so a short follow-up ("do it to
   // MUSD then", "same but 0.02") can inherit the missing amount/tokens.
   if (prior) {
@@ -277,15 +286,34 @@ async function callGemini(system: string, message: string): Promise<ProviderRepl
  * the bot is fully usable with no model vendor. The LLM path handles the long
  * tail; this never guesses tokens (it resolves against knownSymbols) or amounts.
  */
+/**
+ * Is this phrased as a QUESTION / exploration rather than a command?
+ *
+ * This is what makes the bot feel conversational. The rule parser matches bare
+ * keywords ("vote", "claim", "market", "buy"), which meant "should I vote this
+ * epoch?" EXECUTED a vote and "should I buy more btc?" opened a market buy —
+ * questions never reached the LLM at all. When a message looks like a question,
+ * the loose keyword rules stand down and it goes to GUIDE mode; fully specified
+ * commands (amount + tokens) still parse deterministically either way.
+ */
+export function isQuestionLike(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (t.endsWith("?")) return true;
+  return /^(what|what's|whats|how|why|when|which|who|should|shall|can|could|would|will|is|are|am|do|does|did|tell me|explain|help|any |anything|i want|i'd like|i would|recommend|suggest|best )/.test(t);
+}
+
 export function fallbackParse(message: string, knownSymbols: string[]): IntentT {
   const t = message.trim();
   const lower = t.toLowerCase();
   const resolve = (s: string) => resolveSymbol(s, knownSymbols);
   const num = "(\\d+(?:\\.\\d+)?)";
+  // Loose keyword rules are SUPPRESSED for question-phrased messages so they
+  // reach GUIDE mode instead of silently executing an action.
+  const loose = !isQuestionLike(message);
 
   // Read-only / meta
-  if (/\b(portfolio|balances?|holdings?|positions?)\b/.test(lower)) return { action: "portfolio" };
-  if (/\bnew account\b|\bcreate account\b/.test(lower)) return { action: "account", op: "new" };
+  if (loose && /\b(portfolio|balances?|holdings?|positions?)\b/.test(lower)) return { action: "portfolio" };
+  if (loose && /\bnew account\b|\bcreate account\b/.test(lower)) return { action: "account", op: "new" };
   if (/\blist accounts?\b|\bmy accounts?\b/.test(lower)) return { action: "account", op: "list" };
   { const m = lower.match(/switch.*account\s+(\d+)/); if (m) return { action: "account", op: "switch", index: Number(m[1]) }; }
 
@@ -299,13 +327,13 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
       const hours = unit.startsWith("d") ? Number(m[4]) * 24 : Number(m[4]);
       if (f && to) return { action: "dcaCreate", fromToken: f, toToken: to, amount: m[1]!, everyHours: hours }; } }
   if (/\bcancel dca\b|\bstop dca\b/.test(lower)) { const m = t.match(/dca\s+([0-9a-f]{4,})/i); return { action: "dcaCancel", ...(m ? { scheduleId: m[1] } : {}) }; }
-  if (/\bauto.?compound\b/.test(lower)) return { action: "autoCompound", enabled: !/\boff|disable|stop\b/.test(lower) };
+  if (loose && /\bauto.?compound\b/.test(lower)) return { action: "autoCompound", enabled: !/\boff|disable|stop\b/.test(lower) };
 
   // Borrow: "borrow 5000 MUSD against 0.1 BTC"
   { const m = t.match(new RegExp(`borrow\\s+${num}\\s+musd\\s+(?:against|with|using)\\s+${num}\\s+btc`, "i"));
     if (m) return { action: "borrow", mintMUSD: m[1]!, collateralBTC: m[2]! }; }
   { const m = t.match(new RegExp(`repay\\s+${num}\\s+musd`, "i")); if (m) return { action: "repay", repayMUSD: m[1]! }; }
-  if (/\bclose\s+trove\b/.test(lower)) return { action: "closeTrove" };
+  if (loose && /\bclose\s+trove\b/.test(lower)) return { action: "closeTrove" };
 
   // Lock: "lock 0.2 BTC for 28 days" / "lock 1000 MEZO for 2 years"
   { const m = t.match(new RegExp(`lock\\s+${num}\\s+(btc|mezo)\\s+for\\s+${num}\\s*(day|days|week|weeks|year|years)`, "i"));
@@ -314,8 +342,8 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
       return { action: "lock", asset: m[2]!.toUpperCase() as "BTC" | "MEZO", amount: m[1]!, lockDays: days }; } }
 
   // Vote / claim
-  if (/\bvote\b/.test(lower)) return { action: "vote", mode: /\bmanual\b/.test(lower) ? "manual" : "optimal" };
-  if (/\bclaim\b|\bharvest\b/.test(lower)) {
+  if (loose && /\bvote\b/.test(lower)) return { action: "vote", mode: /\bmanual\b/.test(lower) ? "manual" : "optimal" };
+  if (loose && (/\bclaim\b|\bharvest\b/.test(lower))) {
     const scope = /\brebase/.test(lower) ? "rebase" : /\bbribe/.test(lower) ? "bribe" : /\bgauge/.test(lower) ? "gauge" : "all";
     return { action: "claim", scope };
   }
@@ -329,8 +357,8 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
     if (m) return m[1]!.toLowerCase() === "stake" ? { action: "stakeLp", pool: m[2]!.toUpperCase() } : { action: "unstakeLp", pool: m[2]!.toUpperCase() }; }
 
   // Market
-  if (/\bbrowse market\b|\bmarket\b/.test(lower) && !/buy/.test(lower)) return { action: "marketBrowse" };
-  { const m = t.match(/buy\s+(?:listing\s+)?([a-z0-9]+)/i); if (m) return { action: "marketBuy", listingId: m[1]! }; }
+  if (loose && /\bbrowse market\b|\bmarket\b/.test(lower) && !/buy/.test(lower)) return { action: "marketBrowse" };
+  if (loose) { const m = t.match(/buy\s+listing\s+([a-z0-9]+)/i); if (m) return { action: "marketBuy", listingId: m[1]! }; }
 
   // Dollar-into-pool (the bounty's own example: "enter the MUSD/mUSDC pool with
   // $800"). Every live pool contains a $1 stable, so "$N" maps 1:1 onto the

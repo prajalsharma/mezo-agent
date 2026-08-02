@@ -53,6 +53,17 @@ const cases: { msg: string; want: Expect }[] = [
 
   // ── Must defer to the LLM (rules correctly return clarify) ────────────────
   { msg: "what can I do with my btc?", want: { action: "clarify" } },
+  // Questions must NOT be hijacked by the loose keyword rules — they belong to
+  // GUIDE mode. (Regression: "should I vote this epoch?" used to EXECUTE a vote.)
+  { msg: "should I vote this epoch?", want: { action: "clarify" } },
+  { msg: "how do I claim rewards?", want: { action: "clarify" } },
+  { msg: "is the market good right now?", want: { action: "clarify" } },
+  { msg: "should I buy more btc?", want: { action: "clarify" } },
+  { msg: "what are my positions?", want: { action: "clarify" } },
+  // ...while the equivalent COMMANDS still parse deterministically.
+  { msg: "vote optimally", want: { action: "vote" } },
+  { msg: "claim all", want: { action: "claim" } },
+  { msg: "close trove", want: { action: "closeTrove" } },
   { msg: "hi",                         want: { action: "clarify" } },
 ];
 
