@@ -54,6 +54,13 @@ contract FeeRouter {
     address public owner;
     address public feeRecipient;
     uint16 public feeBps;
+    /// @dev Discounted rate REFERRED traders pay (owner-set, must be <= feeBps;
+    ///      0 disables the discount). This exists because the fee floor below
+    ///      must not make the advertised lifetime referral discount
+    ///      unrepresentable — a floor of `feeBps` alone would revert every
+    ///      referred swap. (Audit finding: the first floor fix broke the
+    ///      referral program outright.)
+    uint16 public referredFeeBps;
     /// @dev Max share of the fee (in bps of the fee) a referrer may receive.
     uint16 public maxReferralShareBps;
 
@@ -96,6 +103,7 @@ contract FeeRouter {
         owner = msg.sender;
         feeRecipient = feeRecipient_;
         feeBps = feeBps_;
+        referredFeeBps = uint16((uint256(feeBps_) * 90) / 100); // default 90% of headline
         maxReferralShareBps = maxReferralShareBps_;
     }
 
@@ -125,7 +133,16 @@ contract FeeRouter {
         uint16 feeBpsOverride
     ) external nonReentrant returns (uint256 amountOut) {
         if (routes.length == 0) revert EmptyRoute();
-        if (feeBpsOverride != 0 && (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < feeBps)) revert FeeTooHigh();
+        // Two-sided bound. The FLOOR is the discounted rate only when a genuine
+        // (non-self) referrer is named and a discount is configured — otherwise
+        // it is the full rate. This blocks the "pass 1 bps and underpay" attack
+        // WITHOUT breaking the advertised referred-trader discount.
+        uint16 floorBps = (referrer != address(0) && referrer != msg.sender && referredFeeBps != 0)
+            ? referredFeeBps
+            : feeBps;
+        if (feeBpsOverride != 0 && (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < floorBps)) {
+            revert FeeTooHigh();
+        }
         address tokenIn = routes[0].from;
 
         _pull(tokenIn, msg.sender, amountIn);
@@ -168,8 +185,16 @@ contract FeeRouter {
         if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > BPS) revert FeeTooHigh();
         feeRecipient = feeRecipient_;
         feeBps = feeBps_;
+        // Keep the discount representable and never above the headline rate.
+        if (referredFeeBps > feeBps_) referredFeeBps = feeBps_;
         maxReferralShareBps = maxReferralShareBps_;
         emit ConfigChanged(feeRecipient_, feeBps_, maxReferralShareBps_);
+    }
+
+    /// @notice Set the discounted rate referred traders pay (<= feeBps; 0 disables).
+    function setReferredFeeBps(uint16 bps) external onlyOwner {
+        if (bps > feeBps) revert FeeTooHigh();
+        referredFeeBps = bps;
     }
 
     function setOwner(address newOwner) external onlyOwner {

@@ -41,6 +41,18 @@ export const env = {
     delegate7702: optional("DELEGATE7702_ADDRESS"),
     feeRouter: optional("FEE_ROUTER_ADDRESS"),
   },
+  /**
+   * EIP-7702 /upgrade is DISABLED by default pending a delegate rework.
+   * A multi-agent security audit proved a generic drain: any allowlisted
+   * spender holding a standing ERC-20 allowance moves funds without the
+   * delegate's amount/recipient checks running, because enforcement decodes a
+   * hardcoded selector list and enumeration cannot be exhaustive. The fix is
+   * balance-delta accounting (measure the realized balance decrease across the
+   * call), which is a contract rewrite + redeploy. Until then the safer
+   * contained-custodial path is used for everyone. Set UPGRADE_7702_ENABLED=true
+   * only on a testnet you are deliberately exercising.
+   */
+  upgrade7702Enabled: optional("UPGRADE_7702_ENABLED", "false").toLowerCase() === "true",
 
   /**
    * Generic per-contract overrides: MEZO_ADDR_<ContractKey>, e.g.

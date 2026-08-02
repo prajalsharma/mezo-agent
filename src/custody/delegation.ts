@@ -85,11 +85,36 @@ const SEL_SWAP_WITH_FEE = toFunctionSelector(
  */
 const BTC_UPPER_BOUND_USD = 250_000n;
 
-function tokenCapsFor(limits: ReturnType<typeof limitsOf>, decimals: number): { perTx: bigint; daily: bigint } {
+/**
+ * Convert the native BTC cap into a per-token cap.
+ *
+ * AUDIT FIX: the previous formula multiplied the USD ceiling by the token's
+ * unit unconditionally, i.e. it asserted "1 token == $1". That is right for the
+ * stables but catastrophically wrong for BTC-denominated ERC-20s (mcbBTC,
+ * mFBTC, mswBTC, mSolvBTC, mxSolvBTC): a 0.05 BTC (~$12.5k) limit became
+ * 12,500 mcbBTC (~$1.25B) — a ~100,000x hole in the backstop. BTC-denominated
+ * tokens are now capped by the NATIVE limit directly (1 token ≈ 1 BTC), which
+ * is the correct unit for them.
+ */
+function tokenCapsFor(
+  limits: ReturnType<typeof limitsOf>,
+  decimals: number,
+  symbol: string,
+): { perTx: bigint; daily: bigint } {
   const unit = 10n ** BigInt(decimals);
-  const perTx = (BigInt(limits.perTxNativeWei) * BTC_UPPER_BOUND_USD * unit) / 10n ** 18n;
-  const daily = (BigInt(limits.dailyNativeWei) * BTC_UPPER_BOUND_USD * unit) / 10n ** 18n;
-  return { perTx, daily };
+  const btcDenominated = /btc/i.test(symbol);
+  if (btcDenominated) {
+    // 1 unit ≈ 1 BTC → scale the native wei cap into this token's decimals.
+    return {
+      perTx: (BigInt(limits.perTxNativeWei) * unit) / 10n ** 18n,
+      daily: (BigInt(limits.dailyNativeWei) * unit) / 10n ** 18n,
+    };
+  }
+  // Dollar-denominated token: the USD ceiling maps 1:1 onto token units.
+  return {
+    perTx: (BigInt(limits.perTxNativeWei) * BTC_UPPER_BOUND_USD * unit) / 10n ** 18n,
+    daily: (BigInt(limits.dailyNativeWei) * BTC_UPPER_BOUND_USD * unit) / 10n ** 18n,
+  };
 }
 
 function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
@@ -121,7 +146,7 @@ function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
     const target = registry.routingAddress(t);
     const caps = t.native
       ? { perTx: BigInt(limits.perTxNativeWei), daily: BigInt(limits.dailyNativeWei) }
-      : tokenCapsFor(limits, t.decimals);
+      : tokenCapsFor(limits, t.decimals, t.symbol);
     policies.push({
       // approve is needed for swaps; transfer for fee payment / moves.
       target,

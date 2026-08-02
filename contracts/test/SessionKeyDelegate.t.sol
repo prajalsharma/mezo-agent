@@ -411,4 +411,30 @@ contract SessionKeyDelegateTest is Test {
         delegate.execute(address(target), 1 ether, _ping());
         assertEq(delegate.nativeUsage(sessionKey), 1 ether);
     }
+
+    /// AUDIT: naming the same target twice in one registerSession would UNION
+    /// selectors while `isTokenTarget` is evaluated per entry — entry 1 (zero
+    /// caps) slips an un-decoded selector past the guard, entry 2 then adds the
+    /// caps, leaving an uncapped value-moving selector on a capped token.
+    /// Duplicate targets must be rejected outright.
+    function test_audit_duplicateTargetInRegisterSessionRejected() public {
+        bytes4[] memory uncapped = new bytes4[](1);
+        uncapped[0] = SEL_PING; // un-decoded, hence uncapped
+        bytes4[] memory decoded = new bytes4[](1);
+        decoded[0] = SEL_TRANSFER;
+
+        SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](2);
+        // Entry 1: zero caps => isTokenTarget false => guard short-circuits.
+        p[0] = SessionKeyDelegate.TargetPolicy({
+            target: address(token), selectors: uncapped, tokenPerTxCap: 0, tokenDailyCap: 0
+        });
+        // Entry 2: same target, now WITH caps.
+        p[1] = SessionKeyDelegate.TargetPolicy({
+            target: address(token), selectors: decoded, tokenPerTxCap: TOK_PER_TX, tokenDailyCap: TOK_DAILY
+        });
+
+        vm.prank(address(delegate));
+        vm.expectRevert(SessionKeyDelegate.DuplicateTarget.selector);
+        delegate.registerSession(sessionKey, expiry, PER_TX, DAILY, p);
+    }
 }

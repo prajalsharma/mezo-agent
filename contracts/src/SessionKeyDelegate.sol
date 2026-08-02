@@ -48,6 +48,26 @@ pragma solidity 0.8.24;
  *      or are absent on Mezo). MUST NOT be deployed in Mezo's precompile range
  *      (0x7b7c…): EIP-7702 rejects authorizations targeting a precompile.
  */
+/**
+ * ⚠️ NOT PRODUCTION-READY — /upgrade is DISABLED in the bot (UPGRADE_7702_ENABLED).
+ *
+ * A 12-agent security audit proved, with executable PoCs, that this delegate's
+ * on-chain caps do NOT bound value in the general case:
+ *   1. Token caps are enforced by decoding a hardcoded selector list, so any
+ *      allowlisted spender holding a standing ERC-20 allowance moves funds with
+ *      NOTHING charged to the ring. Enumerating selectors cannot close this.
+ *   2. Native BTC and its 0x7b7C…0000 ERC-20 precompile are metered in two
+ *      independent rings, so the daily BTC budget is effectively doubled.
+ *   3. Router swap calldata (amountOutMin, Route.factory) is unconstrained, so a
+ *      key can route its whole allowance through a pool it controls.
+ *   4. setTargetPolicy clears the target's spend ring, so TIGHTENING a policy
+ *      under attack refills the attacker's budget.
+ *
+ * The correct fix is balance-delta accounting — snapshot the account's balance
+ * of each capped token around `_call` and charge the realized decrease — which
+ * is selector-agnostic. That is a rewrite, not a patch, and must be completed
+ * and re-audited before this delegate is used with real funds.
+ */
 contract SessionKeyDelegate {
     // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -88,6 +108,24 @@ contract SessionKeyDelegate {
     bytes4 private constant SEL_TRANSFER = bytes4(keccak256("transfer(address,uint256)"));
     bytes4 private constant SEL_APPROVE = bytes4(keccak256("approve(address,uint256)"));
     bytes4 private constant SEL_TRANSFER_FROM = bytes4(keccak256("transferFrom(address,address,uint256)"));
+
+    // Velodrome-style Router swap selectors. These are the selectors an operator
+    // actually grants a session key, and every one carries a caller-chosen
+    // `address to` recipient. Without decoding it, the contract's headline
+    // guarantee — "the recipient must be an allowlisted target" — is enforced
+    // ONLY for the three ERC-20 selectors above, and a key refused
+    // `transfer(attacker, x)` achieves the identical transfer via
+    // `swap(..., to: attacker, ...)`. (Audit finding, 3 independent agents.)
+    //
+    // ABI head layout is fixed even though `Route[]` is dynamic (the array is a
+    // tail offset), so `to` sits at a constant word index per selector.
+    bytes4 private constant SEL_SWAP_TOKENS_FOR_TOKENS =
+        bytes4(keccak256("swapExactTokensForTokens(uint256,uint256,(address,address,bool,address)[],address,uint256)"));
+    bytes4 private constant SEL_SWAP_ETH_FOR_TOKENS =
+        bytes4(keccak256("swapExactETHForTokens(uint256,(address,address,bool,address)[],address,uint256)"));
+    bytes4 private constant SEL_SWAP_TOKENS_FOR_ETH =
+        bytes4(keccak256("swapExactTokensForETH(uint256,uint256,(address,address,bool,address)[],address,uint256)"));
+
 
     // ─── Storage ──────────────────────────────────────────────────────────────
 
@@ -132,6 +170,7 @@ contract SessionKeyDelegate {
     error SpenderNotAllowed(address spender);
     error ForeignSourceForbidden(address from);
     error UncappedSelectorOnToken(bytes4 selector);
+    error DuplicateTarget();
     error MalformedCalldata();
     error AmountTooLarge();
     error CallFailed(bytes ret);
@@ -160,6 +199,14 @@ contract SessionKeyDelegate {
         _sessions[key] = Session({exists: true, expiry: expiry, perTxCap: perTxCap, dailyCap: dailyCap});
         delete _nativeBuckets[key];
         for (uint256 i = 0; i < policies.length; i++) {
+            // Reject duplicate targets. Selectors ACCUMULATE across entries while
+            // `isTokenTarget` is evaluated per entry, so naming one target twice
+            // (first with zero caps carrying an un-decoded selector, then with
+            // caps) would union them and defeat the UncappedSelectorOnToken
+            // guard — leaving an uncapped value-moving selector on a capped
+            // token. setTargetPolicy is immune because it _clearTarget()s first;
+            // this loop is the only path that could union. (Audit finding.)
+            if (_targetIndex[key][policies[i].target] != 0) revert DuplicateTarget();
             _applyPolicy(key, policies[i]);
         }
         emit SessionRegistered(key, expiry, perTxCap, dailyCap);
@@ -252,6 +299,17 @@ contract SessionKeyDelegate {
             address from;
             (from, counterparty, amount) = abi.decode(data[4:100], (address, address, uint256));
             if (from != address(this)) revert ForeignSourceForbidden(from);
+        } else if (
+            selector == SEL_SWAP_TOKENS_FOR_TOKENS || selector == SEL_SWAP_TOKENS_FOR_ETH
+                || selector == SEL_SWAP_ETH_FOR_TOKENS
+        ) {
+            // Swap proceeds must come back to THIS account. `to` is the 4th head
+            // word for the two-amount variants and the 3rd for the ETH variant.
+            uint256 off = selector == SEL_SWAP_ETH_FOR_TOKENS ? 68 : 100;
+            if (data.length < off + 32) revert MalformedCalldata();
+            address to = abi.decode(data[off:off + 32], (address));
+            if (to != address(this)) revert SpenderNotAllowed(to);
+            return; // amount is metered by the approval that funds the swap
         } else {
             return; // non-value-moving selector: already gated by the allowlist
         }

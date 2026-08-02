@@ -184,6 +184,28 @@ contract FeeRouterTest is Test {
         assertEq(tokenIn.balanceOf(operator), 0.5e18, "50 bps override == default rate");
     }
 
+    /// AUDIT (regression on the fix itself): the fee FLOOR must not make the
+    /// advertised referred-trader discount unrepresentable. The bot passes
+    /// referredBps (45 when feeBps=50) as the override for a referred swap —
+    /// a naive `override >= feeBps` floor reverted EVERY referred swap and
+    /// silently killed the referral program.
+    function test_audit_referredDiscountStillWorksUnderFeeFloor() public {
+        assertEq(fr.referredFeeBps(), 45, "default discount = 90% of 50 bps");
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 45);
+        // fee = 0.45 (45 bps); referrer 30% = 0.135; operator 0.315
+        assertEq(tokenIn.balanceOf(referrer), 0.135e18, "referrer paid at the discounted rate");
+        assertEq(tokenIn.balanceOf(operator), 0.315e18, "operator keeps the rest");
+    }
+
+    /// The discounted floor applies ONLY with a genuine referrer — a caller with
+    /// no referrer still cannot underpay.
+    function test_audit_discountFloorNotAvailableWithoutReferrer() public {
+        vm.prank(user);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 45);
+    }
+
     /// AUDIT: naming YOURSELF as referrer must not rebate any of your own fee.
     function test_audit_selfReferralPaysNoRebate() public {
         vm.prank(user);

@@ -15,4 +15,4 @@ package-lock.json
 # Foundry (contracts/) build output and vendored deps
 contracts/out/
 contracts/cache/
-contracts/lib/
+contracts/lib/.audit-*/

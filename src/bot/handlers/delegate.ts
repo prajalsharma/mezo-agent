@@ -22,6 +22,28 @@ export async function handleUpgrade(ctx: Context): Promise<void> {
     return;
   }
 
+  // SECURITY GATE (multi-agent audit): the delegate's on-chain caps are enforced
+  // by decoding a hardcoded selector list, so any allowlisted spender holding a
+  // standing ERC-20 allowance can move funds without the amount/recipient checks
+  // running — proven with executable PoCs. Enumerating selectors cannot close
+  // this; it needs balance-delta accounting (a contract rewrite + redeploy).
+  // Until then /upgrade is OFF and every user stays on the contained-custodial
+  // path, which is unaffected. UPGRADE_7702_ENABLED=true re-enables it for
+  // deliberate testnet exercise.
+  if (!env.upgrade7702Enabled) {
+    await ctx.reply(
+      "🔒 <b>Smart-account upgrade is temporarily disabled.</b>\n\n" +
+        "Our security audit found that the session-key delegate's on-chain spending caps " +
+        "can be bypassed in some cases, so we've turned the upgrade off rather than ship a " +
+        "weaker guarantee than we advertise.\n\n" +
+        "Nothing else is affected — swaps, borrowing, earning, locking and voting all work " +
+        "normally on your existing account, and every action still shows a confirmation " +
+        "before it signs.",
+      { parse_mode: "HTML" },
+    );
+    return;
+  }
+
   if (!registry.hasContract("Delegate7702")) {
     await ctx.reply(
       "⚠️ The session-key delegate isn't deployed/registered for this network yet, " +
