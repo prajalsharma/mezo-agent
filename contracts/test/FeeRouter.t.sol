@@ -161,4 +161,35 @@ contract FeeRouterTest is Test {
         vm.expectRevert(FeeRouter.FeeTooHigh.selector);
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 201); // > override cap rejected
     }
+
+    // ── Audit regressions ────────────────────────────────────────────────────
+
+    /// AUDIT: an override BELOW the configured rate must be rejected — otherwise
+    /// any caller sets 1 bps and underpays. amountOutMin cannot catch it (a
+    /// smaller fee means MORE output), so the contract must enforce the floor.
+    function test_audit_feeBpsOverrideBelowDefaultRejected() public {
+        vm.prank(user);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 1);
+
+        vm.prank(user);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 49); // just under feeBps=50
+    }
+
+    /// Override exactly AT the configured rate is still allowed (no regression).
+    function test_audit_feeBpsOverrideEqualToDefaultAllowed() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 50);
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "50 bps override == default rate");
+    }
+
+    /// AUDIT: naming YOURSELF as referrer must not rebate any of your own fee.
+    function test_audit_selfReferralPaysNoRebate() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, user, 3000, 0);
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "operator keeps the WHOLE fee");
+        // user's only tokenIn movement is the 100e18 they swapped — no rebate back.
+        assertEq(tokenIn.balanceOf(user), 900e18, "no self-rebate");
+    }
 }

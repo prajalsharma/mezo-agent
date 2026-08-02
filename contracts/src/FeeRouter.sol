@@ -107,10 +107,13 @@ contract FeeRouter {
      * @param referralShareBps referrer's share of the fee, in bps of the fee;
      *        clamped to `maxReferralShareBps`. Ignored when referrer is zero.
      * @param feeBpsOverride optional per-call fee rate; 0 uses the default
-     *        `feeBps`. Capped at MAX_OVERRIDE_BPS (200) — the 2× headroom exists
-     *        solely so a zap can collect its WHOLE fee on the swapped half
-     *        (2× bps on half == bps on gross); a caller can only volunteer a
-     *        HIGHER rate on their own call, never change what others pay.
+     *        `feeBps`. Bounded on BOTH sides: `feeBps <= override <= MAX_OVERRIDE_BPS`.
+     *        The upper 2× headroom exists solely so a zap can collect its WHOLE
+     *        fee on the swapped half (2× bps on half == bps on gross); the lower
+     *        bound is what makes "a caller may only volunteer a HIGHER rate"
+     *        true — without it any caller could set 1 bps and underpay the fee
+     *        (audit finding: an under-collection can never be caught by
+     *        `amountOutMin`, because a smaller fee means MORE output, not less).
      */
     function swapWithFee(
         uint256 amountIn,
@@ -122,7 +125,7 @@ contract FeeRouter {
         uint16 feeBpsOverride
     ) external nonReentrant returns (uint256 amountOut) {
         if (routes.length == 0) revert EmptyRoute();
-        if (feeBpsOverride > MAX_OVERRIDE_BPS) revert FeeTooHigh();
+        if (feeBpsOverride != 0 && (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < feeBps)) revert FeeTooHigh();
         address tokenIn = routes[0].from;
 
         _pull(tokenIn, msg.sender, amountIn);
@@ -142,7 +145,12 @@ contract FeeRouter {
         fee = (amountIn * (bpsOverride > 0 ? bpsOverride : feeBps)) / BPS;
         uint256 referrerShare = 0;
         if (fee > 0) {
-            if (referrer != address(0) && referralShareBps > 0) {
+            // Self-referral is rejected: `referrer` is unauthenticated calldata,
+            // so without this any caller could name THEMSELVES and rebate
+            // maxReferralShareBps of their own fee — a permanent discount to
+            // anyone who reads the ABI (audit finding). Referrals are a growth
+            // incentive for bringing OTHER traders, never a self-discount.
+            if (referrer != address(0) && referrer != msg.sender && referralShareBps > 0) {
                 uint16 share = referralShareBps > maxReferralShareBps ? maxReferralShareBps : referralShareBps;
                 referrerShare = (fee * share) / BPS;
                 if (referrerShare > 0) _push(tokenIn, referrer, referrerShare);
