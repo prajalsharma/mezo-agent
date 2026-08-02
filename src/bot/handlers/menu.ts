@@ -105,8 +105,15 @@ export async function handleMenuCallback(ctx: Context): Promise<void> {
 
   // Guidance sub-card for a parameterized action.
   if (rest.startsWith("tip:")) {
-    const card = tipCard(rest.slice("tip:".length));
+    const card = await tipCard(rest.slice("tip:".length), uid);
     if (card) await edit(card);
+    return;
+  }
+
+  // Live-sized borrow suggestion tapped from the Open Trove tip.
+  if (rest.startsWith("runborrow:")) {
+    const [debt, btc] = rest.slice("runborrow:".length).split(":");
+    if (debt && btc) await handleActionIntent(ctx, { action: "borrow", mintMUSD: debt, collateralBTC: btc });
     return;
   }
 

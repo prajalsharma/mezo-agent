@@ -439,11 +439,69 @@ function tipContent(key: string): { parent: string; text: string } | undefined {
   }
 }
 
-/** Build a tip/guidance sub-card by key. */
-export function tipCard(key: string): Card | undefined {
+/**
+ * Build a tip/guidance sub-card by key. Async because the borrow tip sizes its
+ * example from the LIVE BTC price and the user's real balance — a hardcoded
+ * "borrow 2000 MUSD against 0.1 BTC" goes stale the moment BTC moves, and can
+ * suggest more collateral than the user owns.
+ */
+export async function tipCard(key: string, telegramId?: number): Promise<Card | undefined> {
+  if (key === "borrow_open") return borrowOpenTip(telegramId);
   const t = tipContent(key);
   if (!t) return undefined;
   return { text: t.text, keyboard: chrome(new InlineKeyboard(), t.parent) };
+}
+
+const MIN_DEBT_MUSD = 1800;
+
+/** Live-sized "Open Trove" tip: real price, real balance, tappable command. */
+async function borrowOpenTip(telegramId?: number): Promise<Card> {
+  const { btcPriceUsd } = await import("../core/prices.js");
+  const price = await btcPriceUsd().catch(() => undefined);
+  let btcHeld = 0;
+  const user = telegramId ? getUser(telegramId) : undefined;
+  if (user) {
+    try {
+      const h = (await getPortfolio(user.address)).find((x) => x.token.symbol === "BTC");
+      if (h) btcHeld = Number(h.formatted);
+    } catch { /* ignore */ }
+  }
+
+  const lines = [b("➕ Open Trove"), ""];
+  const kb = new InlineKeyboard();
+  if (price) {
+    const gross = MIN_DEBT_MUSD * 1.01;
+    // Collateral for the minimum loan at a comfortable 150% ratio.
+    const safeBtc = Number(((1.5 * gross) / price).toFixed(4));
+    const affordable = btcHeld > 0 && btcHeld >= safeBtc;
+    // If they hold more than the minimum needs, size the example to THEIR stack
+    // (60% of it, keeping a buffer) instead of a fixed number.
+    const useBtc = affordable ? Number(Math.max(safeBtc, btcHeld * 0.6).toFixed(4)) : safeBtc;
+    const debt = affordable
+      ? Math.max(MIN_DEBT_MUSD, Math.floor(((useBtc * price) / 1.5 / 1.01) / 100) * 100)
+      : MIN_DEBT_MUSD;
+    const cmd = `borrow ${debt} MUSD against ${useBtc} BTC`;
+    lines.push(
+      `BTC is ${b(`$${Math.round(price).toLocaleString()}`)} right now, so the smallest loan (${b(`${MIN_DEBT_MUSD.toLocaleString()} MUSD`)}) needs about ${b(`${safeBtc} BTC`)} at a safe 150% ratio.`,
+      "",
+    );
+    if (user && btcHeld > 0) {
+      lines.push(
+        affordable
+          ? `You hold ${b(`${btcHeld} BTC`)} — enough. Suggested:`
+          : `You hold ${b(`${btcHeld} BTC`)}, which is below that. Add more via Deposit, or borrow once funded:`,
+        code(cmd),
+        "",
+      );
+    } else {
+      lines.push("Type, e.g.:", code(cmd), "");
+    }
+    if (affordable) kb.text(`▶ ${cmd}`, `menu:runborrow:${debt}:${useBtc}`).row();
+  } else {
+    lines.push("Type, e.g.:", code(`borrow ${MIN_DEBT_MUSD} MUSD against 0.05 BTC`), "");
+  }
+  lines.push(i(`Minimum debt ${MIN_DEBT_MUSD.toLocaleString()} MUSD; keep the ratio above 110% or risk liquidation. You'll see the live ratio and confirm before signing.`));
+  return { text: lines.join("\n"), keyboard: chrome(kb, "borrow") };
 }
 
 /**

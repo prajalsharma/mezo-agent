@@ -239,7 +239,10 @@ export function buildBot(): Bot {
     // and hand back a ready-to-tap command.
     {
       const m = text.match(/\bborrow\s+([\d,]+(?:\.\d+)?)\s*musd\b/i);
-      const hasCollateral = /\b(against|with|using)\b/i.test(text);
+      // "against BTC" with NO number is still an unsized borrow — require a
+      // numeric amount, otherwise the sizing helper is skipped and the user
+      // dead-ends on "I didn't catch that" (exactly what happened live).
+      const hasCollateral = /\b(?:against|with|using)\s+\d+(?:\.\d+)?\s*btc/i.test(text);
       if (m && !hasCollateral) {
         const debt = Number(m[1]!.replace(/,/g, ""));
         const MIN_DEBT = 1800;
