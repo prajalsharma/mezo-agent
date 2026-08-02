@@ -7,6 +7,7 @@ import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
 import { registry } from "../registry/registry.js";
 import { publicClient } from "../chain/client.js";
 import { b, i, code } from "./format.js";
+import { positionsBlock } from "./positionsView.js";
 import { explainerList } from "./explainers.js";
 
 /**
@@ -88,8 +89,7 @@ async function portfolioCard(telegramId: number): Promise<Card> {
   const kb = new InlineKeyboard()
     .text("🔄 Refresh", "menu:nav:portfolio").text("🌾 Claim rewards", "menu:do:claim");
   return {
-    text: `${b("💼 Portfolio")}\n${code(user.address)}\n\n${body}\n\n` +
-      i("Trove, LP & veNFT positions appear here as you open them."),
+    text: `${b("💼 Portfolio")}\n${code(user.address)}\n\n${body}\n\n${await positionsBlock(user.address)}`,
     keyboard: chrome(kb),
   };
 }

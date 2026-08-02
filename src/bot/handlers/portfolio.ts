@@ -5,6 +5,7 @@ import { getUser } from "../../wallet/walletService.js";
 import { getPortfolio, prettyAmount } from "../../portfolio/portfolioService.js";
 import { explorerAddressUrl } from "../../chain/networks.js";
 import { b, i, code, link } from "../format.js";
+import { positionsBlock } from "../positionsView.js";
 
 const netLabel = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
 
@@ -31,8 +32,7 @@ export async function handlePortfolio(ctx: Context): Promise<void> {
     .join("\n");
 
   await ctx.reply(
-    `${b(`Portfolio — ${netLabel}`)}\n${code(user.address)}\n\n${lines}\n\n` +
-      i("Positions coming in later phases: Troves, LP, veNFTs, claimable rewards."),
+    `${b(`Portfolio — ${netLabel}`)}\n${code(user.address)}\n\n${lines}\n\n${await positionsBlock(user.address)}`,
     { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
   );
 }
