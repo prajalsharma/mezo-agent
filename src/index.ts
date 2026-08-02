@@ -3,6 +3,7 @@ import { runPreflight, formatPreflightText } from "./core/preflight.js";
 import { log, errMsg } from "./core/log.js";
 import { env } from "./config/env.js";
 import { startKeeper } from "./keeper/scheduler.js";
+import { startAlerts } from "./keeper/alerts.js";
 import { installBotProfile } from "./bot/menu.js";
 import { setBotUsername } from "./bot/handlers/menu.js";
 
@@ -45,6 +46,15 @@ async function main() {
     startKeeper();
     console.log("⏱️  Keeper enabled (DCA / auto-compound).");
   }
+
+  // Proactive alerts (opt-in per user via /alerts). Independent of the keeper
+  // kill-switch: alerts are read-only notifications, never fund-moving.
+  startAlerts(async (telegramId, text) => {
+    await bot.api.sendMessage(telegramId, text).catch((err) => {
+      log.warn("alerts.send-failed", { error: errMsg(err) });
+    });
+  });
+  console.log("🔔 Alerts engine running (opt-in per user).");
 
   // Graceful shutdown. On every redeploy Railway sends SIGTERM to the OLD
   // instance; if it dies mid-poll it shows as "Deployment crashed". Awaiting

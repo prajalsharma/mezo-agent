@@ -62,7 +62,9 @@ export function buildLock(intent: LockIntent): ActionPlan {
     ...(agentFee.step ? [agentFee.step] : []),
   ];
   return {
-    action: "lock", title: `🔒 Lock ${intent.asset} (ve${intent.asset})`, summary, warnings: [],
+    action: "lock", title: `🔒 Lock ${intent.asset} (ve${intent.asset})`, summary,
+    // Plain-language risk line: the ONE thing lockers must understand.
+    warnings: [`Locked ${intent.asset} CANNOT be unlocked early — it stays committed until the full ${intent.lockDays} days pass.`],
     steps, allowedTargets: [...steps.filter((s) => s.kind !== "fee").map((s) => s.to), ...(agentFee.target ? [agentFee.target] : [])],
     executable: true,
     // Step-up threshold is BTC-denominated; only a BTC lock counts (fee included).

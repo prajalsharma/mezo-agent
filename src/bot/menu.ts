@@ -2,6 +2,7 @@ import { InlineKeyboard, type Bot } from "grammy";
 import { formatUnits } from "viem";
 import { env, feesEnabled } from "../config/env.js";
 import { getUser, listAccounts, activeIndex } from "../wallet/walletService.js";
+import { store } from "../db/store.js";
 import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
 import { registry } from "../registry/registry.js";
 import { publicClient } from "../chain/client.js";
@@ -332,13 +333,38 @@ function automateCard(): Card {
   const kb = new InlineKeyboard()
     .text("📋 My DCA", "menu:do:dcalist").text("➕ New DCA", "menu:tip:dca")
     .row()
-    .text("♻️ Auto-compound ON", "menu:do:autocompound_on").text("⏹️ OFF", "menu:do:autocompound_off");
+    .text("♻️ Auto-compound ON", "menu:do:autocompound_on").text("⏹️ OFF", "menu:do:autocompound_off")
+    .row()
+    .text("🔔 Alerts", "menu:nav:alerts");
   return {
     text: `${b("⚡ Automate")}\n\n` +
       `• ${b("DCA")} — buy a fixed amount on a repeating schedule\n` +
-      `• ${b("Auto-compound")} — claim & reinvest rewards each epoch\n\n` +
+      `• ${b("Auto-compound")} — claim & reinvest rewards each epoch\n` +
+      `• ${b("Alerts")} — opt-in warnings: Trove health, unclaimed rewards, epoch votes\n\n` +
       i("Each automated run is scoped by your spending limits and can be paused any time (/pause)."),
     keyboard: chrome(kb),
+  };
+}
+
+/** Opt-in proactive alerts. All OFF by default — the bot never messages first
+ *  except for alert types the user explicitly enabled here. */
+function alertsCard(telegramId: number): Card {
+  if (!getUser(telegramId)) return noWalletCard();
+  const p = store.alertPrefs(telegramId);
+  const dot = (on: boolean) => (on ? "🟢" : "🔴");
+  const kb = new InlineKeyboard()
+    .text(`${dot(p.trove)} Trove health`, "menu:alert:trove")
+    .row()
+    .text(`${dot(p.rewards)} Unclaimed rewards`, "menu:alert:rewards")
+    .row()
+    .text(`${dot(p.epoch)} Epoch vote reminder`, "menu:alert:epoch");
+  return {
+    text: `${b("🔔 Alerts — the bot messages you first ONLY for these")}\n\n` +
+      `${dot(p.trove)} ${b("Trove health")} — warns when your collateral ratio drops under 150%, with your live liquidation price.\n` +
+      `${dot(p.rewards)} ${b("Unclaimed rewards")} — a nudge (max once a day) when you have rewards sitting unclaimed.\n` +
+      `${dot(p.epoch)} ${b("Epoch vote reminder")} — in the final 24h of each weekly epoch, if you hold veNFTs.\n\n` +
+      i("Tap to toggle. Checks run every ~30 minutes. Outside these, the bot never initiates a message — treat any unsolicited DM claiming to be us as a scam."),
+    keyboard: chrome(kb, "automate"),
   };
 }
 
@@ -351,6 +377,7 @@ export async function screenCard(screen: string, telegramId: number): Promise<Ca
     case "earn": return earnCard();
     case "lockvote": return lockVoteCard();
     case "automate": return automateCard();
+    case "alerts": return alertsCard(telegramId);
     case "accounts": return accountsCard(telegramId);
     case "settings": return settingsCard();
     case "help": return { text: helpText(), keyboard: chrome(new InlineKeyboard()) };
@@ -481,6 +508,7 @@ export async function installBotProfile(bot: Bot): Promise<void> {
     { command: "earn", description: "🌱 LP, vaults, zap, claim" },
     { command: "vote", description: "🔒 Lock & vote (veBTC)" },
     { command: "automate", description: "⚡ DCA & auto-compound" },
+    { command: "alerts", description: "🔔 Opt-in warnings & reminders" },
     { command: "deposit", description: "📥 Deposit address + QR" },
     { command: "accounts", description: "👥 Manage wallets" },
     { command: "settings", description: "⚙️ Limits, fees, referral, upgrade" },

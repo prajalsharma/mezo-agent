@@ -235,7 +235,7 @@ export async function buildZap(
 
   return {
     action: "zap", title: "⚡ Zap into pool", summary,
-    warnings: [worstCaseLine, "Multi-tx zap is not atomic; a failed leg halts the remaining steps and may leave a residual allowance."],
+    warnings: [worstCaseLine, p.stable ? "Stable pool: impermanent loss is minimal while both sides hold their peg." : "If the two tokens' prices diverge, your LP can be worth less than just holding them (impermanent loss) — fees and rewards are the compensation.", "Multi-tx zap is not atomic; a failed leg halts the remaining steps and may leave a residual allowance."],
     steps, allowedTargets: [router, inAddr, otherAddr, ...(feeRouter ? [feeRouter] : []), ...feeTargets],
     // Step-up threshold is BTC-denominated: a BTC-input zap moves the full gross input.
     executable: true, nativeValue: input.native ? grossInput : 0n,

@@ -109,6 +109,17 @@ export async function handleMenuCallback(ctx: Context): Promise<void> {
     return;
   }
 
+  // Alert opt-in toggles — flip the pref and re-render the card in place.
+  if (rest.startsWith("alert:")) {
+    const key = rest.slice("alert:".length);
+    if (key === "trove" || key === "rewards" || key === "epoch") {
+      store.setAlertPref(uid, key, !store.alertPrefs(uid)[key]);
+      const card = await screenCard("alerts", uid);
+      if (card) await edit(card);
+    }
+    return;
+  }
+
   // Swap picker flow: source → destination → preset amount → quote/confirm.
   if (rest.startsWith("swapfrom:")) {
     await edit(await swapToCard(rest.slice("swapfrom:".length)));

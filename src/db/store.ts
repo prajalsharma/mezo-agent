@@ -112,6 +112,22 @@ type Db = {
   /** Deep-link referral clicks awaiting wallet creation (persisted so a redeploy
    *  between click and create can't drop the credit). Keyed by new-user id. */
   pendingReferrals?: Record<string, { referrer: number; expiresAt: number }>;
+  /** Proactive-alert opt-ins (all OFF by default — the bot never messages first
+   *  unless a specific alert type was explicitly enabled). Keyed by telegramId. */
+  alertPrefs?: Record<string, AlertPrefs>;
+  /** Per-user anti-spam state for alerts (last-sent timestamps / epoch marks). */
+  alertState?: Record<string, AlertState>;
+};
+
+export type AlertPrefs = { trove: boolean; rewards: boolean; epoch: boolean };
+export type AlertState = {
+  /** Last trove-health alert: when, and at what ICR band (re-alert only on a
+   *  meaningfully worse band or after the cooldown). */
+  troveAt?: number;
+  troveICR?: number;
+  rewardsAt?: number;
+  /** Epoch-start timestamp (ms) of the last epoch-close reminder sent. */
+  epochMark?: number;
 };
 
 export type OwedFee = {
@@ -165,6 +181,8 @@ class Store {
         referralEarnings: loaded.referralEarnings ?? {},
         owedFees: loaded.owedFees ?? [],
         pendingReferrals: loaded.pendingReferrals ?? {},
+        alertPrefs: loaded.alertPrefs ?? {},
+        alertState: loaded.alertState ?? {},
       };
     } else {
       this.flush();
@@ -272,6 +290,36 @@ class Store {
 
   owedFees(): OwedFee[] {
     return this.db.owedFees ?? [];
+  }
+
+  // ── Proactive alerts (opt-in) ───────────────────────────────────────────────
+  alertPrefs(telegramId: number): AlertPrefs {
+    return this.db.alertPrefs?.[String(telegramId)] ?? { trove: false, rewards: false, epoch: false };
+  }
+
+  setAlertPref(telegramId: number, key: keyof AlertPrefs, on: boolean): AlertPrefs {
+    const map = (this.db.alertPrefs ??= {});
+    const prefs = { ...this.alertPrefs(telegramId), [key]: on };
+    map[String(telegramId)] = prefs;
+    this.flush();
+    return prefs;
+  }
+
+  /** Every user with at least one alert enabled (for the keeper sweep). */
+  alertSubscribers(): Array<{ telegramId: number; prefs: AlertPrefs }> {
+    return Object.entries(this.db.alertPrefs ?? {})
+      .filter(([, p]) => p.trove || p.rewards || p.epoch)
+      .map(([id, prefs]) => ({ telegramId: Number(id), prefs }));
+  }
+
+  alertState(telegramId: number): AlertState {
+    return this.db.alertState?.[String(telegramId)] ?? {};
+  }
+
+  patchAlertState(telegramId: number, patch: Partial<AlertState>): void {
+    const map = (this.db.alertState ??= {});
+    map[String(telegramId)] = { ...this.alertState(telegramId), ...patch };
+    this.flush();
   }
 
   // ── Pending deep-link referrals (persisted; 24h TTL) ───────────────────────

@@ -12,7 +12,7 @@ import type { BorrowIntent, RepayIntent, AdjustIntent } from "../llm/intent.js";
 import { btcPriceUsd as readBtcPriceUsd } from "../core/prices.js";
 
 /** Current Trove collateral (BTC) and debt (MUSD) for an owner. undefined if unreadable. */
-async function readTrove(owner: Address): Promise<{ collBTC: number; debtMUSD: number } | undefined> {
+export async function readTrove(owner: Address): Promise<{ collBTC: number; debtMUSD: number } | undefined> {
   if (!registry.hasContract("TroveManager")) return undefined;
   try {
     const tm = registry.contract("TroveManager");
@@ -92,6 +92,14 @@ export async function buildBorrow(intent: BorrowIntent): Promise<ActionPlan> {
     summary.push(
       `Collateral ratio: ~${(icr * 100).toFixed(0)}% ${ok ? "✅" : "❌"} (min ${(MCR * 100).toFixed(0)}%, BTC ~$${Math.round(btcPrice).toLocaleString()})`,
     );
+    if (ok) {
+      // Plain-language risk line (research: Brian/HeyAnon pattern) — the ONE
+      // number a borrower must know, computed, never generated.
+      const liqPrice = (MCR * grossDebt) / collateralBTC;
+      warnings.unshift(
+        `If BTC falls below ~$${Math.round(liqPrice).toLocaleString()}, this Trove can be liquidated and you lose the collateral.`,
+      );
+    }
     if (!ok) {
       const minColl = (MCR * grossDebt) / btcPrice;
       const maxNetMint = collateralUsd / MCR / 1.01;

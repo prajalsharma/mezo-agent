@@ -31,7 +31,8 @@ import { clearPending } from "./session.js";
 import { store } from "../db/store.js";
 import { runPreflight, formatPreflightText } from "../core/preflight.js";
 import { getUser } from "../wallet/walletService.js";
-import { installBotProfile, homeCard, screenCard } from "./menu.js";
+import { installBotProfile, homeCard, screenCard, feesText } from "./menu.js";
+import { explainerFor } from "./explainers.js";
 import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
 
 /** Last free-text message per user, for one-turn conversational context. */
@@ -112,6 +113,7 @@ export function buildBot(): Bot {
   bot.command("vote", openScreen("lockvote"));
   bot.command("automate", openScreen("automate"));
   bot.command("settings", openScreen("settings"));
+  bot.command("alerts", openScreen("alerts"));
 
   // Emergency stop for scheduled automation (bounty: access controls / kill-switch).
   bot.command("pause", async (ctx) => {
@@ -130,22 +132,9 @@ export function buildBot(): Bot {
   });
 
   // Transparent fee disclosure — the bounty requires fees be disclosed in-bot.
+  // Shared, always-current disclosure (includes the referred discount + split).
   bot.command("fees", async (ctx) => {
-    const lines = ["<b>💸 Fees</b>", ""];
-    if (feesEnabled) {
-      lines.push(
-        `• Swaps & zaps: <b>${env.fees.swapBps / 100}%</b> of the input amount, taken in the input token.`,
-        ...(env.fees.txnBps > 0 ? [`• Borrow / vault deposit / lock: <b>${env.fees.txnBps / 100}%</b> of the amount, taken in that token.`] : []),
-        `• Shown on every confirmation before you approve — you always see the exact amount.`,
-        `• Fee recipient: <code>${env.fees.recipient}</code>`,
-        `• Referral share: <b>${env.fees.referralSharePct}%</b> of the fee goes to whoever referred the trader (/referral).`,
-      );
-    } else {
-      lines.push("• No agent fee is currently charged on this deployment.");
-    }
-    if (env.fees.automationNote) lines.push(`• Automation (DCA / auto-compound): ${env.fees.automationNote}`);
-    lines.push("", "<i>Network gas (BTC) is paid by you and is separate from any agent fee.</i>");
-    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+    await ctx.reply(feesText(), { parse_mode: "HTML" });
   });
   bot.command("cancel", async (ctx) => {
     if (ctx.from?.id) clearPending(ctx.from.id);
@@ -225,6 +214,23 @@ export function buildBot(): Bot {
       return;
     }
     if (/^\s*(deposit|fund|my address)\s*$/.test(lower)) { await handleDeposit(ctx); return; }
+
+    // Static ELI5 explainers — "what is liquidation?" etc. get a hand-written,
+    // zero-hallucination answer instantly (HeyAnon pattern), before any parsing.
+    {
+      const ex = explainerFor(text);
+      if (ex) {
+        const suggestions = [...ex.matchAll(/"([^"\n]{3,64})"/g)].map((m) => m[1]!).slice(0, 3);
+        const kb = new InlineKeyboard();
+        if (uid && suggestions.length) {
+          suggestionCache.set(uid, suggestions);
+          suggestions.forEach((sug, idx) => kb.text(`▶ ${sug.length > 40 ? sug.slice(0, 39) + "…" : sug}`, `sugg:${idx}`).row());
+        }
+        kb.text("🏠 Menu", "menu:home");
+        await ctx.reply(ex, { parse_mode: "HTML", reply_markup: kb, link_preview_options: { is_disabled: true } });
+        return;
+      }
+    }
 
     // Dollar-denominated phrasing ("swap $50 of BTC…") → token units, before any
     // parsing. Deterministic (stables $1, BTC via the live PriceFeed).
