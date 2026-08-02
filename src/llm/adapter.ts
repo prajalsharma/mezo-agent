@@ -60,10 +60,11 @@ export async function parseIntent(
   let system = SYSTEM.replace("{SYMBOLS}", knownSymbols.join(", "));
   // Grounding context for GUIDE mode — the user's real balances, live routes and
   // prices — so answers are concrete and can never honestly invent numbers.
+  let groundText = "";
   if (ground) {
     try {
-      const g = await ground();
-      if (g) system += `\n\nCONTEXT (the ONLY numbers you may use):\n${g}`;
+      groundText = (await ground()) ?? "";
+      if (groundText) system += `\n\nCONTEXT (the ONLY numbers you may use):\n${groundText}`;
     } catch { /* grounding is best-effort */ }
   }
   // One-turn memory: the user's PREVIOUS message so a short follow-up ("do it to
@@ -84,12 +85,22 @@ export async function parseIntent(
     return rule;
   }
 
-  // GUIDE mode — a plain-text answer. Deterministic guardrails: hard length cap
-  // and no tool semantics; the text is display-only (escaped by the handler) and
-  // can never execute anything.
+  // GUIDE mode — a plain-text answer. Deterministic guardrails: hard length cap,
+  // display-only text (escaped by the handler), and a NUMERIC POST-CHECK — every
+  // substantial number in the prose must appear in the grounding pack or the
+  // user's own message, or the whole answer is discarded (hallucinated APYs/
+  // prices never reach the user; industry lesson from grounded-agent designs).
   if (out.kind === "chat") {
     const text = out.text.trim().slice(0, 1500);
-    return text.length > 0 ? { action: "chat", text } : rule;
+    if (text.length === 0) return rule;
+    const corpus = (groundText + " " + message + " " + (prior ?? "")).replace(/,/g, "");
+    const numbers = [...text.replace(/,/g, "").matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]!);
+    const invented = numbers.some((n) => Number(n) > 100 && !corpus.includes(n));
+    if (invented) {
+      log.warn("llm.chat-ungrounded-number", { sample: text.slice(0, 120) });
+      return rule;
+    }
+    return { action: "chat", text };
   }
   if (out.raw === undefined) return rule;
 

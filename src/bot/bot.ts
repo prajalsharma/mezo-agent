@@ -1,4 +1,5 @@
 import { Bot, InlineKeyboard, type Context } from "grammy";
+import { formatUnits } from "viem";
 import { env, llmEnabled, feesEnabled, accessRestricted } from "../config/env.js";
 import { log } from "../core/log.js";
 import { registry } from "../registry/registry.js";
@@ -35,6 +36,8 @@ import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./
 
 /** Last free-text message per user, for one-turn conversational context. */
 const lastUserMessage = new Map<number, string>();
+/** GUIDE-mode suggested commands per user (tappable buttons carry an index). */
+const suggestionCache = new Map<number, string[]>();
 
 export function buildBot(): Bot {
   const bot = new Bot(env.telegramBotToken);
@@ -229,6 +232,30 @@ export function buildBot(): Bot {
     let parsedText = text;
     try { parsedText = await resolveDollarPhrases(text, symbols); } catch { /* keep original */ }
 
+    // Fraction phrasing ("half my MUSD", "all my BTC", "25% of my musd") →
+    // token units from the LIVE balance, in code, never by LLM arithmetic.
+    // "all" of the gas token keeps a reserve so the tx can still be sent
+    // (industry rule — ElizaOS uses 0.9×; we keep a fixed gas buffer).
+    if (uid && hasAccount && /\b(all|half|\d{1,2}\s?%)\s+(?:of\s+)?my\s+[a-z0-9]+/i.test(parsedText)) {
+      try {
+        const holder = getUser(uid)!;
+        const holdings = await getPortfolio(holder.address);
+        parsedText = parsedText.replace(/\b(all|half|(\d{1,2})\s?%)\s+(?:of\s+)?my\s+([a-zA-Z0-9]+)/gi, (whole, word: string, pct: string | undefined, tok: string) => {
+          const h = holdings.find((x) => x.token.symbol.toLowerCase() === tok.toLowerCase() || x.token.symbol.toLowerCase() === "m" + tok.toLowerCase());
+          if (!h || h.raw <= 0n) return whole;
+          let raw = word.toLowerCase() === "half" ? h.raw / 2n
+            : pct ? (h.raw * BigInt(Math.min(Number(pct), 100))) / 100n
+            : h.raw; // "all"
+          if (word.toLowerCase() === "all" && h.token.native) {
+            const GAS_BUFFER = 500_000_000_000_000n; // 0.0005 BTC for gas
+            raw = raw > GAS_BUFFER ? raw - GAS_BUFFER : 0n;
+          }
+          if (raw <= 0n) return whole;
+          return `${formatUnits(raw, h.token.decimals)} ${h.token.symbol}`;
+        });
+      } catch { /* balances unavailable — leave the phrase for clarify/LLM */ }
+    }
+
     // Conversational context: remember the last message per user so a follow-up
     // like "do it to MUSD then" can inherit the amount/tokens from it.
     const prior = uid ? lastUserMessage.get(uid) : undefined;
@@ -263,10 +290,26 @@ export function buildBot(): Bot {
 
     const intent = await parseIntent(parsedText, symbols, prior, ground);
     if (intent.action === "chat") {
-      // GUIDE mode: display-only answer, escaped, with the menu one tap away.
-      await ctx.reply(esc(intent.text), { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("🏠 Menu", "menu:home"), link_preview_options: { is_disabled: true } });
+      // GUIDE mode: display-only answer, escaped. The quoted example commands
+      // in the answer become TAPPABLE buttons that feed straight back into the
+      // deterministic parser — conversation teaches the grammar (Neur/Griffain
+      // suggestion-card pattern).
+      const suggestions = [...intent.text.matchAll(/"([^"\n]{3,64})"/g)].map((m) => m[1]!).slice(0, 3);
+      const kb = new InlineKeyboard();
+      if (uid && suggestions.length) {
+        suggestionCache.set(uid, suggestions);
+        suggestions.forEach((s, idx) => kb.text(`▶ ${s.length > 40 ? s.slice(0, 39) + "…" : s}`, `sugg:${idx}`).row());
+      }
+      kb.text("🏠 Menu", "menu:home");
+      await ctx.reply(esc(intent.text), { parse_mode: "HTML", reply_markup: kb, link_preview_options: { is_disabled: true } });
       return;
     }
+    await routeIntent(ctx, intent, uid, hasAccount);
+  });
+
+  /** Route a validated intent to its handler (shared by typed messages and
+   *  tapped suggestion buttons — both go through the same deterministic path). */
+  async function routeIntent(ctx: Context, intent: Exclude<Awaited<ReturnType<typeof parseIntent>>, { action: "chat" }>, uid: number | undefined, hasAccount: boolean): Promise<void> {
     switch (intent.action) {
       case "swap": return void (await handleSwapIntent(ctx, intent));
       case "portfolio": return void (await handlePortfolio(ctx));
@@ -292,6 +335,22 @@ export function buildBot(): Bot {
         if (!handled) await ctx.reply("I couldn't map that to a supported action. Try /help.");
       }
     }
+  }
+
+  // Tapped GUIDE-mode suggestion → run the quoted command through the SAME
+  // deterministic pipeline as a typed message (never a shortcut past preview/
+  // confirm). Suggestions are server-cached per user; callback data carries only
+  // an index (Telegram's 64-byte limit, and no user-controlled text execution).
+  bot.callbackQuery(/^sugg:(\d)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const uid = ctx.from?.id;
+    if (!uid) return;
+    const text = suggestionCache.get(uid)?.[Number(ctx.match![1])];
+    if (!text) { await ctx.reply("That suggestion expired — just type what you want."); return; }
+    const symbols = registry.knownTokenSymbols();
+    const parsed = await parseIntent(await resolveDollarPhrases(text, symbols).catch(() => text), symbols);
+    if (parsed.action === "chat") { await ctx.reply(esc(parsed.text), { parse_mode: "HTML" }); return; }
+    await routeIntent(ctx, parsed, uid, Boolean(getUser(uid)));
   });
 
   bot.catch((err) => {
