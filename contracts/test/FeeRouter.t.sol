@@ -60,8 +60,11 @@ contract FeeRouterTest is Test {
         router = new MockRouter(tokenOut);
         fr = new FeeRouter(address(router), operator, 50, 3000); // 0.5% fee, 30% max referral
         address[] memory refs = new address[](1);
-        refs[0] = referrer;
-        fr.setReferrers(refs, true); // referrals must now be owner-attested
+        refs[0] = user;
+        fr.bindReferrers(refs, referrer); // trader must be BOUND to this referrer
+        address[] memory fts = new address[](1);
+        fts[0] = address(tokenIn);
+        fr.setFeeTokens(fts, true); // the fee's UNIT must be an approved token
         tokenIn.mint(user, 1_000e18);
         vm.prank(user);
         tokenIn.approve(address(fr), type(uint256).max);
@@ -254,14 +257,46 @@ contract FeeRouterTest is Test {
         assertEq(tokenIn.balanceOf(operator) + tokenIn.balanceOf(referrer), 0.45e18, "45 bps total, not 50");
     }
 
-    /// Revoking attestation removes both the discount and the payout.
-    function test_audit_revokedReferrerLosesBoth() public {
+    /// Rebinding a trader to a different referrer removes the old one's payout.
+    function test_audit_rebindingRemovesTheOldReferrersPayout() public {
         address[] memory refs = new address[](1);
-        refs[0] = referrer;
-        fr.setReferrers(refs, false);
+        refs[0] = user;
+        fr.bindReferrers(refs, address(0xB0B)); // bound to someone else now
         vm.prank(user);
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
-        assertEq(tokenIn.balanceOf(operator), 0.5e18, "full rate after revocation");
-        assertEq(tokenIn.balanceOf(referrer), 0, "no payout after revocation");
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "full rate: the named referrer is not the bound one");
+        assertEq(tokenIn.balanceOf(referrer), 0, "unbound referrer is paid nothing");
+    }
+
+    /// AUDIT: the fee is bps of a CALLER-CHOSEN token, so an attacker could mint
+    /// a worthless token, make it hop 0, and have the real trade settle later -
+    /// paying the operator in dust while every rate check passed.
+    function test_audit_feeCannotBeDenominatedInAnUnapprovedToken() public {
+        MockERC20 junk = new MockERC20();
+        junk.mint(user, 1_000_000e18);
+        vm.prank(user);
+        junk.approve(address(fr), type(uint256).max);
+
+        Route[] memory r = new Route[](1);
+        r[0] = Route({from: address(junk), to: address(tokenOut), stable: false, factory: address(0xFAC)});
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.FeeTokenNotAllowed.selector, address(junk)));
+        fr.swapWithFee(1_000_000e18, 0, r, block.timestamp + 600, address(0), 0, 0);
+    }
+
+    /// AUDIT: a global "is a referrer" flag let ANY caller name a stranger's
+    /// attested address to take the discount + rebate. The binding is per-trader.
+    function test_audit_unboundTraderCannotClaimSomeoneElsesReferrer() public {
+        address freeloader = address(0xF4EE);
+        tokenIn.mint(freeloader, 100e18);
+        vm.prank(freeloader);
+        tokenIn.approve(address(fr), type(uint256).max);
+
+        vm.prank(freeloader);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
+
+        // Full rate to the operator, nothing diverted: the relationship was never bound.
+        assertEq(tokenIn.balanceOf(referrer), 0, "unbound referrer must be paid 0");
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "operator must get the FULL 50 bps, not the 45 bps referred rate");
     }
 }

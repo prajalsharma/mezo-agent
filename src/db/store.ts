@@ -256,6 +256,11 @@ class Store {
     return this.db.accounts[String(telegramId)]?.[0]?.referredBy;
   }
 
+  /** Every telegramId with an account - used by the referral binding sync. */
+  allTelegramIds(): number[] {
+    return Object.keys(this.db.accounts).map(Number);
+  }
+
   /** How many distinct users this telegramId has referred (deep-link). */
   countReferrals(telegramId: number): number {
     const seen = new Set<number>();
@@ -266,8 +271,11 @@ class Store {
   }
 
   /**
-   * Record a referral reward paid to a referrer (split at source on-chain, so
-   * this ledger is a transparency/history record, not an unsettled liability).
+   * Record a referral reward paid to a referrer. This is a transparency/history
+   * record, NOT a liability - but only because referralFor() refuses to build a
+   * referral unless the FeeRouter's referrerOf[trader] binding exists, so every
+   * credit here corresponds to a split the chain actually made. If that check is
+   * ever removed, this ledger becomes an unfunded promise (audit).
    * Keyed referrerId → token symbol → cumulative raw amount, plus a trade count.
    */
   recordReferralEarning(referrerId: number, symbol: string, rawAmount: bigint): void {

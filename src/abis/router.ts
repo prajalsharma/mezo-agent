@@ -166,4 +166,29 @@ export const feeRouterAbi = [
   },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
   { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  // The trader -> referrer binding. The bot MUST consult this before quoting a
+  // referral discount or crediting the earnings ledger: the contract pays a
+  // referrer only when the binding exists, so trusting the off-chain link alone
+  // creates an unfunded liability (audit).
+  {
+    type: "function",
+    name: "referrerOf",
+    stateMutability: "view",
+    inputs: [{ name: "trader", type: "address" }],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "bindReferrers",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "traders", type: "address[]" }, { name: "referrer", type: "address" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "setFeeTokens",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "tokens", type: "address[]" }, { name: "allowed", type: "bool" }],
+    outputs: [],
+  },
 ] as const;

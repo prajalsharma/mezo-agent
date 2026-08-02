@@ -42,7 +42,7 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
     // charged, the referrer's share is paid straight to their wallet on-chain.
     // referralFor is the single source of truth (self-referral guard, zero-share
     // guard) shared with the zap path and the DCA keeper.
-    const referral = referralFor(telegramId, user.address);
+    const referral = await referralFor(telegramId, user.address);
     plan = await buildSwap({
       owner: user.address,
       tokenIn,

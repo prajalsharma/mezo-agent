@@ -61,7 +61,7 @@ const liveExecutor: SwapExecutor = async (user, s) => {
   // Referral parity for scheduled swaps (audit: DCA previously bypassed referral
   // entirely — referred users were over-charged and referrers earned nothing on
   // exactly the recurring flow that matters most).
-  const referral = referralFor(user.telegramId, user.address);
+  const referral = await referralFor(user.telegramId, user.address);
   const plan = await buildSwap({ owner: user.address, tokenIn, tokenOut, humanAmountIn: s.amount, slippagePct: 0.5, referral });
   if (!plan.executable) return { ok: false, detail: plan.gatedReason ?? "swap execution gated" };
   const res = await executeSwap(user, plan);

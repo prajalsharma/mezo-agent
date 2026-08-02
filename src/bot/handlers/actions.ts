@@ -45,7 +45,7 @@ export async function handleActionIntent(ctx: Context, intent: Intent): Promise<
   let plan: ActionPlan | undefined;
   try {
     // Referral context (zap fee split + referred discount) — same resolver as swaps.
-    plan = await buildActionPlan(intent, user.address, referralFor(telegramId, user.address));
+    plan = await buildActionPlan(intent, user.address, await referralFor(telegramId, user.address));
   } catch (err) {
     if (err instanceof ActionUnavailableError) {
       await ctx.reply(`⚠️ ${esc(err.message)}`, { parse_mode: "HTML" });
