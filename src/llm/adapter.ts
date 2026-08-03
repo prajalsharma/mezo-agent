@@ -220,7 +220,7 @@ async function callAnthropic(system: string, message: string): Promise<ProviderR
   const client = new Anthropic({ apiKey: env.llm.anthropicApiKey });
   const res = await client.messages.create({
     model: env.llm.anthropicModel,
-    max_tokens: 700,
+    max_tokens: 2048, // guide answers were being cut mid-sentence
     system,
     tools: [INTENT_TOOL_SCHEMA as never],
     tool_choice: { type: "auto" },
@@ -249,7 +249,13 @@ async function callGemini(system: string, message: string): Promise<ProviderRepl
       },
       body: JSON.stringify({
         model: env.llm.geminiModel,
-        max_tokens: 512,
+        // Gemini 2.5+ counts THINKING tokens against max_tokens, so a small cap
+        // is spent reasoning and the visible answer is cut mid-sentence - the
+        // guide replies were arriving as "Here are key ways...: • **Zap into".
+        // A truncated answer also strands an unclosed "**", which then renders
+        // as literal asterisks because the bold rule needs a closing pair.
+        max_tokens: 2048,
+        reasoning_effort: "low",
         messages: [
           { role: "system", content: system },
           { role: "user", content: message },
