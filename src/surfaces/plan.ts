@@ -1,4 +1,5 @@
 import type { Address, Hex } from "viem";
+import { awaitReceipt, approvalSatisfied, RECEIPT_TIMEOUT_MS } from "../chain/receipt.js";
 import { publicClient } from "../chain/client.js";
 import { simulateCall } from "../core/simulator.js";
 import { signAndSubmit, PolicyViolationError } from "../custody/signer.js";
@@ -181,11 +182,22 @@ export async function executeActionPlan(
     // would freeze the whole bot (including /pause). A timeout lets the handler
     // return and the bot stay responsive; the user can retry. (Audit R2 H2.)
     if (step.waitForReceipt) {
-      let receipt;
-      try {
-        receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });
-      } catch {
-        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} not confirmed within 90s (tx ${hash}); stopping. It may still land - check before retrying.` });
+      const receipt = await awaitReceipt(hash, { timeoutMs: RECEIPT_TIMEOUT_MS });
+      if (!receipt) {
+        // An approval's purpose is the allowance, not the receipt: if the
+        // allowance is already on-chain the step succeeded and aborting here
+        // would strand the user mid-plan (observed live on Mezo, where the
+        // receipt watcher stalls on transactions that did confirm).
+        if (step.kind === "approval" && (await approvalSatisfied(step.to, step.data, user.address as Address))) {
+          store.updateTxByHash(hash, "confirmed");
+          await onProgress?.("Approval confirmed (allowance verified on-chain).");
+          continue;
+        }
+        outcomes.push({
+          kind: step.kind,
+          ok: false,
+          reason: `${step.kind} not confirmed within ${RECEIPT_TIMEOUT_MS / 1000}s (tx ${hash}); stopping. It may still land - check before retrying.`,
+        });
         return { outcomes, aborted: true };
       }
       store.updateTxByHash(hash, receipt.status === "success" ? "confirmed" : "failed");
@@ -194,10 +206,11 @@ export async function executeActionPlan(
         return { outcomes, aborted: true };
       }
     } else {
-      void publicClient()
-        .waitForTransactionReceipt({ hash })
-        .then((r) => store.updateTxByHash(hash, r.status === "success" ? "confirmed" : "failed"))
-        .catch(() => store.updateTxByHash(hash, "failed"));
+      // Same poller as the blocking path: the watcher stalls on Mezo, which
+      // would mark a confirmed transaction "failed" in the user's history.
+      void awaitReceipt(hash)
+        .then((r) => { if (r) store.updateTxByHash(hash, r.status === "success" ? "confirmed" : "failed"); })
+        .catch(() => {});
     }
   }
 

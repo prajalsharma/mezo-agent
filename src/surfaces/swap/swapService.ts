@@ -1,4 +1,5 @@
-import type { Hex } from "viem";
+import type { Address, Hex } from "viem";
+import { awaitReceipt, approvalSatisfied, RECEIPT_TIMEOUT_MS } from "../../chain/receipt.js";
 import { publicClient } from "../../chain/client.js";
 import { trySignStep, recordFeeLoss } from "../plan.js";
 import { store, type UserRecord } from "../../db/store.js";
@@ -82,11 +83,22 @@ export async function executeSwap(
     //    before the fee is charged (Audit R3 F1 — no fee on a failed swap). A
     //    bounded timeout keeps the single-threaded bot responsive (Audit R2 H2).
     if (step.kind === "approval" || step.kind === "fee" || step.kind === "referral" || step.waitForReceipt) {
-      let receipt;
-      try {
-        receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: 90_000, retryCount: 6 });
-      } catch {
-        outcomes.push({ kind: step.kind, ok: false, reason: `${step.kind} not confirmed within 90s (tx ${hash}); stopping.` });
+      const receipt = await awaitReceipt(hash, { timeoutMs: RECEIPT_TIMEOUT_MS });
+      if (!receipt) {
+        // The receipt poll timed out. For an approval that is not the same as
+        // failure: ask the chain whether the allowance is actually there, since
+        // that is the only thing the next step needs (a real approval once
+        // landed on-chain while the bot reported "not confirmed" and aborted).
+        if (step.kind === "approval" && (await approvalSatisfied(step.to, step.data, user.address as Address))) {
+          store.updateTxByHash(hash, "confirmed");
+          await onProgress?.(`Approval confirmed (allowance verified on-chain).`);
+          continue;
+        }
+        outcomes.push({
+          kind: step.kind,
+          ok: false,
+          reason: `${step.kind} not confirmed within ${RECEIPT_TIMEOUT_MS / 1000}s (tx ${hash}). It may still land - check the explorer before retrying.`,
+        });
         return { outcomes, aborted: true };
       }
       store.updateTxByHash(hash, receipt.status === "success" ? "confirmed" : "failed");
@@ -96,10 +108,11 @@ export async function executeSwap(
       }
     } else {
       // Track the swap's confirmation without blocking the reply.
-      void publicClient()
-        .waitForTransactionReceipt({ hash })
-        .then((r) => store.updateTxByHash(hash, r.status === "success" ? "confirmed" : "failed"))
-        .catch(() => store.updateTxByHash(hash, "failed"));
+      // Same poller as the blocking path: the watcher stalls on Mezo, which
+      // would mark a confirmed transaction "failed" in the user's history.
+      void awaitReceipt(hash)
+        .then((r) => { if (r) store.updateTxByHash(hash, r.status === "success" ? "confirmed" : "failed"); })
+        .catch(() => {});
     }
   }
 
