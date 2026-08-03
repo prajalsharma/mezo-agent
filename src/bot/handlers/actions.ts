@@ -55,6 +55,13 @@ export async function handleActionIntent(ctx: Context, intent: Intent): Promise<
   }
   if (!plan) return false; // not an action this handler owns
 
+  // Remember the pool so the natural follow-up works. The bot ends a zap by
+  // telling the user to stake, so "now stake it" must resolve to that pool
+  // instead of reprinting the token list.
+  if ("pool" in intent && typeof intent.pool === "string" && intent.pool) {
+    store.setLastPool(telegramId, intent.pool.toUpperCase());
+  }
+
   const netTag = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
 
   // Gated (preview-only) plan: show the summary, no signing.

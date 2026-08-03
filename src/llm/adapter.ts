@@ -35,6 +35,9 @@ const SYSTEM = [
 export type ChatReply = { action: "chat"; text: string };
 export type ParsedMessage = IntentT | ChatReply;
 
+/** Short-lived conversational referents the deterministic rules may inherit. */
+export type ParseContext = { lastPool?: string };
+
 export async function parseIntent(
   message: string,
   knownSymbols: string[],
@@ -42,13 +45,14 @@ export async function parseIntent(
   /** Lazy grounding context (balances, routes, prices) for guide mode — only
    *  fetched when the deterministic rules can't handle the message. */
   ground?: () => Promise<string>,
+  ctx?: ParseContext,
 ): Promise<ParsedMessage> {
   // 1) DETERMINISTIC FIRST. The headline commands (swap/borrow/repay/lock/dca/
   //    zap/stake/…) are precise and structured, so the rule parser nails them
   //    instantly, for free, with zero dependence on any model. This is what makes
   //    "swap 0.0001 BTC to mUSDC" ALWAYS work — no LLM latency, no field-name
   //    risk, no rate limit. The LLM never even runs for a clear command.
-  const rule = fallbackParse(message, knownSymbols);
+  const rule = fallbackParse(message, knownSymbols, ctx);
   if (rule.action !== "clarify") return rule;
 
   // 2) LLM SECOND, only for what the rules couldn't parse — i.e. free-form,
@@ -316,7 +320,7 @@ function daysFrom(qty: string, unit: string): number {
   return Math.max(1, Math.round(n * mult));
 }
 
-export function fallbackParse(message: string, knownSymbols: string[]): IntentT {
+export function fallbackParse(message: string, knownSymbols: string[], ctx?: ParseContext): IntentT {
   const t = message.trim();
   const lower = t.toLowerCase();
   const resolve = (s: string) => resolveSymbol(s, knownSymbols);
@@ -385,6 +389,20 @@ export function fallbackParse(message: string, knownSymbols: string[]): IntentT 
   // Stake / unstake LP: "stake LP MUSD/mUSDC"
   { const m = t.match(/(stake|unstake)\s+(?:lp\s+)?([a-z0-9]+\/[a-z0-9]+)/i);
     if (m) return m[1]!.toLowerCase() === "stake" ? { action: "stakeLp", pool: m[2]!.toUpperCase() } : { action: "unstakeLp", pool: m[2]!.toUpperCase() }; }
+
+  // Same thing, said the way people actually say it: "now stake it", "stake
+  // them", "unstake it". The bot ENDS a zap by telling the user to stake, so
+  // refusing the obvious follow-up and reprinting the token list reads as
+  // amnesia. Only fires when a recent pool exists, and the confirmation card
+  // still names that pool in full, so an inherited referent is never silent.
+  if (ctx?.lastPool) {
+    const m = t.match(/^\s*(?:and\s+|then\s+|now\s+|ok(?:ay)?[, ]+)*(stake|unstake)\s*(?:it|them|that|those|the\s+lp|lp|my\s+lp)?\s*(?:now|please|pls)?\s*[.!]?\s*$/i);
+    if (m) {
+      return m[1]!.toLowerCase() === "stake"
+        ? { action: "stakeLp", pool: ctx.lastPool }
+        : { action: "unstakeLp", pool: ctx.lastPool };
+    }
+  }
 
   // Vault deposit: "deposit 100 MUSD into vault" — TAUGHT by the Earn tip card
   // but had no rule, so it always fell through to "I didn't catch that".

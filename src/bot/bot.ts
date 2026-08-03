@@ -338,7 +338,7 @@ export function buildBot(): Bot {
       return lines.join("\n");
     };
 
-    const intent = await parseIntent(parsedText, symbols, prior, ground);
+    const intent = await parseIntent(parsedText, symbols, prior, ground, { lastPool: uid ? store.lastPool(uid) : undefined });
     if (intent.action === "chat") {
       // GUIDE mode: display-only answer, escaped. The quoted example commands
       // in the answer become TAPPABLE buttons that feed straight back into the

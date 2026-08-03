@@ -256,6 +256,25 @@ class Store {
     return this.db.accounts[String(telegramId)]?.[0]?.referredBy;
   }
 
+  /**
+   * The pool this user last acted on, so a follow-up like "now stake it" has a
+   * referent. In memory only and short-lived: it is a conversational
+   * convenience, never authority for moving funds - the resolved action still
+   * renders a full confirmation card naming the pool explicitly.
+   */
+  private lastPools = new Map<number, { pool: string; at: number }>();
+
+  setLastPool(telegramId: number, pool: string): void {
+    this.lastPools.set(telegramId, { pool, at: Date.now() });
+  }
+
+  /** The recent pool, or undefined once it is older than 30 minutes. */
+  lastPool(telegramId: number): string | undefined {
+    const hit = this.lastPools.get(telegramId);
+    if (!hit || Date.now() - hit.at > 30 * 60_000) return undefined;
+    return hit.pool;
+  }
+
   /** Every telegramId with an account - used by the referral binding sync. */
   allTelegramIds(): number[] {
     return Object.keys(this.db.accounts).map(Number);

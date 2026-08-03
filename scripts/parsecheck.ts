@@ -120,6 +120,36 @@ for (const [inp, exp] of symCases) {
   else pass++;
 }
 
+// Conversational follow-ups. The bot ENDS a zap by telling the user to stake,
+// so "now stake it" must resolve to the pool just acted on - reprinting the
+// token list there reads as amnesia.
+const CTX = { lastPool: "BTC/MUSD" };
+for (const phrase of [
+  "now stake it", "stake it", "stake them", "and stake it", "then stake it now",
+  "ok, stake", "stake my lp", "stake the lp", "Stake It.",
+]) {
+  const got: any = fallbackParse(phrase, SYMBOLS, CTX);
+  if (got.action !== "stakeLp" || got.pool !== "BTC/MUSD") fails.push(`follow-up "${phrase}" → ${got.action} ${got.pool ?? ""}`);
+  else pass++;
+}
+{
+  const got: any = fallbackParse("unstake it", SYMBOLS, CTX);
+  if (got.action !== "unstakeLp" || got.pool !== "BTC/MUSD") fails.push(`follow-up "unstake it" → ${got.action}`);
+  else pass++;
+}
+// Safety: with no referent it must ASK, never guess a pool.
+for (const phrase of ["now stake it", "stake it"]) {
+  const got: any = fallbackParse(phrase, SYMBOLS);
+  if (got.action !== "clarify") fails.push(`"${phrase}" with no context must clarify, got ${got.action}`);
+  else pass++;
+}
+// Safety: an explicit pool always beats the inherited referent.
+{
+  const got: any = fallbackParse("stake LP MUSD/mUSDC", SYMBOLS, CTX);
+  if (got.pool !== "MUSD/MUSDC") fails.push(`explicit pool overridden by referent: got ${got.pool}`);
+  else pass++;
+}
+
 console.log(`\nPARSE AUDIT: ${pass}/${pass + fails.length} passed`);
 if (fails.length) {
   console.log("\n❌ FAILURES:");
