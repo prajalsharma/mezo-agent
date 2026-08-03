@@ -10,6 +10,8 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 import { env, feesEnabled } from "../config/env.js";
 import { gatedPlan, ActionUnavailableError, type ActionPlan, type ActionStep } from "./plan.js";
 import type { ZapIntent } from "../llm/intent.js";
+import { btcPriceUsd } from "../core/prices.js";
+import type { TokenInfo } from "../registry/addresses.js";
 
 /**
  * Zap-to-enter. Given a single asset and a target pool, compute the swaps needed
@@ -24,7 +26,7 @@ export async function buildZap(
   owner: import("viem").Address,
   referral?: { recipient: import("viem").Address; sharePct: number; referrerTelegramId: number },
 ): Promise<ActionPlan> {
-  const input = registry.tryToken(intent.inputToken);
+  let input = registry.tryToken(intent.inputToken);
   if (!input) throw new ActionUnavailableError(`Unknown token "${intent.inputToken}".`);
   if (Number(intent.inputAmount) <= 0) throw new ActionUnavailableError("Amount must be greater than zero.");
 
@@ -35,7 +37,7 @@ export async function buildZap(
   }
 
   const [symA, symB] = p.pair;
-  const inSym = input.symbol;
+  let inSym = input.symbol;
   const isMemberOfPool = [symA.toLowerCase(), symB.toLowerCase()].includes(inSym.toLowerCase());
   if (!isMemberOfPool) {
     return gatedPlan({
@@ -45,8 +47,47 @@ export async function buildZap(
     });
   }
 
-  const otherSym = inSym.toLowerCase() === symA.toLowerCase() ? symB : symA;
-  const other = registry.token(otherSym);
+  let otherSym = inSym.toLowerCase() === symA.toLowerCase() ? symB : symA;
+  let other = registry.token(otherSym);
+
+  // Can this wallet actually FUND the plan? Approving a token you hold none of
+  // still succeeds, so without this the zap submitted two approvals and only
+  // then died on transferFrom with an opaque TransferFailed() - the user paid
+  // gas twice to be told "the transaction reverted on-chain".
+  //
+  // A bare "$50 into the BTC/MUSD pool" names no input token, so the parser
+  // picks the stable leg on the $1-is-1-MUSD reading. If the wallet holds none
+  // of that leg but does hold the other one, use the other: it is the same
+  // request, funded. The swap is shown on the confirmation card either way, so
+  // this resolves the ambiguity rather than hiding it.
+  let switched = false;
+  // The amount actually zapped, in the FINAL input token's decimals. After a
+  // switch this must be the converted value, never the raw literal: "$50" of
+  // BTC is ~0.0006 BTC, and parsing "50" in BTC decimals would try to zap 50
+  // BTC.
+  let effectiveRaw = parseUnits(intent.inputAmount, input.decimals);
+  const needed = effectiveRaw;
+  const held = await balanceOf(input, owner);
+  if (held < needed) {
+    const alt = registry.token(otherSym);
+    const altHeld = await balanceOf(alt, owner);
+    const altNeeded = await equivalentAmount(input, needed, alt);
+    if (altNeeded !== undefined && altHeld >= altNeeded) {
+      other = input;
+      otherSym = input.symbol;
+      input = alt;
+      inSym = alt.symbol;
+      effectiveRaw = altNeeded;
+      switched = true;
+    } else {
+      throw new ActionUnavailableError(
+        `Not enough ${inSym} to zap: you have ${formatUnits(held, input.decimals)} ${inSym}, ` +
+          `this needs ${intent.inputAmount}. You hold ${formatUnits(altHeld, alt.decimals)} ${alt.symbol}` +
+          (altNeeded === undefined ? "." : `, which is also short of the ~${formatUnits(altNeeded, alt.decimals)} ${alt.symbol} required.`) +
+          ` Fund the wallet or try a smaller amount.`,
+      );
+    }
+  }
 
   // Agent fee on zaps (bounty: "a small fee on swaps/zaps").
   //
@@ -60,7 +101,8 @@ export async function buildZap(
   //
   // LEGACY MODE: fee deducted up front from the input and charged as the LAST
   // step after the zap lands (with retry + owed-ledger).
-  const grossInput = parseUnits(intent.inputAmount, input.decimals);
+  const grossInput = effectiveRaw;
+  const humanIn = formatUnits(grossInput, input.decimals);
   const atomicFee = feesEnabled && env.fees.swapBps > 0 && registry.hasContract("FeeRouter");
   // Referred users get the SAME lifetime discount on zaps as on swaps (audit:
   // zaps previously charged the full headline rate and paid referrers nothing).
@@ -104,7 +146,10 @@ export async function buildZap(
   }
 
   const summary = [
-    `Zap ${intent.inputAmount} ${inSym} into ${p.pair.join("/")} (${p.stable ? "stable" : "volatile"}):`,
+    ...(switched
+      ? [`Using ${inSym} - you hold no ${intent.inputToken.toUpperCase()}, and this is the same request funded from what you have.`]
+      : []),
+    `Zap ${humanIn} ${inSym} into ${p.pair.join("/")} (${p.stable ? "stable" : "volatile"}):`,
     ...(zapFee > 0n
       ? [`• Agent fee: ${formatUnits(zapFee, input.decimals)} ${inSym} (${effBps / 100}%)${atomicFee ? " - collected atomically in the swap leg" : ""}`]
       : []),
@@ -261,4 +306,42 @@ export async function buildZap(
     executable: true, nativeValue: input.native ? grossInput : 0n,
     referralPaid,
   };
+}
+
+/** Live balance of a registry token, native BTC included. */
+async function balanceOf(token: TokenInfo, owner: Address): Promise<bigint> {
+  try {
+    if (token.native) return await publicClient().getBalance({ address: owner });
+    return (await publicClient().readContract({
+      address: token.address as Address,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [owner],
+    })) as bigint;
+  } catch {
+    return 0n; // unreadable balance must not silently pass the funding gate
+  }
+}
+
+/**
+ * Roughly how much `to` is worth the same as `amount` of `from`, for deciding
+ * whether the other pool leg could fund the same request. USD-pegged tokens are
+ * treated as $1; BTC uses the live feed. Returns undefined when the pair cannot
+ * be priced, in which case the caller must not switch.
+ */
+async function equivalentAmount(from: TokenInfo, amount: bigint, to: TokenInfo): Promise<bigint | undefined> {
+  const usd = async (t: TokenInfo, raw: bigint): Promise<number | undefined> => {
+    const human = Number(formatUnits(raw, t.decimals));
+    if (/^m?usd/i.test(t.symbol)) return human;
+    if (t.symbol.toUpperCase() === "BTC") {
+      const p = await btcPriceUsd();
+      return p ? human * p : undefined;
+    }
+    return undefined;
+  };
+  const value = await usd(from, amount);
+  if (value === undefined) return undefined;
+  const oneTo = await usd(to, parseUnits("1", to.decimals));
+  if (!oneTo) return undefined;
+  return parseUnits((value / oneTo).toFixed(Math.min(to.decimals, 8)), to.decimals);
 }

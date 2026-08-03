@@ -99,6 +99,20 @@ export async function preflightBalances(owner: Address, plan: PlanLike): Promise
  * the common cryptic viem/EVM phrases; last resort, return the first line only
  * (never the multi-line viem dump).
  */
+/**
+ * 4-byte selectors of the custom errors our own contracts throw, mapped to
+ * something a user can act on. Keyed by selector so a raw revert payload can be
+ * matched without an ABI round-trip.
+ */
+const CONTRACT_ERRORS: Record<string, string> = {
+  // Selectors read from `forge inspect FeeRouter errors` - never hand-derived.
+  "0x90b8ec18": "The token transfer failed - usually not enough balance, or the approval didn't land. Check /portfolio and try again.", // TransferFailed()
+  "0xcd4e6167": "The agent fee rate didn't match what the fee contract expects. That's a configuration issue on our side, not your wallet - please report it.", // FeeTooHigh()
+  "0x6b733c86": "That token can't be used to pay the agent fee. Try a different input token.", // FeeTokenNotAllowed(address)
+  "0x8a8b41ec": "That token address has no contract code on this network. Check the token and try again.", // NotAContract(address)
+  "0xea60ab1d": "No swap route was supplied. Please report this - it's a bug, not your wallet.", // EmptyRoute()
+};
+
 export function friendlyReason(reason: string): string {
   const r = reason || "unknown error";
   if (/^Blocked:/.test(r)) return r; // policy messages are already friendly
@@ -116,6 +130,14 @@ export function friendlyReason(reason: string): string {
   if (/user rejected|denied/i.test(r)) return "Cancelled.";
   if (/missing or invalid parameters|invalid parameters|-32602|underpriced|fee too low/i.test(r))
     return "The network rejected the transaction (often a temporary node hiccup or a fee that's too low). Please try again in a moment.";
+  // Named contract errors come back as a 4-byte selector with no text, so the
+  // generic "node hiccup / pool liquidity" line below used to swallow them. That
+  // message sent a user hunting a liquidity problem when the real cause was an
+  // empty balance (observed: a zap built on 0 MUSD reverted TransferFailed and
+  // was reported as a node hiccup).
+  for (const [sel, msg] of Object.entries(CONTRACT_ERRORS)) {
+    if (r.toLowerCase().includes(sel)) return msg;
+  }
   if (/code = unknown|unknown reason|rpc error|execution reverted with reason:\s*\.?\s*$/i.test(r))
     return "The transaction reverted on-chain - this can be a Mezo testnet node hiccup, or the amount being too large for the pool's liquidity. Please try again, or use a smaller amount.";
   return r.split("\n")[0]!.slice(0, 180);
