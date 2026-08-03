@@ -150,6 +150,40 @@ for (const phrase of ["now stake it", "stake it"]) {
   else pass++;
 }
 
+// DCA. Only one rigid phrasing used to work, and "dca 50 MUSD into BTC weekly"
+// parsed as a ONE-OFF SWAP - a user asking for a recurring buy silently got a
+// single trade. Recurrence is the point: if a cadence is present it is never a
+// plain swap. "$50" stays denominated in MUSD, because converting it to a BTC
+// amount at parse time made the spend ~62,000x too small.
+const dcaCases: [string, number, string, string, string][] = [
+  ["buy $50 of BTC every Monday", 168, "50", "MUSD", "BTC"],
+  ["dca $50 into BTC every week", 168, "50", "MUSD", "BTC"],
+  ["dca 50 MUSD into BTC weekly", 168, "50", "MUSD", "BTC"],
+  ["buy 50 MUSD of BTC every day", 24, "50", "MUSD", "BTC"],
+  ["schedule 50 MUSD to BTC daily", 24, "50", "MUSD", "BTC"],
+  ["every monday buy 50 musd of btc", 168, "50", "MUSD", "BTC"],
+  ["dca 0.001 BTC to MUSD every 24 hours", 24, "0.001", "BTC", "MUSD"],
+  ["dca 0.001 BTC to MUSD every 2 days", 48, "0.001", "BTC", "MUSD"],
+];
+for (const [phrase, hours, amt, from, to] of dcaCases) {
+  const got: any = fallbackParse(phrase, SYMBOLS);
+  if (got.action !== "dcaCreate" || got.everyHours !== hours || got.amount !== amt || got.fromToken !== from || got.toToken !== to) {
+    fails.push(`dca "${phrase}" → ${got.action} ${got.amount ?? ""} ${got.fromToken ?? ""}->${got.toToken ?? ""} every ${got.everyHours ?? "?"}h`);
+  } else pass++;
+}
+// A one-off swap must NOT become a schedule just because DCA parsing widened.
+for (const phrase of ["swap 100 MUSD to BTC", "swap 0.01 BTC to MUSD"]) {
+  const got: any = fallbackParse(phrase, SYMBOLS);
+  if (got.action !== "swap") fails.push(`"${phrase}" must stay a swap, got ${got.action}`);
+  else pass++;
+}
+// Too vague to act on: ask, never guess an amount or a token.
+{
+  const got: any = fallbackParse("set up a dca", SYMBOLS);
+  if (got.action !== "clarify") fails.push(`"set up a dca" must clarify, got ${got.action}`);
+  else pass++;
+}
+
 console.log(`\nPARSE AUDIT: ${pass}/${pass + fails.length} passed`);
 if (fails.length) {
   console.log("\n❌ FAILURES:");

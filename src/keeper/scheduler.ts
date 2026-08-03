@@ -3,7 +3,7 @@ import { env } from "../config/env.js";
 import { registry } from "../registry/registry.js";
 import { buildSwap } from "../surfaces/swap/swapBuilder.js";
 import { executeSwap } from "../surfaces/swap/swapService.js";
-import { log } from "../core/log.js";
+import { log, errMsg } from "../core/log.js";
 import { referralFor } from "../core/referral.js";
 import type { DcaCreateIntent } from "../llm/intent.js";
 
@@ -131,10 +131,30 @@ export async function runDueSchedules(
 let timer: ReturnType<typeof setInterval> | undefined;
 
 /** Start the keeper loop (called at startup when KEEPER_ENABLED=true). */
-export function startKeeper(intervalMs = 60_000): void {
+export type KeeperNotify = (telegramId: number, text: string) => Promise<void>;
+
+export function startKeeper(intervalMs = 60_000, notify?: KeeperNotify): void {
   if (timer) return;
   timer = setInterval(() => {
-    void runDueSchedules().catch((e) => log.warn("keeper.tick-failed", { error: String(e) }));
+    void runDueSchedules()
+      .then(async (reports) => {
+        // TELL THE USER. A scheduled trade that executes in silence is
+        // indistinguishable from one that never ran - the reports used to be
+        // discarded here, so DCA looked broken even when it worked. The bounty
+        // also requires scheduled actions be observable.
+        if (!notify) return;
+        for (const r of reports) {
+          const s = store.scheduleById(r.id);
+          if (!s) continue;
+          const what = `${s.amount} ${s.fromToken} → ${s.toToken}`;
+          const left = s.remaining < 0 ? "runs until you cancel" : `${s.remaining} run(s) left`;
+          const text = r.ok
+            ? `🔁 DCA executed: ${what}\n${r.detail.startsWith("0x") ? `tx ${r.detail}\n` : ""}Next: ${new Date(s.nextRunAt).toUTCString()} (${left}).\nSay "cancel dca ${r.id}" to stop.`
+            : `⚠️ DCA skipped: ${what}\nReason: ${r.detail}\nIt will try again at ${new Date(s.nextRunAt).toUTCString()}. Say "cancel dca ${r.id}" to stop.`;
+          await notify(s.telegramId, text).catch((e) => log.warn("keeper.notify-failed", { error: errMsg(e) }));
+        }
+      })
+      .catch((e) => log.warn("keeper.tick-failed", { error: String(e) }));
   }, intervalMs);
   log.info("keeper.started", { intervalMs });
 }

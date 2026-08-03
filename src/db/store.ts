@@ -433,6 +433,10 @@ class Store {
   dueSchedules(nowIso: string): DcaSchedule[] {
     return this.db.schedules.filter((s) => s.active && s.nextRunAt <= nowIso);
   }
+  /** One schedule by id - used by the keeper to report a run to its owner. */
+  scheduleById(id: string): DcaSchedule | undefined {
+    return this.db.schedules.find((x) => x.id === id);
+  }
   updateSchedule(id: string, patch: Partial<DcaSchedule>): void {
     const s = this.db.schedules.find((x) => x.id === id);
     if (s) { Object.assign(s, patch); this.flush(); }

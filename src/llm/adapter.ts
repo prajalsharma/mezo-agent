@@ -135,6 +135,11 @@ type ProviderReply = { kind: "intent"; raw: unknown } | { kind: "chat"; text: st
  * ask rather than guess). Deterministic — no model involved.
  */
 export async function resolveDollarPhrases(text: string, knownSymbols: string[]): Promise<string> {
+  // A recurring buy keeps its dollars: for DCA the spend is denominated in the
+  // stablecoin, and the price at PARSE time is meaningless for a trade that
+  // repeats for months. Converting here made "buy $50 of BTC every Monday"
+  // parse as spending 0.0008 MUSD - the BTC figure read as the MUSD amount.
+  if (periodHours(text) !== undefined) return text;
   const re = /\$\s?(\d+(?:\.\d+)?)(?:\s*(?:of|worth of|in))?\s+([a-zA-Z0-9]+)/g;
   let out = text;
   const matches = [...text.matchAll(re)];
@@ -326,11 +331,42 @@ function daysFrom(qty: string, unit: string): number {
   return Math.max(1, Math.round(n * mult));
 }
 
+
+/**
+ * A recurrence expressed the way people write it, in hours. Returns undefined
+ * when the message names no cadence, which is what keeps a one-off swap a swap.
+ *
+ * "every Monday" is a weekly cadence: the keeper runs on a fixed interval from
+ * creation rather than pinning to a weekday, so the interval is what matters.
+ */
+export function periodHours(text: string): number | undefined {
+  const t = text.toLowerCase();
+  // Explicit counts first: "every 2 days", "every 36 hours", "every week".
+  const m = t.match(/every\s+(\d+(?:\.\d+)?)?\s*(hour|hr|h|day|d|week|wk|w|month|mo)s?\b/i);
+  if (m) {
+    const n = m[1] ? Number(m[1]) : 1;
+    const u = m[2]!.toLowerCase();
+    if (u.startsWith("h")) return n;
+    if (u === "d" || u.startsWith("day")) return n * 24;
+    if (u === "w" || u.startsWith("wk") || u.startsWith("week")) return n * 168;
+    return n * 720; // month
+  }
+  // "every Monday" and friends -> weekly.
+  if (/every\s+(mon|tues|wednes|thurs|fri|satur|sun)day/i.test(t)) return 168;
+  // Bare adverbs: "weekly", "daily", "hourly", "monthly".
+  if (/\bhourly\b/.test(t)) return 1;
+  if (/\bdaily\b|\beach day\b|\bevery day\b/.test(t)) return 24;
+  if (/\bweekly\b|\beach week\b/.test(t)) return 168;
+  if (/\bmonthly\b/.test(t)) return 720;
+  return undefined;
+}
+
 export function fallbackParse(message: string, knownSymbols: string[], ctx?: ParseContext): IntentT {
   const t = message.trim();
   const lower = t.toLowerCase();
   const resolve = (s: string) => resolveSymbol(s, knownSymbols);
   const num = "(\\d+(?:\\.\\d+)?)";
+  const dnum = "\\$?\\s?(\\d+(?:\\.\\d+)?)"; // "$50" or "50" - DCA sizes in MUSD
   // Loose keyword rules are SUPPRESSED for question-phrased messages so they
   // reach GUIDE mode instead of silently executing an action.
   const loose = !isQuestionLike(message);
@@ -345,11 +381,29 @@ export function fallbackParse(message: string, knownSymbols: string[], ctx?: Par
   { const m = t.match(new RegExp(`(?:swap|trade|convert)\\s+${num}\\s+([a-z0-9]+)\\s+(?:to|for|into|->)\\s+([a-z0-9]+)`, "i"));
     if (m) { const f = resolve(m[2]!), to = resolve(m[3]!); if (f && to) return { action: "swap", amount: m[1]!, fromToken: f, toToken: to }; } }
 
-  // DCA: "dca 50 MUSD to BTC every 24h [x5]"
-  { const m = t.match(new RegExp(`dca\\s+${num}\\s+([a-z0-9]+)\\s+(?:to|into)\\s+([a-z0-9]+)\\s+every\\s+${num}\\s*(h|hour|hours|d|day|days)`, "i"));
-    if (m) { const f = resolve(m[2]!), to = resolve(m[3]!); const unit = m[5]!.toLowerCase();
-      const hours = unit.startsWith("d") ? Number(m[4]) * 24 : Number(m[4]);
-      if (f && to) return { action: "dcaCreate", fromToken: f, toToken: to, amount: m[1]!, everyHours: hours }; } }
+  // DCA. Must run BEFORE the swap rules: "dca 50 MUSD into BTC weekly" used to
+  // fall through and parse as a ONE-OFF SWAP, so a user who asked for a
+  // recurring buy silently got a single trade instead. Recurrence is the whole
+  // point of the request - if we can see a cadence, it is never a plain swap.
+  {
+    const period = periodHours(t);
+    if (period !== undefined) {
+      // "dca 50 MUSD into BTC ...", "swap 50 MUSD to BTC every week"
+      let m = t.match(new RegExp(`(?:dca|swap|buy|schedule)\\s+${num}\\s+([a-z0-9]+)\\s+(?:to|into|for)\\s+([a-z0-9]+)`, "i"));
+      if (m) { const f = resolve(m[2]!), to = resolve(m[3]!);
+        if (f && to) return { action: "dcaCreate", fromToken: f, toToken: to, amount: m[1]!, everyHours: period }; }
+      // "buy 50 MUSD of BTC ..." - amount is denominated in the SPENT token.
+      m = t.match(new RegExp(`(?:dca|buy|schedule)\\s+${num}\\s+([a-z0-9]+)\\s+(?:of|worth of)\\s+([a-z0-9]+)`, "i"));
+      if (m) { const f = resolve(m[2]!), to = resolve(m[3]!);
+        if (f && to) return { action: "dcaCreate", fromToken: f, toToken: to, amount: m[1]!, everyHours: period }; }
+      // "buy 50 of BTC ..." with no spend token named: MUSD is the unit a
+      // dollar figure means here, and resolveDollarPhrases has already turned
+      // "$50" into a bare number by this point.
+      m = t.match(new RegExp(`(?:dca|buy|schedule)\\s+${dnum}\\s+(?:of\\s+|worth of\\s+|into\\s+|in\\s+)?([a-z0-9]+)`, "i"));
+      if (m) { const to = resolve(m[2]!);
+        if (to && to.toUpperCase() !== "MUSD") return { action: "dcaCreate", fromToken: "MUSD", toToken: to, amount: m[1]!, everyHours: period }; }
+    }
+  }
   if (/\bcancel dca\b|\bstop dca\b/.test(lower)) { const m = t.match(/dca\s+([0-9a-f]{4,})/i); return { action: "dcaCancel", ...(m ? { scheduleId: m[1] } : {}) }; }
   if (loose && /\bauto.?compound\b/.test(lower)) return { action: "autoCompound", enabled: !/\boff|disable|stop\b/.test(lower) };
 

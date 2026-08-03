@@ -43,7 +43,11 @@ async function main() {
   // Keeper for pre-authorized automation (DCA / auto-compound). Off by default;
   // a global kill-switch (KEEPER_ENABLED) gates all scheduled execution.
   if (env.keeperEnabled) {
-    startKeeper();
+    startKeeper(60_000, async (telegramId, text) => {
+      await bot.api.sendMessage(telegramId, text).catch((err) => {
+        log.warn("keeper.send-failed", { error: errMsg(err) });
+      });
+    });
     console.log("⏱️  Keeper enabled (DCA / auto-compound).");
   }
 
