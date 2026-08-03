@@ -36,7 +36,7 @@ process.env.DATA_DIR ??= `./data-${entry}`;
 
 // feeverify asserts the ATOMIC FeeRouter path; referralcheck asserts the legacy
 // split path, so the router address is set per-entry rather than globally.
-if (entry === "feeverify") {
+if (entry === "feeverify" || entry === "routercompat") {
   process.env.FEE_ROUTER_ADDRESS ??= "0xaa118fb3e071e6ba978af52b0cf531b316c4b8c9";
 }
 

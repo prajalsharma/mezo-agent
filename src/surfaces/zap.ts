@@ -1,3 +1,4 @@
+import { feeRouterCaps } from "../chain/feeRouterCaps.js";
 import { encodeFunctionData, parseUnits, formatUnits, type Address } from "viem";
 import { publicClient } from "../chain/client.js";
 import { registry } from "../registry/registry.js";
@@ -70,7 +71,13 @@ export async function buildZap(
   // against a floor of 2x the FULL rate, 200) - and it reverted on the swap leg,
   // after both approval steps had already been mined, stranding live allowances
   // (audit). swapBuilder already passes 0 for exactly this reason.
-  const zapFeeBpsOverride = 0;
+  // Use the dedicated zap entrypoint only if the DEPLOYED router has it. On an
+  // older router, fall back to swapWithFee and supply the doubled rate as an
+  // override, which is what that contract expects. Calling a function the live
+  // bytecode lacks just reverts, after the approval has already been mined.
+  const caps = await feeRouterCaps();
+  const zapLegFn = caps.zapLeg ? ("zapLegWithFee" as const) : ("swapWithFee" as const);
+  const zapFeeBpsOverride = caps.zapLeg ? 0 : Math.min(effBps * 2, 200);
   // What the contract will actually charge on the half it swaps, for quote and
   // minOut math only. Must mirror FeeRouter._takeFee's doubling, or the quote
   // understates the fee and minOut is set too high.
@@ -184,12 +191,12 @@ export async function buildZap(
             // dedicated entrypoint means the contract enforces that doubled
             // floor itself - swapWithFee cannot tell the two apart, so a raw
             // caller could have paid half the intended zap fee (audit).
-            abi: feeRouterAbi, functionName: "zapLegWithFee",
+            abi: feeRouterAbi, functionName: zapLegFn,
             // Referral split at source on the zap fee too (parity with swaps).
             args: [half, minOther, [route], deadline,
               (referral?.recipient ?? ZERO_ADDRESS) as Address,
               referral ? Math.min(Math.round(referral.sharePct), 100) * 100 : 0,
-              zapFeeBpsOverride],
+              caps.zapLeg ? 0 : zapFeeBpsOverride],
           })
         : encodeFunctionData({
             abi: routerAbi, functionName: "swapExactTokensForTokens",

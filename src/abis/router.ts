@@ -191,6 +191,10 @@ export const feeRouterAbi = [
     outputs: [{ name: "amountOut", type: "uint256" }],
   },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  // The referrer's cut is CONTRACT state, not the caller's calldata (a
+  // trader-chosen share let the trader starve their own referrer), so the bot
+  // must read it rather than assume its env matches.
+  { type: "function", name: "maxReferralShareBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
   { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   // The trader -> referrer binding. The bot MUST consult this before quoting a
   // referral discount or crediting the earnings ledger: the contract pays a

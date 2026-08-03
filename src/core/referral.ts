@@ -3,6 +3,7 @@ import { env, feesEnabled } from "../config/env.js";
 import { store } from "../db/store.js";
 import { getUser } from "../wallet/walletService.js";
 import { publicClient } from "../chain/client.js";
+import { feeRouterCaps } from "../chain/feeRouterCaps.js";
 import { feeRouterAbi } from "../abis/router.js";
 import { log, errMsg } from "./log.js";
 
@@ -29,11 +30,43 @@ export type ReferralCtx = {
  * a payout the chain never makes (audit - the ledger was documented as "not an
  * unsettled liability", which held only while the binding existed).
  */
+/** Sentinel: this router predates the binding registry, so skip the check. */
+const SKIP_BINDING = "skip";
 const bindingCache = new Map<string, { referrer: string; at: number }>();
 const BINDING_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * The referrer's share, read from the contract. The FeeRouter pays
+ * `maxReferralShareBps` of the fee whenever the trader is bound - it no longer
+ * honours a share passed in calldata - so deriving the quoted/ledgered amount
+ * from AGENT_REFERRAL_SHARE_PCT would misstate what the chain actually paid the
+ * moment the two disagree. One source of truth, same reasoning as the binding.
+ */
+let sharePctCache: { pct: number; at: number } | undefined;
+
+async function onChainSharePct(): Promise<number | undefined> {
+  if (!env.contracts.feeRouter) return undefined;
+  if (sharePctCache && Date.now() - sharePctCache.at < BINDING_TTL_MS) return sharePctCache.pct;
+  try {
+    const bps = (await publicClient().readContract({
+      address: env.contracts.feeRouter as Address,
+      abi: feeRouterAbi,
+      functionName: "maxReferralShareBps",
+    })) as number;
+    const pct = Number(bps) / 100;
+    sharePctCache = { pct, at: Date.now() };
+    return pct;
+  } catch (e) {
+    log.warn("referral.share-read-failed", { error: errMsg(e) });
+    return undefined;
+  }
+}
+
 async function boundReferrer(trader: string): Promise<string | undefined> {
   if (!env.contracts.feeRouter) return undefined;
+  // An older router has no binding registry; it honours the referrer passed in
+  // calldata, so requiring a binding there would silently kill every referral.
+  if (!(await feeRouterCaps()).referrerOf) return trader ? SKIP_BINDING : SKIP_BINDING;
   const key = trader.toLowerCase();
   const hit = bindingCache.get(key);
   if (hit && Date.now() - hit.at < BINDING_TTL_MS) return hit.referrer;
@@ -67,6 +100,10 @@ export async function referralFor(telegramId: number, traderAddress: string): Pr
   // FeeRouter charges full price and pays the referrer nothing, so quoting a
   // discount here would misprice the trade and ledger a phantom earning.
   const bound = await boundReferrer(traderAddress);
-  if (!bound || bound !== rec.address.toLowerCase()) return undefined;
-  return { recipient: rec.address as Address, sharePct: env.fees.referralSharePct, referrerTelegramId: referrerId };
+  if (bound !== SKIP_BINDING && (!bound || bound !== rec.address.toLowerCase())) return undefined;
+  // Prefer the contract's rate; fall back to env only on the legacy
+  // (no FeeRouter) split path, where the bot builds the transfer itself.
+  const sharePct = (await onChainSharePct()) ?? env.fees.referralSharePct;
+  if (sharePct <= 0) return undefined;
+  return { recipient: rec.address as Address, sharePct, referrerTelegramId: referrerId };
 }

@@ -33,7 +33,8 @@
     "feeroutercheck": "tsx scripts/feeroutercheck.ts",
     "feeverify": "tsx scripts/feeverify.ts",
     "feerouterconfig": "tsx scripts/feerouterconfig.ts",
-    "deadendcheck": "tsx scripts/deadendcheck.ts"
+    "deadendcheck": "tsx scripts/deadendcheck.ts",
+    "routercompat": "tsx scripts/routercompat.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
