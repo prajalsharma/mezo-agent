@@ -64,9 +64,17 @@ export async function buildZap(
   // Referred users get the SAME lifetime discount on zaps as on swaps (audit:
   // zaps previously charged the full headline rate and paid referrers nothing).
   const effBps = referral ? env.fees.referredBps : env.fees.swapBps;
-  // 2× bps on HALF the input == bps on the gross. The contract's override
-  // ceiling is 200 bps precisely so a 1% headline rate stays exact here.
-  const zapFeeBpsOverride = atomicFee ? Math.min(effBps * 2, 200) : 0;
+  // Send 0 and let the CONTRACT pick the rate: zapLegWithFee doubles the base
+  // itself. Passing our own doubled belief hard-reverted FeeTooHigh whenever the
+  // chain disagreed about referrer status (we sent 2x the DISCOUNTED rate, 180,
+  // against a floor of 2x the FULL rate, 200) - and it reverted on the swap leg,
+  // after both approval steps had already been mined, stranding live allowances
+  // (audit). swapBuilder already passes 0 for exactly this reason.
+  const zapFeeBpsOverride = 0;
+  // What the contract will actually charge on the half it swaps, for quote and
+  // minOut math only. Must mirror FeeRouter._takeFee's doubling, or the quote
+  // understates the fee and minOut is set too high.
+  const chargedBpsOnHalf = atomicFee ? Math.min(effBps * 2, 200) : 0;
   const zapFee = feesEnabled ? (grossInput * BigInt(effBps)) / 10_000n : 0n;
   const inputNet = atomicFee ? grossInput : grossInput - zapFee;
   if (inputNet <= 0n || (atomicFee && zapFee >= grossInput / 2n)) {
@@ -75,7 +83,7 @@ export async function buildZap(
   const half = inputNet / 2n;
   // In atomic mode the FeeRouter takes the fee out of the swap leg, so the
   // amount actually reaching the pool is half - fee.
-  const swapLegNet = atomicFee ? half - (half * BigInt(zapFeeBpsOverride)) / 10_000n : half;
+  const swapLegNet = atomicFee ? half - (half * BigInt(chargedBpsOnHalf)) / 10_000n : half;
 
   // Live quote for what actually reaches the pool on the swap leg.
   let otherOut = 0n;

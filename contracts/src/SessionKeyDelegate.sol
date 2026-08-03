@@ -142,6 +142,9 @@ contract SessionKeyDelegate {
     bytes4 private constant SEL_SWAP_WITH_FEE = bytes4(
         keccak256("swapWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)")
     );
+    bytes4 private constant SEL_ZAP_LEG_WITH_FEE = bytes4(
+        keccak256("zapLegWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)")
+    );
     bytes4 private constant SEL_SWAP_TOKENS_FOR_TOKENS =
         bytes4(keccak256("swapExactTokensForTokens(uint256,uint256,(address,address,bool,address)[],address,uint256)"));
     bytes4 private constant SEL_SWAP_ETH_FOR_TOKENS =
@@ -338,7 +341,7 @@ contract SessionKeyDelegate {
             address to = abi.decode(data[off:off + 32], (address));
             if (to != address(this)) revert SpenderNotAllowed(to);
             return; // amount is metered by the approval that funds the swap
-        } else if (selector == SEL_SWAP_WITH_FEE) {
+        } else if (selector == SEL_SWAP_WITH_FEE || selector == SEL_ZAP_LEG_WITH_FEE) {
             // The FeeRouter hardcodes the payout to msg.sender, so proceeds
             // cannot be redirected - but `referrer` and `feeBpsOverride` are
             // caller-chosen. The FeeRouter only pays a referrer it has BOUND to
@@ -356,7 +359,14 @@ contract SessionKeyDelegate {
             // constrains the CALLEE, never the PAYEE, so any undecoded selector
             // carrying a `to`/`referrer` word was a free pass (audit, 4 agents).
             // Adding a selector to a policy now requires teaching the decoder.
-            if (!_allowUndecoded[key][token]) revert UndecodableSelector(selector);
+            // The hatch may only pass a NO-ARGUMENT call. Four bytes of
+            // calldata cannot carry a recipient or an amount, so value movement
+            // is limited to `value`, which the native ring already meters.
+            // Waving through arbitrary arguments re-opened the hole on exactly
+            // the targets holding standing allowances - Router and FeeRouter are
+            // configured with zero token caps, so `isTokenTarget` is false for
+            // them and the interlock would not have fired (audit).
+            if (!_allowUndecoded[key][token] || data.length != 4) revert UndecodableSelector(selector);
             return;
         }
 

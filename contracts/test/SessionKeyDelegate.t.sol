@@ -488,4 +488,47 @@ contract SessionKeyDelegateTest is Test {
         vm.expectRevert(abi.encodeWithSelector(SessionKeyDelegate.SpenderNotAllowed.selector, address(0xBAD)));
         delegate.execute(address(token), 0, abi.encodeWithSelector(SEL_TRANSFER, address(0xBAD), 0.1 ether));
     }
+
+    /// AUDIT: zapLegWithFee is ABI-identical to swapWithFee but had no decoder
+    /// branch, so its caller-chosen feeBpsOverride was unconstrained.
+    function test_audit_zapLegWithFeeOverrideRejectedLikeSwapWithFee() public {
+        bytes4 sel = bytes4(
+            keccak256("zapLegWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)")
+        );
+        bytes4[] memory sels = new bytes4[](1);
+        sels[0] = sel;
+        SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](1);
+        p[0] = SessionKeyDelegate.TargetPolicy({
+            target: address(target), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0,
+            allowUndecodedSelectors: false
+        });
+        _register(sessionKey, p);
+
+        // feeBpsOverride (head word 6) = 200 would burn 2% of principal per call.
+        bytes memory data = abi.encodeWithSelector(
+            sel, uint256(1e18), uint256(0), new bytes(0), uint256(block.timestamp + 600),
+            address(0), uint16(0), uint16(200)
+        );
+        vm.prank(sessionKey);
+        vm.expectRevert(abi.encodeWithSelector(SessionKeyDelegate.FeeOverrideForbidden.selector, uint16(200)));
+        delegate.execute(address(target), 0, data);
+    }
+
+    /// AUDIT: the escape hatch waved through the WHOLE call, including arguments
+    /// that can name a recipient. It may only pass no-argument calldata.
+    function test_audit_escapeHatchRejectsCalldataWithArguments() public {
+        bytes4 sel = bytes4(keccak256("sneak(address,uint256)"));
+        bytes4[] memory sels = new bytes4[](1);
+        sels[0] = sel;
+        SessionKeyDelegate.TargetPolicy[] memory p = new SessionKeyDelegate.TargetPolicy[](1);
+        p[0] = SessionKeyDelegate.TargetPolicy({
+            target: address(target), selectors: sels, tokenPerTxCap: 0, tokenDailyCap: 0,
+            allowUndecodedSelectors: true // hatch ON, and still not enough
+        });
+        _register(sessionKey, p);
+
+        vm.prank(sessionKey);
+        vm.expectRevert(abi.encodeWithSelector(SessionKeyDelegate.UndecodableSelector.selector, sel));
+        delegate.execute(address(target), 0, abi.encodeWithSelector(sel, address(0xBAD), uint256(1e18)));
+    }
 }

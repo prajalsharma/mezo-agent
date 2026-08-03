@@ -337,4 +337,50 @@ contract FeeRouterTest is Test {
         fr.setConfig(operator, 50, 3000); // rotate recipient, unrelated to the promo
         assertEq(fr.referredFeeBps(), 20, "pinned promo rate must survive setConfig");
     }
+
+    /// AUDIT (4 agents): floorMultiplier reached only _checkFloor, which returns
+    /// early on override==0 - so the value the bot itself sends charged a zap
+    /// leg the plain 1x rate. The entrypoint existed and did nothing.
+    function test_audit_zapLegChargesDoubleEvenWithZeroOverride() public {
+        vm.prank(user);
+        fr.zapLegWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 0);
+        assertEq(tokenIn.balanceOf(operator), 1e18, "override 0 must still charge the 2x zap rate");
+    }
+
+    /// A plain swap must be unaffected by that change.
+    function test_audit_plainSwapStillChargesSingleRateOnZeroOverride() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 0);
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "plain swap stays 1x");
+    }
+
+    /// AUDIT: referralShareBps was the TRADER's calldata, so a bound trader kept
+    /// the discount and paid their referrer 1 bps of the fee.
+    function test_audit_referrerPaidOwnerRateNotTraderChoice() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 1, 0);
+        // fee = 45 bps (bound => discounted); referrer gets maxReferralShareBps of it.
+        assertEq(tokenIn.balanceOf(referrer), (0.45e18 * 3000) / 10_000, "referrer must get the OWNER rate");
+    }
+
+    /// AUDIT: the pinned branch clamped the PIN down, so a promo latched forever.
+    function test_audit_promoDoesNotLatchThePinnedReferredRate() public {
+        fr.setReferredFeeBps(45);
+        fr.setConfig(operator, 40, 3000); // promo: headline drops below the pin
+        assertEq(fr.referredFeeBps(), 40, "effective rate clamps to the headline");
+        fr.setConfig(operator, 50, 3000); // promo ends
+        assertEq(fr.referredFeeBps(), 45, "pin must be restored, not latched at 40");
+    }
+
+    /// AUDIT: gating on feeTokenCount != 0 meant removing the LAST token turned
+    /// the allowlist off - a tightening action that failed open.
+    function test_audit_removingLastFeeTokenDeniesRatherThanAllowsAll() public {
+        address[] memory fts = new address[](1);
+        fts[0] = address(tokenIn);
+        fr.setFeeTokens(fts, false); // tokenIn was allowed in setUp; now remove it
+        assertEq(fr.feeTokenCount(), 0, "count back to zero");
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(FeeRouter.FeeTokenNotAllowed.selector, address(tokenIn)));
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 0);
+    }
 }

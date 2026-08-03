@@ -95,9 +95,18 @@ contract FeeRouter {
      */
     mapping(address => bool) public isFeeToken;
     uint256 public feeTokenCount;
+    /// @dev Latches TRUE the first time fee tokens are allowed and never clears.
+    ///      Gating on `feeTokenCount != 0` meant removing the last entry - the
+    ///      most restrictive action an owner can take - turned the allowlist OFF
+    ///      instead of denying everything (audit).
+    bool public feeTokenGateEnabled;
     /// @dev True once setReferredFeeBps is called, so setConfig stops
     ///      overwriting a deliberately-chosen promo rate.
     bool public referredFeeBpsPinned;
+    /// @dev The owner's INTENDED referred rate. referredFeeBps is the effective
+    ///      rate, clamped to feeBps; keeping them separate is what stops a promo
+    ///      from permanently latching the discount.
+    uint16 public pinnedReferredFeeBps;
 
     bool private _entered;
 
@@ -152,7 +161,9 @@ contract FeeRouter {
      * with `referrer` when provided), swap the remainder via the Mezo Router,
      * and deliver the output DIRECTLY to the caller. Reverts as a unit.
      *
-     * @param referralShareBps referrer's share of the fee, in bps of the fee;
+     * @param referralShareBps IGNORED. Retained for ABI compatibility only: the
+     *        referrer's share is owner state (maxReferralShareBps), because a
+     *        trader-chosen share let the trader starve their own referrer.
      *        clamped to `maxReferralShareBps`. Ignored when referrer is zero.
      * @param feeBpsOverride optional per-call fee rate; 0 uses the default
      *        `feeBps`. Bounded on BOTH sides: `feeBps <= override <= MAX_OVERRIDE_BPS`.
@@ -211,15 +222,15 @@ contract FeeRouter {
         // (non-self) referrer is named and a discount is configured — otherwise
         // it is the full rate. This blocks the "pass 1 bps and underpay" attack
         // WITHOUT breaking the advertised referred-trader discount.
-        _checkFloor(referrer, referralShareBps, feeBpsOverride, floorMultiplier);
+        _checkFloor(referrer, feeBpsOverride, floorMultiplier);
         address tokenIn = routes[0].from;
         // The fee's UNIT must be trustworthy, not just its rate. Once fee tokens
         // are configured, hop 0 must be one of them.
-        if (feeTokenCount != 0 && !isFeeToken[tokenIn]) revert FeeTokenNotAllowed(tokenIn);
+        if (feeTokenGateEnabled && !isFeeToken[tokenIn]) revert FeeTokenNotAllowed(tokenIn);
         _requireContract(tokenIn);
 
         _pull(tokenIn, msg.sender, amountIn);
-        uint256 fee = _takeFee(tokenIn, amountIn, referrer, referralShareBps, feeBpsOverride);
+        uint256 fee = _takeFee(tokenIn, amountIn, referrer, feeBpsOverride, floorMultiplier);
 
         _approve(tokenIn, address(router), amountIn - fee);
         uint256[] memory amounts =
@@ -238,36 +249,46 @@ contract FeeRouter {
     ///      discounted rate only for a trader BOUND to the named referrer,
     ///      otherwise the full rate - and 2x that for a zap leg, whose fee
     ///      covers the un-swapped half too.
-    function _checkFloor(address referrer, uint16 referralShareBps, uint16 feeBpsOverride, uint16 floorMultiplier)
+    function _checkFloor(address referrer, uint16 feeBpsOverride, uint16 floorMultiplier)
         private
         view
     {
         if (feeBpsOverride == 0) return; // 0 => the contract picks the rate
-        uint256 rawFloor = uint256(_baseBps(referrer, referralShareBps)) * floorMultiplier;
+        uint256 rawFloor = uint256(_baseBps(referrer)) * floorMultiplier;
         uint16 floorBps = rawFloor > MAX_OVERRIDE_BPS ? MAX_OVERRIDE_BPS : uint16(rawFloor);
         if (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < floorBps) revert FeeTooHigh();
     }
 
-    function _baseBps(address referrer, uint16 referralShareBps) private view returns (uint16) {
-        return (_referralActive(referrer, referralShareBps) && referredFeeBps != 0) ? referredFeeBps : feeBps;
+    function _baseBps(address referrer) private view returns (uint16) {
+        return (_referralActive(referrer) && referredFeeBps != 0) ? referredFeeBps : feeBps;
     }
 
     /// @dev A referral is only real when the referrer is owner-attested, is not
     ///      the caller, and an actual share is being paid. The discounted FLOOR
     ///      and the PAYOUT must agree on this — gating them on different
     ///      conditions let callers take the discount while paying no referrer.
-    function _referralActive(address referrer, uint16 referralShareBps) private view returns (bool) {
-        return referrer != address(0) && referrer != msg.sender && referrerOf[msg.sender] == referrer && referralShareBps > 0;
+    function _referralActive(address referrer) private view returns (bool) {
+        return referrer != address(0) && referrer != msg.sender && referrerOf[msg.sender] == referrer;
     }
 
     /// @dev Split the fee between referrer (clamped share) and the operator.
-    function _takeFee(address tokenIn, uint256 amountIn, address referrer, uint16 referralShareBps, uint16 bpsOverride)
-        private
-        returns (uint256 fee)
+    function _takeFee(
+        address tokenIn,
+        uint256 amountIn,
+        address referrer,
+        uint16 bpsOverride,
+        uint16 floorMultiplier
+    ) private returns (uint256 fee)
     {
         // Same base as the floor: an attested referral is CHARGED the discount
         // even when the caller passes no override.
-        uint16 base = _baseBps(referrer, referralShareBps);
+        // The leg kind must drive the CHARGED rate, not just the floor. It used
+        // to reach _checkFloor only, which returns early on bpsOverride == 0 -
+        // so passing 0 (the value the bot itself passes, and the documented
+        // "let the contract decide") charged a zap leg the plain 1x rate: a 50%
+        // under-collection through the very entrypoint added to stop it (audit).
+        uint256 scaled = uint256(_baseBps(referrer)) * floorMultiplier;
+        uint16 base = scaled > MAX_OVERRIDE_BPS ? MAX_OVERRIDE_BPS : uint16(scaled);
         fee = (amountIn * (bpsOverride > 0 ? bpsOverride : base)) / BPS;
         uint256 referrerShare = 0;
         if (fee > 0) {
@@ -276,9 +297,13 @@ contract FeeRouter {
             // maxReferralShareBps of their own fee — a permanent discount to
             // anyone who reads the ABI (audit finding). Referrals are a growth
             // incentive for bringing OTHER traders, never a self-discount.
-            if (_referralActive(referrer, referralShareBps)) {
-                uint16 share = referralShareBps > maxReferralShareBps ? maxReferralShareBps : referralShareBps;
-                referrerShare = (fee * share) / BPS;
+            if (_referralActive(referrer)) {
+                // The rate is OWNER state, never the trader's calldata. Reading
+                // it from the caller let the referred trader keep the full
+                // discount while paying their referrer 1 bps of the fee -
+                // 99.97% of the commission destroyed by the very person the
+                // referrer brought in (audit).
+                referrerShare = (fee * maxReferralShareBps) / BPS;
                 if (referrerShare > 0) _push(tokenIn, referrer, referrerShare);
             }
             uint256 operatorShare = fee - referrerShare;
@@ -304,10 +329,16 @@ contract FeeRouter {
         if (!referredFeeBpsPinned) {
             referredFeeBps = uint16((uint256(feeBps_) * 90) / 100);
             emit ReferredFeeBpsChanged(referredFeeBps);
-        } else if (referredFeeBps > feeBps_) {
-            // A pinned discount must never exceed the headline rate.
-            referredFeeBps = feeBps_;
-            emit ReferredFeeBpsChanged(referredFeeBps);
+        } else {
+            // Clamp the EFFECTIVE rate, never the pin. Overwriting the pin made
+            // a temporary promo (100 -> 40 -> 100) latch the discount at 40
+            // forever - the exact defect the branch above documents as fixed
+            // (audit: I reintroduced it on the pinned path).
+            uint16 effective = pinnedReferredFeeBps > feeBps_ ? feeBps_ : pinnedReferredFeeBps;
+            if (effective != referredFeeBps) {
+                referredFeeBps = effective;
+                emit ReferredFeeBpsChanged(effective);
+            }
         }
         maxReferralShareBps = maxReferralShareBps_;
         emit ConfigChanged(feeRecipient_, feeBps_, maxReferralShareBps_);
@@ -317,6 +348,7 @@ contract FeeRouter {
     function setReferredFeeBps(uint16 bps) external onlyOwner {
         if (bps > feeBps) revert FeeTooHigh();
         referredFeeBps = bps;
+        pinnedReferredFeeBps = bps;
         referredFeeBpsPinned = true; // setConfig must stop re-deriving over this
         emit ReferredFeeBpsChanged(bps);
     }
@@ -325,8 +357,11 @@ contract FeeRouter {
     ///         discounted rate and the referral payout.
     /// @notice Bind traders to the referrer that actually referred them.
     /// @dev Must be called before a referred trade or the trade pays full price
-    ///      and the referrer is paid nothing. The bot calls this at referral
-    ///      signup (src/core/referralBinding.ts) so the registry cannot go stale.
+    ///      and the referrer is paid nothing. Nothing in the bot writes this
+    ///      automatically: run scripts/bindreferrers.ts after signups. The bot
+    ///      fails CLOSED meanwhile (src/core/referral.ts reads referrerOf before
+    ///      quoting a discount), so drift costs referrers their commission but
+    ///      never misprices a trade.
     function bindReferrers(address[] calldata traders, address referrer) external onlyOwner {
         if (referrer == address(0)) revert ZeroAddress();
         for (uint256 i = 0; i < traders.length; i++) {
@@ -342,7 +377,7 @@ contract FeeRouter {
             if (tokens[i] == address(0)) revert ZeroAddress();
             if (isFeeToken[tokens[i]] != allowed) {
                 isFeeToken[tokens[i]] = allowed;
-                if (allowed) feeTokenCount++;
+                if (allowed) { feeTokenCount++; feeTokenGateEnabled = true; }
                 else feeTokenCount--;
             }
             emit FeeTokenSet(tokens[i], allowed);

@@ -78,6 +78,12 @@ const SEL_SWAP_ETH = toFunctionSelector(
 const SEL_SWAP_FOR_ETH = toFunctionSelector(
   "swapExactTokensForETH(uint256,uint256,(address,address,bool,address)[],address,uint256)",
 );
+// The zap surface calls zapLegWithFee, NOT swapWithFee. Omitting it made every
+// session-key zap revert SelectorNotAllowed at the swap step, after both
+// approval steps had already been mined (audit).
+const SEL_ZAP_LEG_WITH_FEE = toFunctionSelector(
+  "function zapLegWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)",
+);
 const SEL_SWAP_WITH_FEE = toFunctionSelector(
   "swapWithFee(uint256,uint256,(address,address,bool,address)[],uint256,address,uint16,uint16)",
 );
@@ -138,7 +144,7 @@ function sessionPolicies(limits: ReturnType<typeof limitsOf>): TargetPolicy[] {
   if (registry.hasContract("FeeRouter")) {
     policies.push({
       target: registry.contract("FeeRouter"),
-      selectors: [SEL_SWAP_WITH_FEE],
+      selectors: [SEL_SWAP_WITH_FEE, SEL_ZAP_LEG_WITH_FEE],
       tokenPerTxCap: 0n,
       tokenDailyCap: 0n,
       allowUndecodedSelectors: false,
