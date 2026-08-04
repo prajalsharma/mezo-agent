@@ -139,7 +139,7 @@ export function friendlyReason(reason: string): string {
     if (r.toLowerCase().includes(sel)) return msg;
   }
   if (/code = unknown|unknown reason|rpc error|execution reverted with reason:\s*\.?\s*$/i.test(r))
-    return "The transaction reverted on-chain - this can be a Mezo testnet node hiccup, or the amount being too large for the pool's liquidity. Please try again, or use a smaller amount.";
+    return "The transaction reverted on-chain. Most often that's the amount being too large for the pool's liquidity, or a temporary node issue. Try again, or use a smaller amount.";
   return r.split("\n")[0]!.slice(0, 180);
 }
 

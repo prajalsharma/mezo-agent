@@ -6,6 +6,7 @@ import { getPortfolio, prettyAmount } from "../../portfolio/portfolioService.js"
 import { explorerAddressUrl } from "../../chain/networks.js";
 import { b, i, code, link } from "../format.js";
 import { positionsBlock } from "../positionsView.js";
+import { faucetButton, faucetHint } from "../faucet.js";
 
 const netLabel = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
 
@@ -45,13 +46,14 @@ export async function handleDeposit(ctx: Context): Promise<void> {
   // On testnet, offer the faucet as an in-Telegram web app (opens in the built-in
   // browser overlay — no leaving the chat) plus a 🏠 Menu button.
   const kb = new InlineKeyboard();
-  if (env.network !== "mainnet") kb.webApp("🚰 Get test BTC (faucet)", "https://faucet.test.mezo.org/").row();
+  const fb = faucetButton();
+  if (fb) kb.webApp(fb.label, fb.url).row();
   kb.text("🏠 Menu", "menu:home");
   await ctx.replyWithPhoto(new InputFile(png, "deposit.png"), {
     caption:
       `${b(`Deposit address - ${netLabel}`)}\n${code(user.address)}\n\n` +
       `Send BTC (native gas asset) or any Mezo token to this address.\n` +
-      (env.network !== "mainnet" ? `${i("Tap the faucet button below, then paste the address above to get test BTC.")}\n` : "") +
+      (faucetHint() ? `${i(faucetHint()!)}\n` : "") +
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}`,
     parse_mode: "HTML",
     reply_markup: kb,

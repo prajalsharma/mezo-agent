@@ -34,6 +34,7 @@ import { getUser } from "../wallet/walletService.js";
 import { installBotProfile, homeCard, screenCard, feesText } from "./menu.js";
 import { explainerFor } from "./explainers.js";
 import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
+import { faucetReply } from "./faucet.js";
 
 /** Last free-text message per user, for one-turn conversational context. */
 const lastUserMessage = new Map<number, string>();
@@ -197,13 +198,20 @@ export function buildBot(): Bot {
     const lower = text.toLowerCase();
     const uid = ctx.from?.id;
     const hasAccount = uid ? Boolean(getUser(uid)) : false;
-    if (/\bfaucet\b/.test(lower)) {
-      const fk = new InlineKeyboard()
-        .webApp("🚰 Open faucet", "https://faucet.test.mezo.org/").row()
-        .text("📥 My deposit address", "menu:act:deposit");
+    if (/\bfund(?:ing|s)?\b.*\baccount\b|\bfaucet\b/.test(lower)) {
+      const t = faucetReply();
+      if (t) {
+        await ctx.reply(t.text, { parse_mode: "HTML", reply_markup: t.keyboard, link_preview_options: { is_disabled: true } });
+        return;
+      }
+      // Live network: there is nothing to hand out, you send real BTC.
       await ctx.reply(
-        "🚰 <b>Testnet faucet</b>\nTap below to open the faucet in-app, then paste your deposit address to get test BTC.",
-        { parse_mode: "HTML", reply_markup: fk, link_preview_options: { is_disabled: true } },
+        "This is live Mezo, so funds come from your own wallet or an exchange.\n\nTap below for your deposit address, then send BTC to it.",
+        {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard().text("📥 My deposit address", "menu:act:deposit"),
+          link_preview_options: { is_disabled: true },
+        },
       );
       return;
     }

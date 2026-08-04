@@ -119,7 +119,7 @@ export async function handleImportPrompt(ctx: Context): Promise<void> {
   setPending(telegramId, { kind: "import-await" });
   await ctx.reply(
     `⚠️ ${b("Importing a raw secret is the advanced, higher-risk path.")}\n\n` +
-      `Only do this with a throwaway/testnet account. In the next message paste either:\n` +
+      `Prefer an account you can afford to lose, and never your main savings. In the next message paste either:\n` +
       `• a ${b("private key")} (0x + 64 hex), or\n` +
       `• a ${b("seed phrase")} (12–24 words).\n\n` +
       `It will be ${b("encrypted immediately")}, and never logged or sent to any AI model.\n\n` +
