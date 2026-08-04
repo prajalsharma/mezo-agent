@@ -35,7 +35,8 @@
     "feerouterconfig": "tsx scripts/feerouterconfig.ts",
     "deadendcheck": "tsx scripts/deadendcheck.ts",
     "routercompat": "tsx scripts/routercompat.ts",
-    "productcopy": "tsx scripts/productcopy.ts"
+    "productcopy": "tsx scripts/productcopy.ts",
+    "flowcheck": "tsx scripts/flowcheck.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",

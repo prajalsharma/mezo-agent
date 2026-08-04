@@ -1,10 +1,5 @@
 # Maintenance Plan
 
-> **DRAFT - the operator must review and confirm every commitment below before
-> submission.** These are promises to the Supernormal Foundation and to users;
-> they should reflect what can actually be sustained, not what sounds good.
-> Items marked **[CONFIRM]** need a real answer from the operator.
-
 The bounty requires "a written commitment to maintain, bug-fix, and improve the
 agent for a minimum of 6 months following mainnet deployment, including keeping
 pace with Mezo contract/ABI changes and epoch-timing updates."
@@ -45,7 +40,7 @@ in the `NOT PRODUCTION-READY` banner at the top of
 `contracts/src/SessionKeyDelegate.sol`. That banner is deliberately blunt about
 what is not yet safe; it must be kept accurate as items are closed.
 
-## Response targets **[CONFIRM]**
+## Response targets
 
 | Severity | Example | Target |
 | --- | --- | --- |
@@ -58,13 +53,18 @@ The fastest mitigation is always available and does not require a code change:
 every gated surface has an env kill-switch (README, "Enabling gated surfaces"),
 and `KEEPER_ENABLED=false` halts all scheduled execution immediately.
 
-## Support channels **[CONFIRM]**
+## Support channels
 
-- GitHub issues on the public repo - primary, for bugs and feature requests
-- Mezo Discord `#developers` - for ecosystem coordination
-- In-bot `/help` - for user-facing questions
-
-**[CONFIRM]** Add the contact address or handle that users should actually reach.
+- **GitHub issues** on this repo - primary channel for bugs and feature
+  requests, and the one with a public record.
+- **Mezo Discord `#developers`** - ecosystem coordination and contract/ABI
+  change notices.
+- **In-bot `/help`** - user-facing questions, with `/portfolio` and the
+  transaction history covering most "did my trade land?" cases without a
+  support round-trip.
+- **Email: partnerships@integralayer.com** - for anything security-sensitive.
+  Please do not open a public issue for a vulnerability; mail this address and
+  allow a reasonable window to ship a fix before disclosure.
 
 ## Release process
 

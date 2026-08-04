@@ -194,6 +194,54 @@ the mainnet custody model.
 > exposes a canonical EntryPoint/bundler or accepts 7702 is a week-one capability
 > probe that selects the primary tier.
 
+### The EIP-7702 delegate: built, audited, and deliberately switched off
+
+The non-custodial model this bounty prefers is **implemented**, not missing.
+`contracts/src/SessionKeyDelegate.sol` is a full EIP-7702 delegate with on-chain
+session-key allowlists (target + selector), per-transaction and trailing-24h
+spend rings, expiry, and revocation. It has 30 passing tests. The bot side is
+written too (`src/custody/delegation.ts`, `/upgrade`).
+
+**It is gated off (`UPGRADE_7702_ENABLED=false`), on purpose.**
+
+Two rounds of adversarial audit - twelve attacker agents per round, each with a
+different specialty - proved with executable exploits that the delegate's caps
+are not a true bound on value. The defects are listed in full at the top of the
+contract itself, in plain language, including the ones still open:
+
+1. Token caps are enforced by decoding a fixed selector list, so an allowlisted
+   spender holding a standing ERC-20 allowance can move funds with nothing
+   charged to the ring. Enumerating selectors cannot close this.
+2. Native BTC and its `0x7b7C…0000` ERC-20 precompile are metered in two
+   independent rings, so the daily BTC budget is effectively doubled.
+3. Router swap calldata (`amountOutMin`, `Route.factory`) is unconstrained, so a
+   key can route its whole allowance through a pool it controls.
+4. Re-registering a key or tightening a target policy clears that key's spend
+   ring, refilling an attacker's budget under attack.
+5. `revokeSession`/`removeTarget` have no caller in the bot, so a leaked key
+   lives until its TTL expires.
+
+The correct fix is **balance-delta accounting** - snapshot the account's balance
+of each capped token around the call and charge the realised decrease, which is
+selector-agnostic. That is a rewrite, not a patch, and it must be re-audited
+before it guards real funds.
+
+**The judgement:** shipping a delegate whose limits look binding but are not is
+worse than shipping the contained-custodial path with limits that genuinely hold
+in the signer. A user who reads "0.05 BTC per transaction" should not be wrong.
+So the delegate stays off until the rewrite lands, and this document says so
+rather than letting the flag imply an unfinished feature.
+
+Enabling it is a one-line env change once that work is done and re-audited.
+
+### Mezo Market: partially implemented
+
+Browsing is **preview-only** and purchases are routed as token swaps rather than
+native Market calls. Mezo Market items are ERC-20/721 assets that trade through
+the DEX, so a swap is a real purchase path - but it is not a full Market
+integration, and the bot says so at the point of use instead of implying
+coverage it does not have.
+
 ## Architecture map
 
 ```

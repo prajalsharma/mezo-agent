@@ -22,7 +22,7 @@ export async function buildActionPlan(
   referral?: { recipient: Address; sharePct: number; referrerTelegramId: number },
 ): Promise<ActionPlan | undefined> {
   switch (intent.action) {
-    case "borrow": return await buildBorrow(intent);
+    case "borrow": return await buildBorrow(intent, owner);
     case "repay": return await buildRepay(intent, owner);
     case "adjust": return await buildAdjust(intent, owner);
     case "closeTrove": return await buildCloseTrove(owner);

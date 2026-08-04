@@ -54,7 +54,7 @@ function borrowGated(title: string, action: string, summary: string[], warnings:
   });
 }
 
-export async function buildBorrow(intent: BorrowIntent): Promise<ActionPlan> {
+export async function buildBorrow(intent: BorrowIntent, owner?: Address): Promise<ActionPlan> {
   const collateralBTC = Number(intent.collateralBTC);
   const mintMUSD = Number(intent.mintMUSD);
   if (collateralBTC <= 0) throw new ActionUnavailableError("Collateral must be greater than zero.");
@@ -62,6 +62,22 @@ export async function buildBorrow(intent: BorrowIntent): Promise<ActionPlan> {
     throw new ActionUnavailableError(
       `Mezo requires a minimum net debt of ${MIN_NET_DEBT_MUSD} MUSD. Increase the amount to mint.`,
     );
+  }
+
+  // Can this wallet actually post the collateral? Collateral is NATIVE BTC, so
+  // it also has to leave room for gas. Without this the bot built a fully valid,
+  // well-collateralised plan the wallet could not fund, and the user paid gas to
+  // watch openTrove revert (same gap the zap surface had).
+  if (owner) {
+    const need = parseUnits(intent.collateralBTC, 18);
+    const held = await publicClient().getBalance({ address: owner }).catch(() => 0n);
+    const GAS_HEADROOM = 500_000_000_000_000n; // ~0.0005 BTC, matches the swap path
+    if (held < need + GAS_HEADROOM) {
+      throw new ActionUnavailableError(
+        `Not enough BTC to post as collateral: you have ${formatUnits(held, 18)} BTC and this needs ` +
+          `${intent.collateralBTC} BTC plus gas. Fund the wallet, or lower the collateral (which also lowers how much you can mint).`,
+      );
+    }
   }
 
   const fee = mintMUSD * 0.01;
