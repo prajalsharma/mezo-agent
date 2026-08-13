@@ -3,16 +3,22 @@ import { InlineKeyboard, type Context } from "grammy";
 import { getUser, setMode } from "../../wallet/walletService.js";
 import { store } from "../../db/store.js";
 import { limitsOf, fmtBtc, type SpendingLimits } from "../../custody/policy.js";
-import { b, i } from "../format.js";
+import { b, i, esc } from "../format.js";
+import { setPending, takePending, attachCard } from "../session.js";
+import { callbackId } from "./swap.js";
 
 /**
- * Pending cap-INCREASE requests, awaiting an explicit confirmation tap.
- * Raising a cap is the one /limits action that can enable a drain, so — like
- * /export — it needs a second step rather than a single unconfirmed message
- * from the same (possibly compromised) session. (Audit R2 H9.) Decreases apply
- * immediately (they only tighten). Keyed by telegramId.
+ * Cap-INCREASE requests await an explicit confirmation tap. Raising a cap is the
+ * one /limits action that can enable a drain, so — like /export — it needs a
+ * second step rather than a single unconfirmed message from the same (possibly
+ * compromised) session. Decreases apply immediately: they only tighten.
+ *
+ * These now live in the shared pending store rather than a private Map, which
+ * buys them the two properties they were missing: a TTL, so an abandoned raise
+ * cannot be applied by a tap hours later, and a single-use id in the button, so
+ * a tap on a stale card cannot apply a raise the user has since replaced or
+ * walked away from.
  */
-const pendingRaise = new Map<number, { field: string; wei: bigint; token?: string; raw?: bigint }>();
 
 /**
  * /limits — view/adjust spending caps and watch-only mode. These are the
@@ -45,11 +51,12 @@ export async function handleLimits(ctx: Context): Promise<void> {
     catch { await ctx.reply(`❌ "${parts[2]}" is not a valid ${sym} amount.`); return; }
     const current = BigInt(limitsOf(user.limits).perTxTokenCaps[sym] ?? "0");
     if (raw > current) {
-      pendingRaise.set(telegramId, { field: `token ${sym}`, wei: 0n, token: sym, raw });
-      await ctx.reply(
-        `⚠️ Raise the ${sym} per-tx cap to ${parts[2]}? A higher cap lets a single action move more. Confirm to apply.`,
-        { reply_markup: new InlineKeyboard().text("Confirm raise", "limits:confirm").row().text("Cancel", "limits:cancel") },
+      const id = setPending(telegramId, { kind: "limits-raise", raise: { field: `token ${sym}`, wei: 0n, token: sym, raw } }, user.address);
+      const sent = await ctx.reply(
+        `⚠️ Raise the ${esc(sym)} per-tx cap to ${esc(parts[2]!)}? A higher cap lets a single action move more. Confirm to apply (expires in 5 minutes).`,
+        { reply_markup: new InlineKeyboard().text("Confirm raise", `limits:confirm:${id}`).row().text("Cancel", `limits:cancel:${id}`) },
       );
+      attachCard(telegramId, id, sent.chat.id, sent.message_id);
       return;
     }
     limits.perTxTokenCaps = { ...limitsOf(user.limits).perTxTokenCaps, [sym]: raw.toString() };
@@ -76,12 +83,13 @@ export async function handleLimits(ctx: Context): Promise<void> {
     const current = BigInt(field === "pertx" ? limits.perTxNativeWei : limits.dailyNativeWei);
     // A RAISE needs an explicit confirmation; a decrease (tightening) applies now.
     if (wei > current) {
-      pendingRaise.set(telegramId, { field, wei });
-      await ctx.reply(
-        `⚠️ Raise your ${field} limit from ${fmtBtc(current)} to ${fmtBtc(wei)}?\n\n` +
-          `A higher limit lets a single ${field === "daily" ? "day" : "transaction"} move more BTC - this is exactly what a compromised session would try. Confirm only if you meant to.`,
-        { reply_markup: new InlineKeyboard().text("Confirm raise", "limits:confirm").row().text("Cancel", "limits:cancel"), parse_mode: "HTML" },
+      const id = setPending(telegramId, { kind: "limits-raise", raise: { field, wei } }, user.address);
+      const sent = await ctx.reply(
+        `⚠️ Raise your ${esc(field)} limit from ${esc(fmtBtc(current))} to ${esc(fmtBtc(wei))}?\n\n` +
+          `A higher limit lets a single ${field === "daily" ? "day" : "transaction"} move more BTC - this is exactly what a compromised session would try. Confirm only if you meant to. Expires in 5 minutes.`,
+        { reply_markup: new InlineKeyboard().text("Confirm raise", `limits:confirm:${id}`).row().text("Cancel", `limits:cancel:${id}`), parse_mode: "HTML" },
       );
+      attachCard(telegramId, id, sent.chat.id, sent.message_id);
       return;
     }
     if (field === "pertx") limits.perTxNativeWei = wei.toString();
@@ -107,15 +115,27 @@ export async function handleLimits(ctx: Context): Promise<void> {
   );
 }
 
-/** Confirm a pending cap increase (Audit R2 H9). */
+/** Confirm a pending cap increase. */
 export async function handleLimitsConfirm(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
+  // Claim by id before any await, exactly like the swap/action confirms.
+  const taken = takePending(telegramId, callbackId(ctx));
   await ctx.answerCallbackQuery().catch(() => {});
-  const req = pendingRaise.get(telegramId);
   const user = getUser(telegramId);
-  if (!req || !user) { await ctx.reply("Nothing pending."); return; }
-  pendingRaise.delete(telegramId);
+  if (!taken.ok || taken.pending.kind !== "limits-raise" || !user) {
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    await ctx.reply("That cap change is no longer pending (it expired or was replaced). Limits unchanged.");
+    return;
+  }
+  // A raise confirmed against a DIFFERENT account than it was requested for
+  // would silently widen the wrong wallet's caps.
+  if (taken.pending.accountAddress && taken.pending.accountAddress.toLowerCase() !== user.address.toLowerCase()) {
+    await ctx.reply("You switched active account since asking for that raise. Limits unchanged - ask again.");
+    return;
+  }
+  const req = taken.pending.raise;
+  await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
   const limits = { ...limitsOf(user.limits) };
   if (req.token && req.raw !== undefined) {
     limits.perTxTokenCaps = { ...limits.perTxTokenCaps, [req.token]: req.raw.toString() };
@@ -132,8 +152,10 @@ export async function handleLimitsConfirm(ctx: Context): Promise<void> {
 }
 
 export async function handleLimitsCancel(ctx: Context): Promise<void> {
+  const telegramId = ctx.from?.id;
+  if (telegramId) takePending(telegramId, callbackId(ctx));
   await ctx.answerCallbackQuery().catch(() => {});
-  if (ctx.from?.id) pendingRaise.delete(ctx.from.id);
+  await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
   await ctx.reply("Cap change cancelled. Limits unchanged.");
 }
 

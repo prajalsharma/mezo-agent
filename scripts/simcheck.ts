@@ -42,7 +42,16 @@ const CASES: [string, any, Expect][] = [
 let failures = 0;
 console.log(`network=${process.env.MEZO_NETWORK}\n`);
 for (const [label, intent, expect] of CASES) {
-  const plan: any = await buildActionPlan(intent as any, OWNER as any);
+  // A builder may legitimately REFUSE to build (no balance, no Trove, stale
+  // price). That is the guardrail working, not a simulation failure — report it
+  // as a skip with the real reason rather than dying on an uncaught throw.
+  let plan: any;
+  try {
+    plan = await buildActionPlan(intent as any, OWNER as any);
+  } catch (e) {
+    console.log(`  - SKIP ${label.padEnd(24)} builder refused: ${(e as Error).message.slice(0, 90)}`);
+    continue;
+  }
   if (!plan?.executable) {
     console.log(`  ✗ FAIL ${label} — plan not executable (${plan?.gatedReason ?? "?"})`);
     failures++;

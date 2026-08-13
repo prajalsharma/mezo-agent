@@ -7,9 +7,9 @@ import { registry } from "../../registry/registry.js";
 import { buildSwap, SwapUnavailableError, type SwapPlan } from "../../surfaces/swap/swapBuilder.js";
 import { executeSwap } from "../../surfaces/swap/swapService.js";
 import { simulateCall } from "../../core/simulator.js";
-import { setPending, getPending, clearPending } from "../session.js";
+import { setPending, takePending, clearPending, attachCard, refusalText } from "../session.js";
 import { limitsOf, fmtBtc } from "../../custody/policy.js";
-import type { SwapIntent } from "../../llm/intent.js";
+import { validateIntent, IntentRejected, type SwapIntent } from "../../llm/intent.js";
 import { prettyAmount } from "../../portfolio/portfolioService.js";
 import { b, i, esc } from "../format.js";
 import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
@@ -17,13 +17,27 @@ import { referralFor } from "../../core/referral.js";
 
 const DEFAULT_SLIPPAGE_PCT = 0.5;
 
-export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promise<void> {
+export async function handleSwapIntent(ctx: Context, raw: SwapIntent): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
   const user = getUser(telegramId);
   if (!user) {
     await ctx.reply("You don't have an account yet. Send /start.");
     return;
+  }
+
+  // Same choke point as actions: the menu's swapx: callback builds this intent
+  // from raw callback-data fragments and a computed preset amount, neither of
+  // which the schema had ever seen.
+  let intent: SwapIntent;
+  try {
+    intent = validateIntent(raw) as SwapIntent;
+  } catch (err) {
+    if (err instanceof IntentRejected) {
+      await ctx.reply(`⚠️ ${esc(err.message)}`, { parse_mode: "HTML" });
+      return;
+    }
+    throw err;
   }
 
   // Resolve tokens via the registry — never from the model's free text.
@@ -112,12 +126,15 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
   const nativeValue = plan.nativeValue;
   const requiresStepUp = nativeValue > threshold;
 
-  setPending(telegramId, { kind: "swap", plan, stepUpPending: requiresStepUp });
+  // The id binds THIS card to THIS plan. It travels in the callback data, so a
+  // tap on an older card is recognisable as stale instead of silently executing
+  // whatever plan happens to occupy the user's slot.
+  const planId = setPending(telegramId, { kind: "swap", plan, stepUpPending: requiresStepUp }, user.address);
 
   const needsApproval = plan.steps.some((s) => s.kind === "approval");
-  const kb = new InlineKeyboard().text("✅ Confirm", "swap:confirm").text("✖️ Cancel", "swap:cancel");
+  const kb = new InlineKeyboard().text("✅ Confirm", `swap:confirm:${planId}`).text("✖️ Cancel", `swap:cancel:${planId}`);
 
-  await ctx.reply(
+  const sent = await ctx.reply(
     `${b(`Confirm swap - ${netTag}`)}\n\n` +
       `${quoteBody}\n` +
       (needsApproval ? `Steps: approve → swap\n` : `Steps: swap\n`) +
@@ -128,34 +145,56 @@ export async function handleSwapIntent(ctx: Context, intent: SwapIntent): Promis
       i("This preview expires in 3 minutes."),
     { parse_mode: "HTML", reply_markup: kb },
   );
+  attachCard(telegramId, planId, sent.chat.id, sent.message_id);
 }
 
 export async function handleSwapConfirm(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
-  await ctx.answerCallbackQuery().catch(() => {});
 
-  const pendingState = getPending(telegramId);
-  if (!pendingState || pendingState.kind !== "swap") {
-    await ctx.reply("That swap preview expired. Please request the swap again.");
+  // Claim the plan FIRST, before any await. Everything after an await is racing
+  // a second tap: grammY dispatches same-user updates concurrently, so two rapid
+  // confirms both used to read the plan before either cleared it and execute the
+  // swap twice against one confirmation.
+  const id = callbackId(ctx);
+  const taken = takePending(telegramId, id);
+  await ctx.answerCallbackQuery().catch(() => {});
+  if (!taken.ok || taken.pending.kind !== "swap") {
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    await ctx.reply(taken.ok ? refusalText("none") : refusalText(taken.why));
     return;
   }
+  const pendingState = taken.pending;
   const user = getUser(telegramId);
   if (!user) return;
 
+  // The active account can be switched between the card and the tap. Signing
+  // account 2's key over calldata built for account 1 is never what was meant.
+  if (pendingState.accountAddress && pendingState.accountAddress.toLowerCase() !== user.address.toLowerCase()) {
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    await ctx.reply(
+      `You switched active account since that quote was built (it was for ${pendingState.accountAddress}). ` +
+        `I didn't execute it — ask again and I'll quote for ${user.address}.`,
+    );
+    return;
+  }
+
   // Step-up: first Confirm on a high-value action asks for a second confirmation
-  // rather than executing immediately.
+  // rather than executing immediately. The re-park gets a FRESH id, so the card
+  // we just re-armed is the only one that can complete it.
   if (pendingState.stepUpPending) {
-    setPending(telegramId, { kind: "swap", plan: pendingState.plan, stepUpPending: false });
+    const nextId = setPending(telegramId, { kind: "swap", plan: pendingState.plan, stepUpPending: false }, user.address);
     const kb = new InlineKeyboard()
-      .text("✅ Yes, execute", "swap:confirm")
-      .text("✖️ Cancel", "swap:cancel");
+      .text("✅ Yes, execute", `swap:confirm:${nextId}`)
+      .text("✖️ Cancel", `swap:cancel:${nextId}`);
     await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
+    if (ctx.callbackQuery?.message) {
+      attachCard(telegramId, nextId, ctx.callbackQuery.message.chat.id, ctx.callbackQuery.message.message_id);
+    }
     await ctx.reply("⚠️ High-value action - tap “Yes, execute” to proceed, or Cancel.");
     return;
   }
 
-  clearPending(telegramId);
   await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
   await ctx.reply("⏳ Executing…");
 
@@ -210,10 +249,17 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
 export async function handleSwapCancel(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
+  // Consume by id, so cancelling a STALE card cannot disarm the live plan the
+  // user is actually looking at.
+  const taken = takePending(telegramId, callbackId(ctx));
   await ctx.answerCallbackQuery().catch(() => {});
-  clearPending(telegramId);
   await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-  await ctx.reply("Swap cancelled. Nothing was signed.");
+  await ctx.reply(taken.ok ? "Swap cancelled. Nothing was signed." : "That card was already replaced or expired - nothing was signed.");
+}
+
+/** The plan id a confirm/cancel button carries, e.g. "swap:confirm:<id>". */
+export function callbackId(ctx: Context): string {
+  return (ctx.callbackQuery?.data ?? "").split(":")[2] ?? "";
 }
 
 function short(a: string): string {

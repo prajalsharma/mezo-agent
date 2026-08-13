@@ -145,6 +145,31 @@ class ContractRegistry {
   needsConfirmation(key: ContractKey): boolean {
     return this.data.needsConfirmation.includes(key);
   }
+
+  /**
+   * Every address this deployment considers legitimate: contracts, tokens (and
+   * their routing addresses), pools, and vaults.
+   *
+   * The signer checks against this so its target allowlist is an INDEPENDENT
+   * fact rather than a claim the plan makes about itself. Compiled in and
+   * lower-cased once; the registry is immutable at runtime.
+   */
+  knownAddresses(): ReadonlySet<string> {
+    if (!this._known) {
+      const set = new Set<string>();
+      for (const a of Object.values(this.data.contracts)) if (a) set.add(a.toLowerCase());
+      for (const t of Object.values(this.data.tokens)) {
+        set.add(t.address.toLowerCase());
+        set.add(this.routingAddress(t).toLowerCase());
+      }
+      for (const p of this.data.pools) set.add(p.address.toLowerCase());
+      for (const v of this.data.vaults) set.add(v.address.toLowerCase());
+      set.add(WRAPPED_NATIVE_ADDRESS.toLowerCase());
+      this._known = set;
+    }
+    return this._known;
+  }
+  private _known?: Set<string>;
 }
 
 export const registry = new ContractRegistry();

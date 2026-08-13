@@ -16,7 +16,19 @@ import { z } from "zod";
 // off-schema just because of number-vs-string.
 const amount = z.coerce.string().regex(/^\d+(\.\d+)?$/, "amount must be a plain number");
 const symbol = z.string().min(1).max(12);
-const slippage = z.number().min(0.01).max(50).optional();
+/**
+ * Slippage tolerance, in percent.
+ *
+ * `minOut` is the ONLY value protection on the swap path, and this number sets
+ * it — so an unbounded slippage is an unbounded loss, and the schema previously
+ * admitted up to 50%. That made "swap with 50% slippage" the single
+ * highest-leverage prompt-injection target in the app: one accepted intent and a
+ * sandwicher could take half the trade. 5% is well above what any legitimate
+ * trade on these pools needs; anything higher has to be a deliberate, typed
+ * decision rather than something a model can pick.
+ */
+export const MAX_SLIPPAGE_PCT = 5;
+const slippage = z.number().min(0.01).max(MAX_SLIPPAGE_PCT).optional();
 
 // ── Swap (Phase 1) ───────────────────────────────────────────────────────────
 export const SwapIntent = z.object({
@@ -45,6 +57,13 @@ export const AdjustIntent = z.object({
   repayMUSD: amount.optional(),
 });
 export const CloseTroveIntent = z.object({ action: z.literal("closeTrove") });
+/**
+ * A redeemed or liquidated Trove can leave collateral in the surplus pool, and
+ * the protocol never pushes it back — the borrower has to call for it. Without
+ * this action the bot could describe redemption risk but leave the user with no
+ * way to recover what they were owed.
+ */
+export const ClaimCollateralIntent = z.object({ action: z.literal("claimCollateral") });
 export const VaultDepositIntent = z.object({
   action: z.literal("vaultDeposit"),
   token: symbol,
@@ -75,7 +94,9 @@ export const LockIntent = z.object({
 export const ExtendLockIntent = z.object({
   action: z.literal("extendLock"),
   tokenId: z.number().int().nonnegative(),
-  addDays: z.number().int().positive().optional(),
+  // Bounded by the longest lock any Mezo escrow allows (veMEZO, 4 years). It was
+  // unbounded, so an absurd extension reached the escrow and reverted opaquely.
+  addDays: z.number().int().positive().max(4 * 365).optional(),
   addAmount: amount.optional(),
 });
 export const VoteIntent = z.object({
@@ -190,6 +211,7 @@ export const Intent = z.discriminatedUnion("action", [
   RepayIntent,
   AdjustIntent,
   CloseTroveIntent,
+  ClaimCollateralIntent,
   VaultDepositIntent,
   StakeLpIntent,
   UnstakeLpIntent,
@@ -212,6 +234,35 @@ export const Intent = z.discriminatedUnion("action", [
 ]);
 export type Intent = z.infer<typeof Intent>;
 export type IntentAction = Intent["action"];
+
+export class IntentRejected extends Error {}
+
+/**
+ * THE choke point. Every intent must pass through here before it reaches a
+ * surface, whatever produced it.
+ *
+ * The schema above is the codebase's strongest single guard — `amount` is
+ * `z.coerce.string().regex(/^\d+(\.\d+)?$/)`, which defeats the whole
+ * parse-divergence class (it rejects `1e30`, `0x10`, `" 5 "`, `5,000`, `1_000`,
+ * `Infinity`, `NaN`, negatives and unicode digits, so `Number()` and
+ * `parseUnits()` cannot disagree on anything it admits).
+ *
+ * But it was only ever applied on ONE of the three routes in. Inline-keyboard
+ * callbacks string-split raw callback data and passed the fragments straight to
+ * the surfaces, and the deterministic rule parser returned before validation.
+ * Both of those now come through here, so there is no route that reaches a
+ * builder without the schema having seen the values.
+ */
+export function validateIntent(candidate: unknown): Intent {
+  const parsed = Intent.safeParse(candidate);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const where = issue?.path?.length ? ` (${issue.path.join(".")})` : "";
+  throw new IntentRejected(
+    `I couldn't act on that${where}: ${issue?.message ?? "it didn't match a known action"}. ` +
+      `Amounts must be plain numbers like 0.05 or 1800.`,
+  );
+}
 
 // Convenience type aliases used across surfaces.
 export type SwapIntent = z.infer<typeof SwapIntent>;
@@ -242,7 +293,7 @@ export const INTENT_TOOL_SCHEMA = {
     "Translate the user's message into a single structured Mezo intent. Never invent token " +
     "symbols, amounts, addresses, or ids. If a required field is missing or ambiguous, use " +
     "action \"clarify\" with a specific question. Supported actions: swap, borrow, repay, adjust, " +
-    "closeTrove, vaultDeposit, stakeLp, unstakeLp, claim, lock, extendLock, vote, marketBrowse, " +
+    "closeTrove, claimCollateral, vaultDeposit, stakeLp, unstakeLp, claim, lock, extendLock, vote, marketBrowse, " +
     "marketBuy, zap, matchbox, veTransfer, veMerge, dcaCreate, dcaCancel, autoCompound, account, " +
     "portfolio, clarify.",
   input_schema: {

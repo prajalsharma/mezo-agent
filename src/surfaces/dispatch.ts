@@ -1,7 +1,7 @@
 import type { Address } from "viem";
 import type { Intent } from "../llm/intent.js";
 import { type ActionPlan, ActionUnavailableError } from "./plan.js";
-import { buildBorrow, buildRepay, buildAdjust, buildCloseTrove } from "./borrow.js";
+import { buildBorrow, buildRepay, buildAdjust, buildCloseTrove, buildClaimCollateral } from "./borrow.js";
 import { buildStakeLp, buildUnstakeLp, buildVaultDeposit, buildClaim } from "./earn.js";
 import { buildLock, buildExtendLock } from "./lock.js";
 import { buildVote } from "./vote.js";
@@ -26,13 +26,14 @@ export async function buildActionPlan(
     case "repay": return await buildRepay(intent, owner);
     case "adjust": return await buildAdjust(intent, owner);
     case "closeTrove": return await buildCloseTrove(owner);
+    case "claimCollateral": return await buildClaimCollateral(owner);
     case "vaultDeposit": return buildVaultDeposit(intent, owner);
     case "stakeLp": return buildStakeLp(intent, owner);
     case "unstakeLp": return buildUnstakeLp(intent, owner);
     case "claim": return buildClaim(intent, owner);
     case "lock": return buildLock(intent);
     case "extendLock": return buildExtendLock(intent, owner);
-    case "vote": return await buildVote(intent);
+    case "vote": return await buildVote(intent, owner);
     case "zap": return buildZap(intent, owner, referral);
     case "matchbox": return buildMatchbox(intent);
     case "marketBrowse": return await buildMarketBrowse(intent.query);

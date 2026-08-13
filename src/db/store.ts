@@ -1,10 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, copyFileSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { Address } from "viem";
 import { env } from "../config/env.js";
 import type { EncryptedKey } from "../custody/keystore.js";
 import type { SpendingLimits } from "../custody/policy.js";
+import { log } from "../core/log.js";
 
 /**
  * Phase 1 datastore. Production target is Postgres + Redis (architecture §9);
@@ -68,6 +69,12 @@ export type SpendRecord = {
   telegramId: number;
   valueWei: string;
   at: string; // ISO timestamp
+  /**
+   * Token symbol for a non-BTC spend. Absent means native BTC, which is how
+   * every record written before the ERC-20 aggregate cap existed is stored —
+   * so the native sum must keep treating "no symbol" as BTC.
+   */
+  symbol?: string;
 };
 
 /** A pre-authorized, revocable DCA schedule (Phase 5 automation). */
@@ -146,23 +153,28 @@ export type OwedFee = {
 
 type LegacyDb = Db & { users?: Record<string, UserRecord> };
 
-class Store {
+export class Store {
   private db: Db = { accounts: {}, active: {}, txHistory: [], spendLedger: [], schedules: [], autoCompound: [] };
   private readonly path: string;
+  private readonly tmpPath: string;
+  private readonly bakPath: string;
 
-  constructor() {
+  /** `dataDir` is a test seam; production always uses the configured DATA_DIR. */
+  constructor(dataDir: string = env.dataDir) {
     try {
-      mkdirSync(env.dataDir, { recursive: true });
+      mkdirSync(dataDir, { recursive: true });
     } catch (err) {
       throw new Error(
-        `DATA_DIR "${env.dataDir}" is not creatable/writable. On serverless or ` +
+        `DATA_DIR "${dataDir}" is not creatable/writable. On serverless or ` +
           `read-only hosts (e.g. Vercel), point DATA_DIR at a writable path or ` +
           `move to Postgres. Cause: ${(err as Error).message}`,
       );
     }
-    this.path = join(env.dataDir, `mezo-agent.${env.network}.json`);
-    if (existsSync(this.path)) {
-      const loaded = JSON.parse(readFileSync(this.path, "utf8")) as Partial<LegacyDb>;
+    this.path = join(dataDir, `mezo-agent.${env.network}.json`);
+    this.tmpPath = `${this.path}.tmp`;
+    this.bakPath = `${this.path}.bak`;
+    const loaded = this.load();
+    if (loaded) {
       const accounts = loaded.accounts ?? {};
       // Migrate a legacy single-account store ({users}) into the multi-account shape.
       if (loaded.users && Object.keys(accounts).length === 0) {
@@ -189,10 +201,65 @@ class Store {
     }
   }
 
+  /**
+   * Load the database, preferring the main file and falling back to the backup.
+   *
+   * The previous version called `JSON.parse(readFileSync(...))` at module scope,
+   * outside any guard, from `export const store = new Store()` — which runs at
+   * IMPORT time. So a file truncated by a crash mid-write threw before a single
+   * handler existed, the process could not start, and with no plaintext export
+   * path every sealed key in it was unrecoverable. On a host that sends SIGTERM
+   * on every redeploy, that was a plausible way to lose all custody.
+   */
+  private load(): Partial<LegacyDb> | undefined {
+    for (const [path, label] of [[this.path, "database"], [this.bakPath, "backup"]] as const) {
+      if (!existsSync(path)) continue;
+      try {
+        const raw = readFileSync(path, "utf8");
+        if (raw.trim().length === 0) throw new Error("file is empty");
+        const parsed = JSON.parse(raw) as Partial<LegacyDb>;
+        if (label === "backup") {
+          log.warn("store.recovered-from-backup", { path });
+        }
+        return parsed;
+      } catch (err) {
+        log.error("store.load-failed", { path, error: (err as Error).message });
+        // Preserve the damaged file for forensics instead of overwriting it —
+        // it may still contain recoverable sealed keys.
+        try {
+          const quarantine = `${path}.corrupt.${Date.now()}`;
+          renameSync(path, quarantine);
+          log.error("store.quarantined", { from: path, to: quarantine });
+        } catch { /* best effort */ }
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Persist atomically: write a temp file, fsync it, then rename over the
+   * target. A rename within a directory is atomic on POSIX, so a reader (or a
+   * crash) sees either the whole old file or the whole new one — never a
+   * truncated one. The previous version was a bare `writeFileSync` of the entire
+   * database, called from ~18 sites, with no temp file, no fsync and no backup.
+   */
   private flush(): void {
     try {
-      // Written with 0600-equivalent intent; on POSIX the file inherits umask.
-      writeFileSync(this.path, JSON.stringify(this.db, null, 2), { mode: 0o600 });
+      const body = JSON.stringify(this.db, null, 2);
+      // Keep the last known-good copy before replacing it.
+      if (existsSync(this.path)) {
+        try { copyFileSync(this.path, this.bakPath); } catch { /* best effort */ }
+      }
+      // fsync the DATA before the rename, or the rename can land while the
+      // contents are still only in the page cache.
+      const fd = openSync(this.tmpPath, "w", 0o600);
+      try {
+        writeFileSync(fd, body);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(this.tmpPath, this.path);
     } catch (err) {
       throw new Error(
         `Failed to persist wallet data to ${this.path}. The filesystem may be ` +
@@ -398,12 +465,25 @@ class Store {
    * window where two rapid actions could both pass the cap check. Release the
    * handle with `releaseSpend` if the submission fails.
    */
-  addSpend(telegramId: number, valueWei: bigint, at: string): string {
+  addSpend(telegramId: number, valueWei: bigint, at: string, symbol?: string): string {
     const id = randomUUID();
     if (valueWei <= 0n) return id;
-    this.db.spendLedger.push({ id, telegramId, valueWei: valueWei.toString(), at });
+    this.db.spendLedger.push({ id, telegramId, valueWei: valueWei.toString(), at, ...(symbol ? { symbol } : {}) });
+    this.pruneSpendLedger();
     this.flush();
     return id;
+  }
+
+  /**
+   * Drop ledger entries older than the widest window anything reads (24h), with
+   * a generous margin. Nothing pruned it before, so `spentLast24hWei` re-parsed
+   * every spend a user had ever made on every single cap check — and the file it
+   * lives in is rewritten in full on each flush.
+   */
+  private pruneSpendLedger(now = Date.now()): void {
+    const cutoff = now - 48 * 60 * 60 * 1000;
+    const kept = this.db.spendLedger.filter((s) => Date.parse(s.at) >= cutoff);
+    if (kept.length !== this.db.spendLedger.length) this.db.spendLedger = kept;
   }
 
   /** Undo a reservation (e.g. the submit threw), so it doesn't count against the cap. */
@@ -413,11 +493,26 @@ class Store {
     if (this.db.spendLedger.length !== before) this.flush();
   }
 
-  /** Sum of native value spent by a user within the last 24h. */
+  /** Sum of native BTC spent by a user within the last 24h. */
   spentLast24hWei(telegramId: number, now = Date.now()): bigint {
     const cutoff = now - 24 * 60 * 60 * 1000;
     return this.db.spendLedger
-      .filter((s) => s.telegramId === telegramId && Date.parse(s.at) >= cutoff)
+      .filter((s) => s.telegramId === telegramId && !s.symbol && Date.parse(s.at) >= cutoff)
+      .reduce((sum, s) => sum + BigInt(s.valueWei), 0n);
+  }
+
+  /**
+   * Sum of a single ERC-20 spent by a user within the last 24h.
+   *
+   * There was no aggregate window for tokens at all — only a per-transaction
+   * cap — so an hourly MUSD DCA was bounded only per run. Twenty-four runs a day
+   * each under the per-tx cap added up to twenty-four times the cap, with no
+   * layer anywhere that could see the total.
+   */
+  spentLast24hToken(telegramId: number, symbol: string, now = Date.now()): bigint {
+    const cutoff = now - 24 * 60 * 60 * 1000;
+    return this.db.spendLedger
+      .filter((s) => s.telegramId === telegramId && s.symbol === symbol && Date.parse(s.at) >= cutoff)
       .reduce((sum, s) => sum + BigInt(s.valueWei), 0n);
   }
 
@@ -427,15 +522,23 @@ class Store {
     this.flush();
   }
   listSchedules(telegramId: number): DcaSchedule[] {
-    return this.db.schedules.filter((s) => s.telegramId === telegramId);
+    return this.db.schedules.filter((s) => s.telegramId === telegramId).map((s) => ({ ...s }));
   }
-  /** All schedules due to run at/after `nowIso` (for the keeper). */
+  /**
+   * All schedules due to run at/after `nowIso` (for the keeper).
+   *
+   * Returns COPIES. `Array.filter` hands back live references into the database,
+   * so the keeper was iterating objects that `updateSchedule`'s `Object.assign`
+   * could mutate underneath it — including `remaining`, which it reads to decide
+   * whether the schedule is finished.
+   */
   dueSchedules(nowIso: string): DcaSchedule[] {
-    return this.db.schedules.filter((s) => s.active && s.nextRunAt <= nowIso);
+    return this.db.schedules.filter((s) => s.active && s.nextRunAt <= nowIso).map((s) => ({ ...s }));
   }
   /** One schedule by id - used by the keeper to report a run to its owner. */
   scheduleById(id: string): DcaSchedule | undefined {
-    return this.db.schedules.find((x) => x.id === id);
+    const s = this.db.schedules.find((x) => x.id === id);
+    return s ? { ...s } : undefined;
   }
   updateSchedule(id: string, patch: Partial<DcaSchedule>): void {
     const s = this.db.schedules.find((x) => x.id === id);

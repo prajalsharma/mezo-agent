@@ -6,6 +6,7 @@ import { ownedVeNftsDetailed, claimableRebase, votingRewardsForPool, earnedAcros
 import { erc20Abi } from "../abis/erc20.js";
 import { ActionUnavailableError, gatedPlan, type ActionPlan, type ActionStep } from "./plan.js";
 import { txnFee } from "./fees.js";
+import { attest } from "../custody/attest.js";
 import type { VaultDepositIntent, StakeLpIntent, UnstakeLpIntent, ClaimIntent } from "../llm/intent.js";
 
 /**
@@ -55,6 +56,11 @@ async function gaugeFor(poolAddr: Address): Promise<Address | undefined> {
       `Gauge identity check failed (stakingToken != pool) - refusing to approve or stake against it.`,
     );
   }
+  // A gauge is discovered at runtime, so it cannot be in the compiled-in
+  // registry — but it HAS just been proven to be the real gauge for this pool.
+  // Record that, so the signer's independent target check accepts it on the
+  // strength of the verification rather than on the plan's say-so.
+  attest(g, `gauge for pool ${poolAddr} (stakingToken verified)`);
   return g;
 }
 
@@ -95,12 +101,13 @@ export async function buildStakeLp(intent: StakeLpIntent, owner: Address): Promi
       kind: "approval", to: p.address, value: 0n,
       data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [gauge, amount] }),
       describe: `Approve ${formatUnits(amount, 18)} ${pair} LP for the gauge`,
-      erc20: { symbol: `${pair} LP`, amount }, waitForReceipt: true,
+      erc20: { symbol: `${pair} LP`, amount, kind: "approval" }, waitForReceipt: true,
     },
     {
       kind: "stake", to: gauge, value: 0n,
       data: encodeFunctionData({ abi: gaugeAbi, functionName: "deposit", args: [amount] }),
       describe: `Stake ${formatUnits(amount, 18)} ${pair} LP into gauge`,
+      erc20: { symbol: `${pair} LP`, amount, kind: "spend" },
     },
   ];
   return {
@@ -185,6 +192,7 @@ export function buildVaultDeposit(intent: VaultDepositIntent, owner: Address): A
       kind: "vaultDeposit", to: vault.address, value: 0n,
       data: depositData,
       describe: `Deposit ${intent.amount} ${token.symbol} into ${vault.name}`,
+      erc20: { symbol: token.symbol, amount, kind: "spend" },
       waitForReceipt: agentFee.step !== undefined,
     },
     ...(agentFee.step ? [agentFee.step] : []),
@@ -320,11 +328,12 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
 }
 
 /** Encode a gauge deposit once the gauge address is known (used by zap/stake). */
-export function gaugeDepositStep(gauge: Address, amount: bigint, label: string): ActionStep {
+export function gaugeDepositStep(gauge: Address, amount: bigint, label: string, lpSymbol = "LP"): ActionStep {
   return {
     kind: "stake", to: gauge, value: 0n,
     data: encodeFunctionData({ abi: gaugeAbi, functionName: "deposit", args: [amount] }),
     describe: label,
+    erc20: { symbol: lpSymbol, amount, kind: "spend" },
   };
 }
 

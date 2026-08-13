@@ -65,6 +65,23 @@ export function tokenCapOf(limits: SpendingLimits | undefined, symbol: string): 
   return BigInt(raw ?? UNKNOWN_TOKEN_CAP_RAW);
 }
 
+/**
+ * How many multiples of the per-transaction cap a token may move in 24 hours.
+ *
+ * There was no aggregate window for ERC-20s at all — the per-tx cap bound each
+ * swap individually and nothing bound the sequence. That is the gap unattended
+ * automation lives in: an hourly DCA is twenty-four separately-legal
+ * transactions, and only their total is alarming. A multiplier (rather than a
+ * second number to configure) means tightening the per-tx cap tightens the day
+ * too, which is what someone reaching for /limits actually intends.
+ */
+export const DAILY_TOKEN_CAP_MULTIPLE = 5n;
+
+/** Rolling-24h raw-amount cap for a token symbol. */
+export function dailyTokenCapOf(limits: SpendingLimits | undefined, symbol: string): bigint {
+  return tokenCapOf(limits, symbol) * DAILY_TOKEN_CAP_MULTIPLE;
+}
+
 export const DEFAULT_LIMITS: SpendingLimits = {
   perTxNativeWei: parseEther("0.05").toString(),
   dailyNativeWei: parseEther("0.2").toString(),

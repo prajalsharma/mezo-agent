@@ -1,7 +1,7 @@
 import { Bot, InlineKeyboard, type Context } from "grammy";
 import { formatUnits } from "viem";
 import { env, llmEnabled, feesEnabled, accessRestricted } from "../config/env.js";
-import { log } from "../core/log.js";
+import { log, redact } from "../core/log.js";
 import { registry } from "../registry/registry.js";
 import { parseIntent, resolveDollarPhrases } from "../llm/adapter.js";
 import { btcPriceUsd } from "../core/prices.js";
@@ -27,7 +27,7 @@ import {
 } from "./handlers/swap.js";
 import { handleActionIntent, handleActionConfirm, handleActionCancel } from "./handlers/actions.js";
 import { handleAccount, handleDcaCreate, handleDcaCancel, handleAutoCompound } from "./handlers/automation.js";
-import { clearPending } from "./session.js";
+import { clearPending, setSupersedeHook } from "./session.js";
 import { store } from "../db/store.js";
 import { runPreflight, formatPreflightText } from "../core/preflight.js";
 import { getUser } from "../wallet/walletService.js";
@@ -44,6 +44,14 @@ const suggestionCache = new Map<number, string[]>();
 export function buildBot(): Bot {
   const bot = new Bot(env.telegramBotToken);
 
+  // When a new plan supersedes an older one, strip the old card's buttons. The
+  // security fix is that a stale tap is REFUSED (session.takePending checks the
+  // plan id); this just removes the misleading live-looking button so nobody
+  // taps it expecting the plan they can still see above.
+  setSupersedeHook(({ chatId, messageId }) => {
+    void bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: undefined }).catch(() => {});
+  });
+
   // ── Error boundary ──────────────────────────────────────────────────────────
   // Registered FIRST so it wraps every downstream handler. Any thrown error is
   // surfaced to the user in-chat (never silent) and logged without secrets.
@@ -54,13 +62,52 @@ export function buildBot(): Bot {
       await next();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error("[handler error]", message);
+      // Redact before it reaches a log sink or a chat window. Raw exception text
+      // from viem/grammY can carry an RPC URL with an embedded API key, a bot
+      // token, or a key-shaped string from whatever was being handled.
+      console.error("[handler error]", redact(message));
       await ctx
-        .reply(`⚠️ Something went wrong: ${message}`)
+        // esc() because the redacted text still contains user-influenced
+        // fragments and the reply is not parse_mode HTML — but a future edit
+        // adding parse_mode must not turn this into an injection point.
+        .reply(`⚠️ Something went wrong: ${esc(redact(message))}`)
         .catch(() => {
           /* if even the error reply fails, we've already logged it */
         });
     }
+  });
+
+  // ── Secret guard: EVERY text-bearing update, not just `message:text` ────────
+  //
+  // The detector itself was fine; its coverage was not. `grep 'bot.on('` found
+  // exactly one handler — `message:text` — and grammY's filter does not match
+  // `edited_message`. So a user could type anything, then EDIT it into a private
+  // key, and no handler fired: no delete, no refusal, and the guard that
+  // session.ts described as "unconditional" simply never ran.
+  //
+  // As middleware it now sits ahead of every handler and reads text from
+  // whichever field the update actually carries, including captions.
+  bot.use(async (ctx, next) => {
+    const candidates = [
+      ctx.message?.text, ctx.message?.caption,
+      ctx.editedMessage?.text, ctx.editedMessage?.caption,
+      ctx.channelPost?.text, ctx.channelPost?.caption,
+      ctx.editedChannelPost?.text, ctx.editedChannelPost?.caption,
+    ].filter((t): t is string => typeof t === "string" && t.length > 0);
+
+    for (const text of candidates) {
+      if (!looksLikeSecret(text)) continue;
+      await ctx.deleteMessage().catch(() => {});
+      clearPending(ctx.from?.id ?? 0);
+      await ctx
+        .reply(
+          "🛑 That looked like a private key or seed phrase, so I deleted it and did NOT process it. " +
+            "Never paste secrets unprompted. To import, tap Import on /start first, then paste when asked.",
+        )
+        .catch(() => {});
+      return; // never call next(): the text must not reach the parser or the LLM
+    }
+    await next();
   });
 
   // ── Access gate ─────────────────────────────────────────────────────────────
@@ -158,14 +205,19 @@ export function buildBot(): Bot {
   // ── Inline buttons ──────────────────────────────────────────────────────────
   bot.callbackQuery("wallet:create", handleCreate);
   bot.callbackQuery("wallet:import", handleImportPrompt);
-  bot.callbackQuery("wallet:export-confirm", handleExportConfirm);
-  bot.callbackQuery("wallet:export-cancel", handleExportCancel);
-  bot.callbackQuery("limits:confirm", handleLimitsConfirm);
-  bot.callbackQuery("limits:cancel", handleLimitsCancel);
-  bot.callbackQuery("swap:confirm", handleSwapConfirm);
-  bot.callbackQuery("swap:cancel", handleSwapCancel);
-  bot.callbackQuery("action:confirm", handleActionConfirm);
-  bot.callbackQuery("action:cancel", handleActionCancel);
+  // Single-use token in the callback data — see handleExportPrompt.
+  bot.callbackQuery(/^wallet:export-confirm(?::.*)?$/, handleExportConfirm);
+  bot.callbackQuery(/^wallet:export-cancel(?::.*)?$/, handleExportCancel);
+  // Confirm/cancel buttons carry the id of the plan they were rendered for
+  // ("swap:confirm:<id>"), so a tap on a superseded card is refused instead of
+  // executing whatever plan currently occupies the user's slot. The trailing id
+  // is matched loosely here and checked exactly in session.takePending.
+  bot.callbackQuery(/^limits:confirm(?::.*)?$/, handleLimitsConfirm);
+  bot.callbackQuery(/^limits:cancel(?::.*)?$/, handleLimitsCancel);
+  bot.callbackQuery(/^swap:confirm(?::.*)?$/, handleSwapConfirm);
+  bot.callbackQuery(/^swap:cancel(?::.*)?$/, handleSwapCancel);
+  bot.callbackQuery(/^action:confirm(?::.*)?$/, handleActionConfirm);
+  bot.callbackQuery(/^action:cancel(?::.*)?$/, handleActionCancel);
   bot.callbackQuery(/^menu:/, handleMenuCallback);
 
   // ── Free text → intent → the right surface ───────────────────────────────────
@@ -175,20 +227,10 @@ export function buildBot(): Bot {
 
     const text = ctx.message.text;
 
-    // UNCONDITIONAL secret guard (Audit R2 C3). Even outside an import flow — a
-    // lapsed window, a re-paste after a failed import, or a user pasting a key
-    // unprompted — a private key or seed phrase must NEVER reach parseIntent
-    // (which posts the message to the LLM). Detect the shape, delete the
-    // message, and refuse. This runs before any LLM call.
-    if (looksLikeSecret(text)) {
-      await ctx.deleteMessage().catch(() => {});
-      clearPending(ctx.from?.id ?? 0);
-      await ctx.reply(
-        "🛑 That looked like a private key or seed phrase, so I deleted it and did NOT process it. " +
-          "Never paste secrets unprompted. To import, tap Import on /start first, then paste when asked.",
-      );
-      return;
-    }
+    // The secret guard now runs as MIDDLEWARE above (it has to, to cover edited
+    // messages and captions). This second check is belt-and-braces for any
+    // future path that reaches here without passing through it.
+    if (looksLikeSecret(text)) return;
 
     if (text.startsWith("/")) return; // unknown command; ignore
 
@@ -253,27 +295,45 @@ export function buildBot(): Bot {
       const hasCollateral = /\b(?:against|with|using)\s+\d+(?:\.\d+)?\s*btc/i.test(text);
       if (m && !hasCollateral) {
         const debt = Number(m[1]!.replace(/,/g, ""));
-        const MIN_DEBT = 1800;
-        if (debt > 0 && debt < MIN_DEBT) {
+        // LIVE parameters, like every other place that sizes a Trove. This
+        // helper carried its own third copy of the wrong model — minimum debt
+        // 1,800 hardcoded, a 1% fee, MCR 1.1, and no gas compensation — so the
+        // collateral it recommended was too low and the "bare minimum (110%)"
+        // figure it printed would not actually open a Trove.
+        const { musdParams, compositeDebt } = await import("../core/musdParams.js");
+        const p = await musdParams();
+        const price = await btcPriceUsd().catch(() => undefined);
+        if (!p || !price) {
           await ctx.reply(
-            `⚠️ Mezo's minimum loan is ${b("1,800 MUSD")} - ${debt.toLocaleString()} is below it.\n\n` +
-              `Try: ${code(`borrow 1800 MUSD against 0.05 BTC`)}`,
+            "I can't read Mezo's live borrowing parameters right now, so I won't guess how much collateral you'd need. " +
+              "Try again shortly, or send the full command and I'll check it before you confirm.",
+          );
+          return;
+        }
+        const minDebt = Number(p.minNetDebt) / 1e18;
+        if (debt > 0 && debt < minDebt) {
+          await ctx.reply(
+            `⚠️ Mezo's minimum loan is ${b(`${minDebt.toLocaleString()} MUSD`)} - ${debt.toLocaleString()} is below it.\n\n` +
+              `Try: ${code(`borrow ${minDebt} MUSD against 0.05 BTC`)}`,
             { parse_mode: "HTML" },
           );
           return;
         }
-        const price = await btcPriceUsd().catch(() => undefined);
-        if (debt >= MIN_DEBT && price) {
-          const gross = debt * 1.01; // ~1% borrow fee
-          const minBtc = (1.1 * gross) / price;
-          const safeBtc = Number(((1.5 * gross) / price).toFixed(4));
+        if (debt >= minDebt) {
+          // The debt the protocol RECORDS: mint + live fee + gas compensation.
+          const recorded = Number(compositeDebt(BigInt(Math.round(debt)) * 10n ** 18n, p, false)) / 1e18;
+          const mcr = Number(p.mcr) / 1e18;
+          const minBtc = (mcr * recorded) / price;
+          const safeBtc = Number(((1.5 * recorded) / price).toFixed(4));
           const cmd = `borrow ${debt} MUSD against ${safeBtc} BTC`;
           if (uid) suggestionCache.set(uid, [cmd]);
           await ctx.reply(
             `${b(`To borrow ${debt.toLocaleString()} MUSD you need BTC collateral:`)}\n\n` +
-              `• Bare minimum (110%): ${b(`${minBtc.toFixed(4)} BTC`)} - liquidated on any dip\n` +
+              `• Bare minimum (${(mcr * 100).toFixed(0)}%): ${b(`${minBtc.toFixed(4)} BTC`)} - liquidated on any dip\n` +
               `• ${b("Recommended")} (150% buffer): ${b(`${safeBtc} BTC`)}\n\n` +
-              i(`At the live price of $${Math.round(price).toLocaleString()}/BTC. You'll see the exact ratio and confirm before anything signs.`),
+              i(`Sized against the ${recorded.toLocaleString(undefined, { maximumFractionDigits: 0 })} MUSD Mezo actually records for this loan ` +
+                `(your ${debt.toLocaleString()} plus the borrowing fee and ${(Number(p.gasCompensation) / 1e18)} MUSD gas compensation), ` +
+                `at the live price of $${Math.round(price).toLocaleString()}/BTC. You'll see the exact ratio and confirm before anything signs.`),
             {
               parse_mode: "HTML",
               reply_markup: new InlineKeyboard().text(`▶ ${cmd}`, "sugg:0").row().text("🏠 Menu", "menu:home"),

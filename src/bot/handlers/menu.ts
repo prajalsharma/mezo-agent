@@ -189,5 +189,14 @@ export async function handleMenuCallback(ctx: Context): Promise<void> {
   if (rest === "limits") { await handleLimits(ctx); return; }
   if (rest === "referral") { await handleReferral(ctx); return; }
   if (rest === "help") { const c = await screenCard("help", uid); if (c) await edit(c); return; }
-  if (rest.startsWith("guide:")) { const c = await screenCard(rest.slice("guide:".length), uid); if (c) await edit(c); return; }
+  // "guide:X" is the GUIDANCE card for X (how to phrase the command), which is
+  // what tipCard renders. It used to fall through to screenCard — the same thing
+  // "nav:X" does — so every guide button silently showed the picker instead of
+  // the guidance, and the one test covering it had been failing.
+  if (rest.startsWith("guide:")) {
+    const key = rest.slice("guide:".length);
+    const c = (await tipCard(key, uid)) ?? (await screenCard(key, uid));
+    if (c) await edit(c);
+    return;
+  }
 }

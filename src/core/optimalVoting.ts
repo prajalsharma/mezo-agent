@@ -52,15 +52,16 @@ export type OptimalResult = {
  * (`optimalAllocation`) also front-loads uncontested gauges explicitly below.
  */
 function alloc(g: GaugeStat, lambda: number): number {
-  if (g.incentives <= 0 || lambda <= 0) return 0;
-  // For a truly uncontested gauge the marginal value is incentives/x², so the
-  // λ-optimal allocation is sqrt(incentives/λ). Using the real otherVotes (0)
-  // in the standard formula gives sqrt(0) - 0 = 0, which is wrong; treat the
-  // uncontested case with its own closed form.
-  if (g.otherVotes <= 0) return Math.sqrt(g.incentives / lambda);
+  if (g.incentives <= 0 || lambda <= 0 || g.otherVotes <= 0) return 0;
   const x = Math.sqrt((g.incentives * g.otherVotes) / lambda) - g.otherVotes;
   return Math.max(0, x);
 }
+
+/**
+ * The smallest share worth giving a gauge: one basis point. Below this the
+ * largest-remainder rounding would drop it to zero anyway.
+ */
+const MIN_BPS = 1;
 
 export function optimalAllocation(gauges: GaugeStat[], votingPower: number): OptimalResult {
   const usable = gauges.filter((g) => g.incentives > 0);
@@ -68,24 +69,48 @@ export function optimalAllocation(gauges: GaugeStat[], votingPower: number): Opt
     return { allocations: [], totalExpectedReward: 0, rewardPerVote: 0 };
   }
 
-  // Binary-search λ. Larger λ => smaller total allocation, so total(λ) is
-  // monotonically decreasing; we bracket the λ that spends exactly votingPower.
-  // hi must exceed the largest marginal value; for an uncontested gauge that is
-  // incentives/ε² which is huge, so derive hi from the uncontested closed form
-  // (incentives/x²) at a small x, plus the contested ratio bound.
-  let lo = 1e-12;
-  const contestedHi = Math.max(0, ...usable.filter((g) => g.otherVotes > 0).map((g) => g.incentives / g.otherVotes));
-  const uncontestedHi = Math.max(0, ...usable.filter((g) => g.otherVotes <= 0).map((g) => g.incentives)) / 1e-12;
-  let hi = Math.max(contestedHi, uncontestedHi) + 1;
-  const total = (l: number) => usable.reduce((s, g) => s + alloc(g, l), 0);
-  for (let iter = 0; iter < 100; iter++) {
-    const mid = (lo + hi) / 2;
-    if (total(mid) > votingPower) lo = mid;
-    else hi = mid;
-  }
-  const lambda = (lo + hi) / 2;
+  // UNCONTESTED GAUGES ARE A SPECIAL CASE, and treating them as a limit of the
+  // contested formula was wrong in both directions.
+  //
+  // With otherVotes == 0 your reward is incentives · x/(x+0) = incentives — a
+  // CONSTANT for any x > 0. So the marginal value of the second vote onward is
+  // exactly zero: the right move is to put the minimum there and spend the rest
+  // where votes still buy share. The previous closed form sqrt(incentives/λ)
+  // instead gave them a full water-filling allocation (~13% of the power in the
+  // worst case), starving contested gauges where that power actually earns.
+  //
+  // It also made the bisection numerically unsafe: `hi` was derived as
+  // incentives/1e-12, which is 1e12x the incentive figure and reaches Infinity
+  // for a large one — and an Infinite bracket makes every midpoint Infinity, so
+  // the search returns garbage rather than failing.
+  const uncontested = usable.filter((g) => g.otherVotes <= 0);
+  const contested = usable.filter((g) => g.otherVotes > 0);
 
-  const raw = usable.map((g) => ({ g, x: alloc(g, lambda) }));
+  // Reserve the floor for uncontested gauges; water-fill the remainder.
+  const reservedFraction = Math.min(0.5, (uncontested.length * MIN_BPS) / 10_000);
+  const fillPower = votingPower * (1 - reservedFraction);
+
+  let raw: Array<{ g: GaugeStat; x: number }>;
+  if (contested.length === 0) {
+    // Nothing to compete for: reward is constant per gauge, so spread evenly.
+    raw = uncontested.map((g) => ({ g, x: votingPower / uncontested.length }));
+  } else {
+    // Binary-search λ over the CONTESTED gauges only. total(λ) decreases in λ,
+    // and hi is now a plain ratio bound — finite by construction.
+    let lo = 1e-12;
+    let hi = Math.max(0, ...contested.map((g) => g.incentives / g.otherVotes)) + 1;
+    const total = (l: number) => contested.reduce((s, g) => s + alloc(g, l), 0);
+    for (let iter = 0; iter < 100; iter++) {
+      const mid = (lo + hi) / 2;
+      if (total(mid) > fillPower) lo = mid;
+      else hi = mid;
+    }
+    const lambda = (lo + hi) / 2;
+    raw = [
+      ...uncontested.map((g) => ({ g, x: (votingPower * MIN_BPS) / 10_000 })),
+      ...contested.map((g) => ({ g, x: alloc(g, lambda) })),
+    ];
+  }
   const spent = raw.reduce((s, r) => s + r.x, 0) || 1;
 
   // Convert to integer bps that sum to exactly 10000 (largest-remainder method).

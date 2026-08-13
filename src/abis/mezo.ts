@@ -37,6 +37,20 @@ export const borrowerOperationsAbi = [
     { name: "_amount", type: "uint256" }, { name: "_upperHint", type: "address" }, { name: "_lowerHint", type: "address" },
   ], outputs: [] },
   { type: "function", name: "closeTrove", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  // Redeemed borrowers must claim their collateral surplus themselves; the
+  // protocol does not push it back. Verified live: calling it with nothing owed
+  // reverts "CollSurplusPool: No collateral available to claim".
+  { type: "function", name: "claimCollateral", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  // Live market parameters. Every one of these was a hardcoded constant in the
+  // borrow surface until the conformance audit; several had drifted from the
+  // deployed contracts (see src/core/musdParams.ts). All verified on testnet:
+  // gas comp 200e18, borrowingRate 1e15 (0.1%), minNetDebt 1800e18, MCR 1.1e18,
+  // CCR 1.5e18.
+  { type: "function", name: "MUSD_GAS_COMPENSATION", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "borrowingRate", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "minNetDebt", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "MCR", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "CCR", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ] as const;
 
 export const troveManagerAbi = [
@@ -44,13 +58,29 @@ export const troveManagerAbi = [
     { name: "_borrower", type: "address" }, { name: "_price", type: "uint256" },
   ], outputs: [{ type: "uint256" }] },
   { type: "function", name: "getTroveColl", stateMutability: "view", inputs: [{ name: "_borrower", type: "address" }], outputs: [{ type: "uint256" }] },
+  // Includes principal + accrued interest + gas compensation.
   { type: "function", name: "getTroveDebt", stateMutability: "view", inputs: [{ name: "_borrower", type: "address" }], outputs: [{ type: "uint256" }] },
-  { type: "function", name: "getTroveStatus", stateMutability: "view", inputs: [{ name: "_borrower", type: "address" }], outputs: [{ type: "uint256" }] },
+  // A Solidity enum, so it ABI-encodes as uint8 - not the uint256 this used to
+  // declare. Values: 0 nonExistent, 1 active, 2 closedByOwner, 3 closedByLiquidation,
+  // 4 closedByRedemption. Without it, a liquidated or redeemed Trove is
+  // indistinguishable from never having had one.
+  { type: "function", name: "getTroveStatus", stateMutability: "view", inputs: [{ name: "_borrower", type: "address" }], outputs: [{ type: "uint8" }] },
+  // The sticky borrowing high-water mark stamped at open time. Verified live on
+  // TroveManager (NOT BorrowerOperations, where the selector does not exist).
+  { type: "function", name: "getTroveMaxBorrowingCapacity", stateMutability: "view", inputs: [{ name: "_borrower", type: "address" }], outputs: [{ type: "uint256" }] },
+  // System-wide state: in Recovery Mode opens are gated on CCR, not MCR, and
+  // the borrowing fee is waived.
+  { type: "function", name: "checkRecoveryMode", stateMutability: "view", inputs: [{ name: "_price", type: "uint256" }], outputs: [{ type: "bool" }] },
+  { type: "function", name: "getTCR", stateMutability: "view", inputs: [{ name: "_price", type: "uint256" }], outputs: [{ type: "uint256" }] },
 ] as const;
 
+// `fetchPrice` is `view` on-chain, and it is the ONLY price selector that
+// exists. `lastGoodPrice` used to be declared here and used as the sole address
+// probe in scripts/verifyaddrs.ts - it appears in musd only as an EVENT
+// parameter, so the probe silently failed on both networks and PriceFeed was
+// never actually verified. Removed rather than left as a decoy.
 export const priceFeedAbi = [
-  { type: "function", name: "fetchPrice", stateMutability: "nonpayable", inputs: [], outputs: [{ type: "uint256" }] },
-  { type: "function", name: "lastGoodPrice", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "fetchPrice", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ] as const;
 
 export const hintHelpersAbi = [
@@ -101,6 +131,18 @@ export const voterAbi = [
   // Weights — for the optimal-vote incentives feed.
   { type: "function", name: "weights", stateMutability: "view", inputs: [{ name: "_pool", type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "totalWeight", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  // The FULL gauge set. The allocator used to iterate the 3 pools in the
+  // registry and describe the result as "optimal", while mainnet carries 26
+  // gauges holding ~80% of totalWeight — so it was confidently optimising over
+  // a fifth of the universe. These let it at least MEASURE what it cannot see.
+  // Verified live on both Voters.
+  { type: "function", name: "length", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "pools", stateMutability: "view", inputs: [{ name: "_index", type: "uint256" }], outputs: [{ type: "address" }] },
+  // Vote-mechanics limits the builder never read, so breaching them reverted
+  // opaquely AFTER signing.
+  { type: "function", name: "maxVotingNum", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "lastVoted", stateMutability: "view", inputs: [{ name: "_tokenId", type: "uint256" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "epochVoteEnd", stateMutability: "view", inputs: [{ name: "_timestamp", type: "uint256" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "claimBribes", stateMutability: "nonpayable", inputs: [
     { name: "_bribes", type: "address[]" }, { name: "_tokens", type: "address[][]" }, { name: "_tokenId", type: "uint256" },
   ], outputs: [] },

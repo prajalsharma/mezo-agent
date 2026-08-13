@@ -53,7 +53,27 @@ export async function parseIntent(
   //    "swap 0.0001 BTC to mUSDC" ALWAYS work — no LLM latency, no field-name
   //    risk, no rate limit. The LLM never even runs for a clear command.
   const rule = fallbackParse(message, knownSymbols, ctx);
-  if (rule.action !== "clarify") return rule;
+  if (rule.action !== "clarify") {
+    // Validate the rule parser's output too. "Deterministic" means its FIELD
+    // NAMES are predictable, not that its VALUES are sane — the rules build
+    // intents out of regex capture groups, and returning here before Zod meant
+    // the whole schema (the amount regex, the positive-integer constraints) only
+    // ever ran on LLM output. That is how "dca 50 MUSD into BTC every 0 hours"
+    // produced a schedule with everyHours = 0: the interval was captured, never
+    // checked, and fired every tick forever.
+    const checked = Intent.safeParse(rule);
+    if (checked.success) return checked.data;
+    log.warn("parse.rule-rejected-by-schema", {
+      action: String((rule as { action?: string }).action ?? "?"),
+      issue: checked.error.issues[0]?.message ?? "invalid",
+    });
+    return {
+      action: "clarify",
+      question:
+        `I understood the shape of that, but one of the values doesn't work: ` +
+        `${checked.error.issues[0]?.message ?? "invalid value"}. Could you rephrase it?`,
+    } as IntentT;
+  }
 
   // 2) LLM SECOND, only for what the rules couldn't parse — i.e. free-form,
   //    natural-language phrasing ("what can I do with my btc?", "put half my
@@ -412,6 +432,9 @@ export function fallbackParse(message: string, knownSymbols: string[], ctx?: Par
     if (m) return { action: "borrow", mintMUSD: m[1]!, collateralBTC: m[2]! }; }
   { const m = t.match(new RegExp(`repay\\s+${num}\\s+musd`, "i")); if (m) return { action: "repay", repayMUSD: m[1]! }; }
   if (loose && /\bclose\s+trove\b/.test(lower)) return { action: "closeTrove" };
+  // The redemption/liquidation warnings tell users to say exactly this, so it
+  // must not depend on the LLM being available to understand it.
+  if (/\bclaim\s+(?:my\s+)?(?:collateral|surplus)\b/i.test(lower)) return { action: "claimCollateral" };
 
   // Adjust Trove — the tip card teaches EXACTLY these phrasings ("add 0.05 BTC
   // collateral", "withdraw 0.02 BTC", "mint 500 MUSD"), but no rule existed, so

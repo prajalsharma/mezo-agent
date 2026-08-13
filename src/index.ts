@@ -2,8 +2,8 @@ import { buildBot, startupBanner } from "./bot/bot.js";
 import { runPreflight, formatPreflightText } from "./core/preflight.js";
 import { log, errMsg } from "./core/log.js";
 import { env } from "./config/env.js";
-import { startKeeper } from "./keeper/scheduler.js";
-import { startAlerts } from "./keeper/alerts.js";
+import { startKeeper, stopKeeper } from "./keeper/scheduler.js";
+import { startAlerts, stopAlerts } from "./keeper/alerts.js";
 import { installBotProfile } from "./bot/menu.js";
 import { setBotUsername } from "./bot/handlers/menu.js";
 
@@ -70,6 +70,12 @@ async function main() {
     if (stopping) return;
     stopping = true;
     log.info("shutdown.begin", { signal });
+    // Stop the timers FIRST. Both stopKeeper and stopAlerts existed only on
+    // paper — nothing called them — so on every redeploy a keeper tick could
+    // start a swap while the process was on its way to process.exit, and be
+    // killed between signing and recording it.
+    try { stopKeeper(); } catch { /* best effort */ }
+    try { stopAlerts(); } catch { /* best effort */ }
     try {
       await bot.stop();
     } catch (err) {

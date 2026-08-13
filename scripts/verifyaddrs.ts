@@ -57,7 +57,13 @@ const PROBES: Record<string, { name: string; type: "address" | "uint256" }[]> = 
     { name: "getSize", type: "uint256" },
     { name: "getFirst", type: "address" },
   ],
-  PriceFeed: [{ name: "lastGoodPrice", type: "uint256" }],
+  // `fetchPrice`, NOT `lastGoodPrice`. The latter exists in musd only as an
+  // EVENT parameter, so probing it returned empty data on both networks and the
+  // probe's catch swallowed it — PriceFeed silently failed verification while
+  // the registry claimed every address "answers its own interface". This is the
+  // contract every collateral-ratio check depends on, so it was the worst one to
+  // be checking with a selector that cannot succeed.
+  PriceFeed: [{ name: "fetchPrice", type: "uint256" }],
   HintHelpers: [{ name: "sortedTroves", type: "address" }],
 };
 

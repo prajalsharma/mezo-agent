@@ -1,5 +1,6 @@
 import { encodeFunctionData, parseEther, parseUnits, type Address } from "viem";
 import { registry } from "../registry/registry.js";
+import { publicClient } from "../chain/client.js";
 import { votingEscrowAbi } from "../abis/mezo.js";
 import { approveStep } from "./earn.js";
 import { txnFee } from "./fees.js";
@@ -16,6 +17,30 @@ import type { LockIntent, ExtendLockIntent } from "../llm/intent.js";
 const VE_BTC_MAX_DAYS = 28;
 const VE_MEZO_MAX_DAYS = 4 * 365;
 const DAY = 24 * 60 * 60;
+
+/** Maximum lock horizon, in days, for an escrow's asset. */
+function maxLockDays(asset: "BTC" | "MEZO"): number {
+  return asset === "BTC" ? VE_BTC_MAX_DAYS : VE_MEZO_MAX_DAYS;
+}
+
+/**
+ * The lock's current unlock timestamp, or 0n if unreadable.
+ *
+ * Needed because `increaseUnlockTime` takes a duration from NOW, so extending a
+ * lock correctly is impossible without knowing where it currently ends.
+ */
+async function lockEnd(ve: Address, tokenId: bigint): Promise<bigint> {
+  try {
+    const locked = (await publicClient().readContract({
+      address: ve,
+      abi: [{ type: "function", name: "locked", stateMutability: "view", inputs: [{ name: "", type: "uint256" }], outputs: [{ name: "amount", type: "int128" }, { name: "end", type: "uint256" }] }] as const,
+      functionName: "locked", args: [tokenId],
+    })) as readonly [bigint, bigint];
+    return locked[1];
+  } catch {
+    return 0n;
+  }
+}
 
 export function buildLock(intent: LockIntent): ActionPlan {
   const amount = Number(intent.amount);
@@ -92,16 +117,50 @@ export async function buildExtendLock(intent: ExtendLockIntent, owner: Address):
   }
 
   const ve = registry.contract("VotingEscrowBTC");
+  const asset = "BTC" as const;
   const tokenId = BigInt(intent.tokenId);
   const steps: ActionStep[] = [];
   let nativeValue = 0n;
 
   if (intent.addDays) {
+    // increaseUnlockTime takes a DURATION MEASURED FROM NOW, not a delta added
+    // to the current unlock time — the escrow computes
+    // `unlockTime = floor((block.timestamp + _lockDuration) / WEEK) * WEEK`.
+    //
+    // Passing the raw delta therefore asked for `now + 7 days` on a lock with
+    // 20 days still to run, which is EARLIER than its current unlock, and the
+    // contract rejected it. "Extend by 7 days" reverted for exactly the users
+    // who had the longest left to run, which is the opposite of the intent.
+    //
+    // So: read the current end, add the requested days to THAT, and send the
+    // resulting duration from now.
+    const currentEnd = await lockEnd(ve, tokenId);
+    const nowSec = BigInt(Math.floor(Date.now() / 1000));
+    const base = currentEnd > nowSec ? currentEnd : nowSec;
+    const target = base + BigInt(intent.addDays * DAY);
+    const duration = target - nowSec;
+
+    // veBTC locks are capped (28 days); asking beyond the cap reverts opaquely.
+    const maxDuration = BigInt(maxLockDays(asset) * DAY);
+    if (duration > maxDuration) {
+      const room = Number((maxDuration - (base - nowSec)) / BigInt(DAY));
+      throw new ActionUnavailableError(
+        `That would put the unlock ${Math.ceil(Number(duration) / DAY)} days out, but ve${asset} locks cap at ` +
+          `${maxLockDays(asset)} days from today. ` +
+          (room > 0
+            ? `You can extend by at most ${room} more day(s) right now.`
+            : `This lock is already at the maximum - extend it again once some time has passed.`),
+      );
+    }
+    if (currentEnd > 0n) {
+      summary.push(`• New unlock: ${new Date(Number(target) * 1000).toUTCString()}`);
+    }
     steps.push({
       kind: "extendLock", to: ve, value: 0n,
       data: encodeFunctionData({
         abi: votingEscrowAbi, functionName: "increaseUnlockTime",
-        args: [tokenId, BigInt(intent.addDays * DAY)],
+        // The DURATION FROM NOW that lands on the target unlock time.
+        args: [tokenId, duration],
       }),
       describe: `Extend lock #${intent.tokenId} by ${intent.addDays} days`,
     });

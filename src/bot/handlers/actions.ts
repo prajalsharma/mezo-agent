@@ -5,8 +5,9 @@ import { buildActionPlan, ActionUnavailableError } from "../../surfaces/dispatch
 import { executeActionPlan, type ActionPlan } from "../../surfaces/plan.js";
 import { simulateCall } from "../../core/simulator.js";
 import { limitsOf, fmtBtc } from "../../custody/policy.js";
-import { setPending, getPending, clearPending } from "../session.js";
-import type { Intent } from "../../llm/intent.js";
+import { setPending, takePending, clearPending, attachCard, refusalText } from "../session.js";
+import { callbackId } from "./swap.js";
+import { validateIntent, IntentRejected, type Intent } from "../../llm/intent.js";
 import { b, i, esc } from "../format.js";
 import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
 import { referralFor } from "../../core/referral.js";
@@ -33,13 +34,28 @@ function renderPlan(plan: ActionPlan): string {
   return lines.join("\n");
 }
 
-export async function handleActionIntent(ctx: Context, intent: Intent): Promise<boolean> {
+export async function handleActionIntent(ctx: Context, raw: Intent): Promise<boolean> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return false;
   const user = getUser(telegramId);
   if (!user) {
     await ctx.reply("You don't have an account yet. Send /start.");
     return true;
+  }
+
+  // Validate HERE, not at the call sites. Inline-keyboard callbacks reach this
+  // function with fragments string-split out of raw callback data, which used to
+  // skip the schema entirely — including the amount regex that is the codebase's
+  // strongest guard against parse divergence.
+  let intent: Intent;
+  try {
+    intent = validateIntent(raw);
+  } catch (err) {
+    if (err instanceof IntentRejected) {
+      await ctx.reply(`⚠️ ${esc(err.message)}`, { parse_mode: "HTML" });
+      return true;
+    }
+    throw err;
   }
 
   let plan: ActionPlan | undefined;
@@ -96,10 +112,11 @@ export async function handleActionIntent(ctx: Context, intent: Intent): Promise<
 
   const threshold = BigInt(limitsOf(user.limits).confirmationThresholdNativeWei);
   const requiresStepUp = plan.nativeValue > threshold;
-  setPending(telegramId, { kind: "action", plan, stepUpPending: requiresStepUp });
+  // The id binds THIS card to THIS plan — see src/bot/session.ts.
+  const planId = setPending(telegramId, { kind: "action", plan, stepUpPending: requiresStepUp }, user.address);
 
-  const kb = new InlineKeyboard().text("✅ Confirm", "action:confirm").text("✖️ Cancel", "action:cancel");
-  await ctx.reply(
+  const kb = new InlineKeyboard().text("✅ Confirm", `action:confirm:${planId}`).text("✖️ Cancel", `action:cancel:${planId}`);
+  const sent = await ctx.reply(
     `${renderPlan(plan)}\n\n${b(netTag)}\n` +
       (requiresStepUp
         ? `⚠️ ${b("High-value")}: moves ${esc(fmtBtc(plan.nativeValue))} (over your ${esc(fmtBtc(threshold))} step-up threshold). You'll confirm once more.\n`
@@ -107,30 +124,48 @@ export async function handleActionIntent(ctx: Context, intent: Intent): Promise<
       i("Confirm to simulate-then-sign each step, or Cancel. Expires in 3 minutes."),
     { parse_mode: "HTML", reply_markup: kb },
   );
+  attachCard(telegramId, planId, sent.chat.id, sent.message_id);
   return true;
 }
 
 export async function handleActionConfirm(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
+  // Claim the plan BEFORE any await — see handleSwapConfirm for why the gap
+  // between "read" and "clear" was a double-execution race.
+  const taken = takePending(telegramId, callbackId(ctx));
   await ctx.answerCallbackQuery().catch(() => {});
-  const pending = getPending(telegramId);
-  if (!pending || pending.kind !== "action") {
-    await ctx.reply("That preview expired. Please request the action again.");
+  if (!taken.ok || taken.pending.kind !== "action") {
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    await ctx.reply(taken.ok ? refusalText("none") : refusalText(taken.why));
     return;
   }
+  const pending = taken.pending;
   const user = getUser(telegramId);
   if (!user) return;
 
+  // Active-account switch between render and confirm would sign account 2's key
+  // over calldata built for account 1.
+  if (pending.accountAddress && pending.accountAddress.toLowerCase() !== user.address.toLowerCase()) {
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    await ctx.reply(
+      `You switched active account since that plan was built (it was for ${pending.accountAddress}). ` +
+        `I didn't execute it — ask again and I'll build it for ${user.address}.`,
+    );
+    return;
+  }
+
   if (pending.stepUpPending) {
-    setPending(telegramId, { kind: "action", plan: pending.plan, stepUpPending: false });
-    const kb = new InlineKeyboard().text("✅ Yes, execute", "action:confirm").text("✖️ Cancel", "action:cancel");
+    const nextId = setPending(telegramId, { kind: "action", plan: pending.plan, stepUpPending: false }, user.address);
+    const kb = new InlineKeyboard().text("✅ Yes, execute", `action:confirm:${nextId}`).text("✖️ Cancel", `action:cancel:${nextId}`);
     await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
+    if (ctx.callbackQuery?.message) {
+      attachCard(telegramId, nextId, ctx.callbackQuery.message.chat.id, ctx.callbackQuery.message.message_id);
+    }
     await ctx.reply("⚠️ High-value action - tap “Yes, execute” to proceed, or Cancel.");
     return;
   }
 
-  clearPending(telegramId);
   await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
   await ctx.reply("⏳ Executing…");
 
@@ -176,8 +211,9 @@ export async function handleActionConfirm(ctx: Context): Promise<void> {
 export async function handleActionCancel(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
+  // By id, so cancelling a stale card can't disarm the live plan.
+  const taken = takePending(telegramId, callbackId(ctx));
   await ctx.answerCallbackQuery().catch(() => {});
-  clearPending(telegramId);
   await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-  await ctx.reply("Cancelled. Nothing was signed.");
+  await ctx.reply(taken.ok ? "Cancelled. Nothing was signed." : "That card was already replaced or expired - nothing was signed.");
 }

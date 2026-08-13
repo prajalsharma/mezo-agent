@@ -5,6 +5,7 @@ import { voterAbi, votingRewardAbi } from "../abis/mezo.js";
 import { poolAbi } from "../abis/pool.js";
 import { votingRewardsForPool } from "./veEnumeration.js";
 import type { GaugeStat } from "./optimalVoting.js";
+import { log, errMsg } from "./log.js";
 
 /**
  * Live gauge-incentives feed for the optimal-vote allocator.
@@ -91,6 +92,63 @@ async function ownVotes(voter: Address, tokenId: bigint | undefined, pool: Addre
   }
 }
 
+/**
+ * How much of the voting universe the allocator can actually see.
+ *
+ * It iterates `registry.pools()` — a compiled-in list — while the Voter holds
+ * the real gauge set. On mainnet that was 3 pools against 26 gauges, carrying
+ * about a fifth of `totalWeight()`, and the output was still presented as
+ * "optimal". A confidently-wrong allocation over 19% of the universe is worse
+ * than declining to optimise, so the caller now has to know the number.
+ *
+ * Fails OPEN to `undefined` (unknown coverage) rather than to a flattering 100%.
+ */
+export type VoterCoverage = {
+  /** Gauges the Voter knows about. */
+  totalGauges: number;
+  /** Of those, how many are in our registry. */
+  visibleGauges: number;
+  /** Share of totalWeight() our registry pools account for, 0..1. */
+  weightShare: number;
+  /** Voter.maxVotingNum() — the most pools one vote may name. */
+  maxVotingNum: number;
+};
+
+export async function voterCoverage(): Promise<VoterCoverage | undefined> {
+  const c = publicClient();
+  const voter = registry.contract("Voter");
+  try {
+    const [count, totalWeight, maxVotingNum] = await Promise.all([
+      c.readContract({ address: voter, abi: voterAbi, functionName: "length" }) as Promise<bigint>,
+      c.readContract({ address: voter, abi: voterAbi, functionName: "totalWeight" }) as Promise<bigint>,
+      c.readContract({ address: voter, abi: voterAbi, functionName: "maxVotingNum" }).catch(() => 30n) as Promise<bigint>,
+    ]);
+    const total = Number(count);
+    if (total === 0) return undefined;
+
+    const known = new Set(registry.pools().map((p) => p.address.toLowerCase()));
+    let visible = 0;
+    let visibleWeight = 0n;
+    // Bounded: read every gauge address, then the weights of the ones we know.
+    const addresses = await Promise.all(
+      Array.from({ length: total }, (_, i) =>
+        c.readContract({ address: voter, abi: voterAbi, functionName: "pools", args: [BigInt(i)] }).catch(() => undefined) as Promise<Address | undefined>,
+      ),
+    );
+    for (const a of addresses) {
+      if (!a || !known.has(a.toLowerCase())) continue;
+      visible++;
+      const w = (await c.readContract({ address: voter, abi: voterAbi, functionName: "weights", args: [a] }).catch(() => 0n)) as bigint;
+      visibleWeight += w;
+    }
+    const weightShare = totalWeight > 0n ? Number((visibleWeight * 10_000n) / totalWeight) / 10_000 : 0;
+    return { totalGauges: total, visibleGauges: visible, weightShare, maxVotingNum: Number(maxVotingNum) };
+  } catch (e) {
+    log.warn("incentives.coverage-unreadable", { error: errMsg(e) });
+    return undefined;
+  }
+}
+
 export async function liveIncentives(nowSeconds: number, tokenId?: bigint): Promise<IncentivesSnapshot> {
   const c = publicClient();
   const voter = registry.contract("Voter");
@@ -115,7 +173,10 @@ export async function liveIncentives(nowSeconds: number, tokenId?: bigint): Prom
           args: [t, epochStart],
         }).catch(() => 0n)) as bigint;
         if (amount === 0n) continue;
-        const dec = tokenDecimals(t);
+        const dec = await tokenDecimals(t);
+        // Unknown decimals means we cannot size the reward at all — record it as
+        // unpriced rather than guessing 18 and being off by orders of magnitude.
+        if (dec === undefined) { unpriced.push(t); continue; }
         const musd = await valueInMusd(t, amount, dec);
         if (musd === undefined) unpriced.push(t);
         else incentivesMusdWei += musd;
@@ -134,10 +195,28 @@ export async function liveIncentives(nowSeconds: number, tokenId?: bigint): Prom
   return { gauges, epochStart };
 }
 
-/** Decimals for a reward token by matching the registry; default 18. */
-function tokenDecimals(addr: Address): number {
+/**
+ * Decimals for a reward token: the registry first, then the token itself.
+ *
+ * Defaulting an unknown token to 18 was worse than not valuing it. An 8-decimal
+ * reward would be read as 1e10 times its real size, and — because the token WAS
+ * "priced", just wrongly — it sailed past the `anyUnpriced` guard that exists to
+ * stop exactly this. A confidently wrong valuation steers the vote; an admitted
+ * unknown one blocks it. Returns undefined when the decimals can't be
+ * established, and the caller treats that as unpriced.
+ */
+async function tokenDecimals(addr: Address): Promise<number | undefined> {
   for (const t of registry.allTokens()) {
     if (registry.routingAddress(t).toLowerCase() === addr.toLowerCase()) return t.decimals;
   }
-  return 18;
+  try {
+    const d = (await publicClient().readContract({
+      address: addr,
+      abi: [{ type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] }] as const,
+      functionName: "decimals",
+    })) as number;
+    return Number(d);
+  } catch {
+    return undefined;
+  }
 }

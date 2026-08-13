@@ -1,6 +1,7 @@
 import type { Address } from "viem";
 import { env, feesEnabled } from "../config/env.js";
 import { store } from "../db/store.js";
+import { attest } from "../custody/attest.js";
 import { getUser } from "../wallet/walletService.js";
 import { publicClient } from "../chain/client.js";
 import { feeRouterCaps } from "../chain/feeRouterCaps.js";
@@ -105,5 +106,10 @@ export async function referralFor(telegramId: number, traderAddress: string): Pr
   // (no FeeRouter) split path, where the bot builds the transfer itself.
   const sharePct = (await onChainSharePct()) ?? env.fees.referralSharePct;
   if (sharePct <= 0) return undefined;
+  // The referrer's payout wallet is another user's own account address, read
+  // from the local store and confirmed against the on-chain binding above — not
+  // something a model or a message can influence. It cannot be in the compiled-in
+  // registry, so record it explicitly for the signer's independent target check.
+  attest(rec.address as Address, `referrer payout wallet for telegram:${referrerId}`);
   return { recipient: rec.address as Address, sharePct, referrerTelegramId: referrerId };
 }

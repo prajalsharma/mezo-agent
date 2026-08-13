@@ -17,16 +17,45 @@ import { store, type UserRecord } from "../db/store.js";
  * shows the human summary but refuses to sign — never an invented address.
  */
 
+/**
+ * What a step does with an asset.
+ *
+ * Every asset-moving step must carry one of these. The per-transaction cap
+ * applies to both kinds — an approval authorises exactly as much as a transfer
+ * moves — but only a `spend` is added to the rolling 24h ring, because an
+ * approval and the transfer it enables are the SAME funds. Tagging both as
+ * spends would double-count a plan; tagging neither is what left the zap's swap
+ * and addLiquidity legs invisible to the caps entirely.
+ */
+export type AssetMove = {
+  symbol: string;
+  amount: bigint;
+  /** Defaults to "spend" — the fail-closed direction for an untagged step. */
+  kind?: "spend" | "approval";
+};
+
 export type ActionStep = {
   kind: string; // "approval" | "borrow" | "lock" | "fee" | "referral" | ...
   to: Address;
   data?: Hex;
   value: bigint;
   describe: string;
-  /** ERC-20 amount this step moves, for per-token cap enforcement (optional). */
-  erc20?: { symbol: string; amount: bigint };
+  /** What this step moves, for cap enforcement. REQUIRED on any asset-moving step. */
+  erc20?: AssetMove;
   /** Wait for this step to confirm before the next (e.g. approval before spend). */
   waitForReceipt?: boolean;
+  /**
+   * Re-encode this step's calldata immediately before it is simulated and
+   * signed, from live on-chain state.
+   *
+   * A multi-step plan is built from ONE quote taken before any of it executes,
+   * so a later step sized from that quote can be wrong by the time it runs. The
+   * zap is the case that bit: its addLiquidity leg asked for the pre-swap quoted
+   * amount of the second token while the wallet might hold up to 0.5% less, so
+   * the router's transferFrom reverted — after the swap leg had irreversibly
+   * settled, leaving the user holding a half-finished zap.
+   */
+  rebuild?: (owner: Address) => Promise<Hex | undefined>;
 };
 
 /** Referral payout carried by a plan, for the earnings ledger. */
@@ -155,7 +184,21 @@ export async function executeActionPlan(
     };
   }
 
-  for (const step of plan.steps) {
+  for (const original of plan.steps) {
+    // Re-size from live state first, where the step asked for it. This runs
+    // BEFORE the simulation, so a step whose sizing has drifted is corrected
+    // rather than simulated-then-reverted.
+    let step = original;
+    if (original.rebuild) {
+      try {
+        const fresh = await original.rebuild(user.address as Address);
+        if (fresh) step = { ...original, data: fresh };
+      } catch {
+        // Couldn't re-read: fall through with the built calldata. The simulation
+        // below is still ahead of the signature, so this fails loudly, not badly.
+      }
+    }
+
     // Simulate-then-sign, with retries + owed-fee logging for fee steps (revenue
     // must survive a transient RPC flake, and a lost fee must be recorded).
     const attempt = await trySignStep(user, step, plan.allowedTargets);

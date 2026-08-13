@@ -1,5 +1,5 @@
 import { InlineKeyboard, type Bot } from "grammy";
-import { formatUnits } from "viem";
+import { formatUnits, parseEther } from "viem";
 import { env, feesEnabled } from "../config/env.js";
 import { getUser, listAccounts, activeIndex } from "../wallet/walletService.js";
 import { store } from "../db/store.js";
@@ -419,9 +419,14 @@ function poolNames(): string[] {
 function tipContent(key: string): { parent: string; text: string } | undefined {
   const pools = poolNames();
   const pool0 = pools[0] ?? "BTC/MUSD";
+  const stable = registry.knownTokenSymbols().find((x) => x.toUpperCase() === "MUSD") ?? "MUSD";
   switch (key) {
+    // There was no "swap" guidance at all, so every Swap guide button fell
+    // through to the token picker — the one thing a user who tapped "how do I
+    // phrase this?" did not want.
+    case "swap": return { parent: "swap", text: `${b("💱 Swap")}\nType, e.g.:\n${code(`swap 100 ${stable} to BTC`)}\n${code("swap 0.01 BTC to " + stable)}\n\n${i("You'll see a live quote, the minimum you'd receive, and a confirm button before anything is signed.")}` };
     case "borrow_open": return { parent: "borrow", text: `${b("➕ Open Trove")}\nType, e.g.:\n${code("borrow 2000 MUSD against 0.1 BTC")}\n\n${i("Minimum debt 1,800 MUSD. You'll see the live collateral ratio and confirm before signing.")}` };
-    case "borrow_repay": return { parent: "borrow", text: `${b("💵 Repay")}\nType:\n${code("repay 500 MUSD")}\n\n${i("Repaying below the 1,800 MUSD minimum debt isn't allowed - use \"close trove\" to repay everything.")}` };
+    case "borrow_repay": return { parent: "borrow", text: `${b("💵 Repay")}\nType:\n${code("repay 500 MUSD")}\n\n${i("Mezo enforces a minimum debt, so a partial repayment can't take you below it - I'll tell you the live figure if you get close. Use \"close trove\" to repay everything.")}` };
     case "borrow_adjust": return { parent: "borrow", text: `${b("🔧 Adjust Trove")}\nType any of:\n${code("add 0.05 BTC collateral")}\n${code("withdraw 0.02 BTC")}\n${code("mint 500 MUSD")}` };
     case "earn_stake": return { parent: "earn", text: `${b("🌊 Stake LP")}\nPools: ${pools.join(", ")}\n\nType:\n${code(`stake LP ${pool0}`)}\n\n${i("You need LP tokens first - get them with a zap or by adding liquidity.")}` };
     case "earn_vault": {
@@ -458,12 +463,20 @@ export async function tipCard(key: string, telegramId?: number): Promise<Card | 
   return { text: t.text, keyboard: chrome(new InlineKeyboard(), t.parent) };
 }
 
-const MIN_DEBT_MUSD = 1800;
-
-/** Live-sized "Open Trove" tip: real price, real balance, tappable command. */
+/**
+ * Live-sized "Open Trove" tip: real price, real balance, tappable command.
+ *
+ * The suggestion this card renders is TAPPABLE, so its arithmetic has to be the
+ * same arithmetic the builder uses. It used to carry its own copy of the wrong
+ * model — minimum debt 1,800 hardcoded, a 1% fee, and no gas compensation — so
+ * once the builder was corrected this button would have offered a plan the
+ * builder then refused. Now both size the loan through musdParams, and the
+ * suggestion is derived from `maxNetMint` rather than re-derived by hand.
+ */
 async function borrowOpenTip(telegramId?: number): Promise<Card> {
-  const { btcPriceUsd } = await import("../core/prices.js");
-  const price = await btcPriceUsd().catch(() => undefined);
+  const { btcPriceWad } = await import("../core/prices.js");
+  const { musdParams, compositeDebt, maxNetMint } = await import("../core/musdParams.js");
+  const [priceWad, p] = await Promise.all([btcPriceWad().catch(() => undefined), musdParams()]);
   let btcHeld = 0;
   const user = telegramId ? getUser(telegramId) : undefined;
   if (user) {
@@ -475,20 +488,28 @@ async function borrowOpenTip(telegramId?: number): Promise<Card> {
 
   const lines = [b("➕ Open Trove"), ""];
   const kb = new InlineKeyboard();
-  if (price) {
-    const gross = MIN_DEBT_MUSD * 1.01;
-    // Collateral for the minimum loan at a comfortable 150% ratio.
-    const safeBtc = Number(((1.5 * gross) / price).toFixed(4));
+  if (priceWad !== undefined && p) {
+    const price = Number(priceWad) / 1e18;
+    const minNet = Number(p.minNetDebt) / 1e18;
+    const gasComp = Number(p.gasCompensation) / 1e18;
+    // Collateral for the SMALLEST loan at a comfortable 150% ratio, priced off
+    // the debt the protocol actually records (mint + fee + gas compensation).
+    const minDebtRecorded = Number(compositeDebt(p.minNetDebt, p, false)) / 1e18;
+    const safeBtc = Number(((1.5 * minDebtRecorded) / price).toFixed(4));
     const affordable = btcHeld > 0 && btcHeld >= safeBtc;
     // If they hold more than the minimum needs, size the example to THEIR stack
     // (60% of it, keeping a buffer) instead of a fixed number.
     const useBtc = affordable ? Number(Math.max(safeBtc, btcHeld * 0.6).toFixed(4)) : safeBtc;
+    // Headroom at 150%, not at MCR, so the suggestion is comfortable rather than
+    // borderline. maxNetMint already nets out the fee and the gas compensation.
+    const headroomAt150 = Number(maxNetMint(parseEther(String(useBtc)), priceWad, p, false)) / 1e18 * (Number(p.mcr) / 1e18) / 1.5;
     const debt = affordable
-      ? Math.max(MIN_DEBT_MUSD, Math.floor(((useBtc * price) / 1.5 / 1.01) / 100) * 100)
-      : MIN_DEBT_MUSD;
+      ? Math.max(minNet, Math.floor(headroomAt150 / 100) * 100)
+      : minNet;
     const cmd = `borrow ${debt} MUSD against ${useBtc} BTC`;
     lines.push(
-      `BTC is ${b(`$${Math.round(price).toLocaleString()}`)} right now, so the smallest loan (${b(`${MIN_DEBT_MUSD.toLocaleString()} MUSD`)}) needs about ${b(`${safeBtc} BTC`)} at a safe 150% ratio.`,
+      `BTC is ${b(`$${Math.round(price).toLocaleString()}`)} right now, so the smallest loan (${b(`${minNet.toLocaleString()} MUSD`)}) needs about ${b(`${safeBtc} BTC`)} at a safe 150% ratio.`,
+      i(`Every Trove also carries ${gasComp} MUSD of gas compensation on top of what you mint, and that counts toward the ratio.`),
       "",
     );
     if (user && btcHeld > 0) {
@@ -503,10 +524,16 @@ async function borrowOpenTip(telegramId?: number): Promise<Card> {
       lines.push("Type, e.g.:", code(cmd), "");
     }
     if (affordable) kb.text(`▶ ${cmd}`, `menu:runborrow:${debt}:${useBtc}`).row();
+    lines.push(i(`Minimum debt ${minNet.toLocaleString()} MUSD; keep the ratio above ${(Number(p.mcr) / 1e16).toFixed(0)}% or risk liquidation. You'll see the live ratio and confirm before signing.`));
   } else {
-    lines.push("Type, e.g.:", code(`borrow ${MIN_DEBT_MUSD} MUSD against 0.05 BTC`), "");
+    // No live parameters means no honest example. Say so rather than printing a
+    // number that might not be the protocol's.
+    lines.push(
+      "I can't read Mezo's live borrowing parameters right now, so I won't suggest a size - the numbers would be guesses.",
+      "",
+      i("Try again in a moment, or type a borrow and I'll check it against the live ratio before you confirm."),
+    );
   }
-  lines.push(i(`Minimum debt ${MIN_DEBT_MUSD.toLocaleString()} MUSD; keep the ratio above 110% or risk liquidation. You'll see the live ratio and confirm before signing.`));
   return { text: lines.join("\n"), keyboard: chrome(kb, "borrow") };
 }
 

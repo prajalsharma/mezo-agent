@@ -9,18 +9,48 @@ import type { BorrowIntent, RepayIntent, AdjustIntent } from "../llm/intent.js";
 
 // Live BTC/USD pricing is shared with the natural-language layer (dollar
 // amounts) — see src/core/prices.ts.
-import { btcPriceUsd as readBtcPriceUsd } from "../core/prices.js";
+import { btcPriceWad } from "../core/prices.js";
+import {
+  musdParams, recoveryMode, maxBorrowingCapacity,
+  compositeDebt, borrowingFee, requiredCR, maxNetMint, liquidationPrice, icrOf, pct,
+  type MusdParams,
+} from "../core/musdParams.js";
+
+/** Trove lifecycle status. A closed Trove is not the same as never having one. */
+export type TroveStatus = "none" | "active" | "closedByOwner" | "liquidated" | "redeemed";
+
+const STATUS: TroveStatus[] = ["none", "active", "closedByOwner", "liquidated", "redeemed"];
 
 /** Current Trove collateral (BTC) and debt (MUSD) for an owner. undefined if unreadable. */
 export async function readTrove(owner: Address): Promise<{ collBTC: number; debtMUSD: number } | undefined> {
+  const raw = await readTroveRaw(owner);
+  if (!raw) return undefined;
+  return { collBTC: Number(formatUnits(raw.coll, 18)), debtMUSD: Number(formatUnits(raw.debt, 18)) };
+}
+
+/**
+ * The Trove in the protocol's own units, plus its lifecycle status.
+ *
+ * `debt` is the COMPOSITE debt — principal + accrued interest + the 200 MUSD gas
+ * compensation. Everything downstream has to know that, because the two numbers
+ * a borrower cares about are derived differently from it: `closeTrove` burns
+ * `debt - gasCompensation` from their wallet, while the minimum-net-debt floor
+ * is measured against `debt - gasCompensation` as well.
+ */
+export async function readTroveRaw(
+  owner: Address,
+): Promise<{ coll: bigint; debt: bigint; status: TroveStatus } | undefined> {
   if (!registry.hasContract("TroveManager")) return undefined;
   try {
     const tm = registry.contract("TroveManager");
-    const [coll, debt] = await Promise.all([
-      publicClient().readContract({ address: tm, abi: troveManagerAbi, functionName: "getTroveColl", args: [owner] }) as Promise<bigint>,
-      publicClient().readContract({ address: tm, abi: troveManagerAbi, functionName: "getTroveDebt", args: [owner] }) as Promise<bigint>,
+    const call = (functionName: string) =>
+      publicClient().readContract({ address: tm, abi: troveManagerAbi, functionName: functionName as never, args: [owner] });
+    const [coll, debt, status] = await Promise.all([
+      call("getTroveColl") as Promise<bigint>,
+      call("getTroveDebt") as Promise<bigint>,
+      call("getTroveStatus").catch(() => 0) as Promise<number | bigint>,
     ]);
-    return { collBTC: Number(formatUnits(coll, 18)), debtMUSD: Number(formatUnits(debt, 18)) };
+    return { coll, debt, status: STATUS[Number(status)] ?? "none" };
   } catch {
     return undefined;
   }
@@ -30,16 +60,98 @@ export async function readTrove(owner: Address): Promise<{ collBTC: number; debt
  * Borrow surface — Mezo Borrow / MUSD (Liquity-style CDP). Open a Trove by
  * depositing native BTC collateral and minting MUSD; adjust, repay, or close.
  *
+ * Every protocol number here is READ FROM THE PROTOCOL (src/core/musdParams.ts).
+ * They used to be compile-time constants, and the constants were wrong: the
+ * borrowing fee was hardcoded at 1% against a live 0.1%, and the 200 MUSD gas
+ * compensation was missing from the debt that `openTrove` actually gates on. The
+ * net effect was a card that said "110% ✅" for a Trove sitting at 99% that would
+ * revert, with a liquidation price up to 10% too optimistic.
+ *
  * Deterministic guardrails the model is never trusted to enforce:
- *   • minimum net debt 1,800 MUSD, MCR 110% (README §2),
- *   • borrowing fee (from 1%) surfaced before confirm,
- *   • upper/lower hints are fetched FRESH immediately before submit (never here,
- *     never cached) — so a live plan requires HintHelpers + SortedTroves too.
+ *   • live minimum net debt and live MCR/CCR, never constants,
+ *   • Recovery Mode: opens gate on CCR (150%) and the fee is waived,
+ *   • the Trove's sticky maxBorrowingCapacity bounds every mint,
+ *   • an unreadable or stale price BLOCKS rather than skipping the ratio check,
+ *   • upper/lower hints are passed as ZERO. That is a valid Liquity fallback -
+ *     the protocol falls back to a linear scan from the list head - and with the
+ *     low Trove counts on Mezo today it costs little. It is NOT the "hints are
+ *     fetched fresh immediately before submit via HintHelpers" this file used to
+ *     claim: getApproxHint is never called anywhere in the codebase.
  */
 
-const MIN_NET_DEBT_MUSD = 1_800;
-const MCR = 1.1; // 110%
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+
+/** Read the live parameters, the live price, and the live system state, or refuse. */
+async function marketOrRefuse(): Promise<{ p: MusdParams; priceWad: bigint; inRecovery: boolean }> {
+  const [p, priceWad] = await Promise.all([musdParams(), btcPriceWad()]);
+  if (!p) {
+    throw new ActionUnavailableError(
+      "Can't read Mezo's live borrowing parameters (fee, minimum debt, collateral ratio) right now, " +
+        "so I won't guess them - the numbers on the card would be wrong in the direction that gets people liquidated. Try again in a moment.",
+    );
+  }
+  if (priceWad === undefined) {
+    throw new ActionUnavailableError(
+      "The BTC price feed is stale or unreadable, so I can't check your collateral ratio. " +
+        "Mezo rejects Trove operations on a stale oracle too, so this transaction would fail on-chain anyway. Try again in a minute.",
+    );
+  }
+  const inRecovery = (await recoveryMode(priceWad)) ?? false;
+  return { p, priceWad, inRecovery };
+}
+
+/** 1e18-scaled MUSD → "1,800" / "2,001.80". Never scientific notation. */
+function fmtMusd(wad: bigint): string {
+  const n = Number(formatUnits(wad, 18));
+  return n.toLocaleString("en-US", { maximumFractionDigits: n < 100 ? 2 : 0 });
+}
+
+/** 1e18-scaled USD → "63,416". */
+function fmtUsd(wad: bigint): string {
+  return Math.round(Number(formatUnits(wad, 18))).toLocaleString("en-US");
+}
+
+/** 1e18-scaled rate → "0.1%". */
+function fmtRate(wad: bigint): string {
+  const p = (Number(wad) / 1e18) * 100;
+  return `${p < 1 ? p.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") : p.toFixed(2)}%`;
+}
+
+/**
+ * Refuse, and say WHICH kind of "no Trove" this is.
+ *
+ * A liquidated Trove and a redeemed Trove used to render identically to "you
+ * never opened one" — the single most confusing thing the bot could tell someone
+ * whose position just disappeared, and it also hid the fact that a redeemed
+ * borrower has collateral sitting in the surplus pool waiting to be claimed.
+ */
+function assertHasTrove(status: TroveStatus, debt: bigint, verb: string): void {
+  if (status === "active" && debt > 0n) return;
+  if (status === "liquidated") {
+    throw new ActionUnavailableError(
+      `Your Trove was LIQUIDATED - its collateral ratio fell below the minimum, so the debt was cleared and the ` +
+        `collateral was taken. There's nothing to ${verb}. If any collateral surplus is owed to you, say "claim collateral".`,
+    );
+  }
+  if (status === "redeemed") {
+    throw new ActionUnavailableError(
+      `Your Trove was REDEEMED - someone exchanged MUSD for its collateral at face value, which the protocol fills ` +
+        `starting from the lowest collateral ratio. There's nothing to ${verb}. Any leftover collateral is yours: say "claim collateral".`,
+    );
+  }
+  if (status === "closedByOwner") {
+    throw new ActionUnavailableError(`You closed this Trove already, so there's nothing to ${verb}.`);
+  }
+  throw new ActionUnavailableError(
+    `You don't have an open Trove, so there's nothing to ${verb}. (You'd open one with a borrow first.)`,
+  );
+}
+
+/** Redemption is ranked, not absolute - the risk line has to say so. */
+const REDEMPTION_NOTE =
+  "MUSD redemptions are filled from the LOWEST collateral ratio upward, so a thin Trove can have its debt " +
+  "repaid and its collateral taken even while it is perfectly healthy. Any leftover collateral is not returned " +
+  'automatically - you claim it with "claim collateral".';
 
 const NEEDED = ["BorrowerOperations", "HintHelpers", "SortedTroves", "PriceFeed"] as const;
 
@@ -55,12 +167,25 @@ function borrowGated(title: string, action: string, summary: string[], warnings:
 }
 
 export async function buildBorrow(intent: BorrowIntent, owner?: Address): Promise<ActionPlan> {
-  const collateralBTC = Number(intent.collateralBTC);
-  const mintMUSD = Number(intent.mintMUSD);
-  if (collateralBTC <= 0) throw new ActionUnavailableError("Collateral must be greater than zero.");
-  if (mintMUSD < MIN_NET_DEBT_MUSD) {
+  const collWad = parseEther(intent.collateralBTC);
+  const mintWad = parseUnits(intent.mintMUSD, 18);
+  if (collWad <= 0n) throw new ActionUnavailableError("Collateral must be greater than zero.");
+
+  const summaryDraft = [
+    `Deposit collateral: ${intent.collateralBTC} BTC`,
+    `Mint: ${intent.mintMUSD} MUSD`,
+  ];
+  if (NEEDED.some((k) => !registry.hasContract(k))) {
+    return borrowGated("🏦 Borrow MUSD (open Trove)", "borrow", summaryDraft);
+  }
+
+  // Live parameters and a live price, or nothing. Everything below is arithmetic
+  // over these — none of it is safe against a guessed fee or a stale oracle.
+  const { p, priceWad, inRecovery } = await marketOrRefuse();
+
+  if (mintWad < p.minNetDebt) {
     throw new ActionUnavailableError(
-      `Mezo requires a minimum net debt of ${MIN_NET_DEBT_MUSD} MUSD. Increase the amount to mint.`,
+      `Mezo requires a minimum net debt of ${fmtMusd(p.minNetDebt)} MUSD. Increase the amount to mint.`,
     );
   }
 
@@ -69,10 +194,9 @@ export async function buildBorrow(intent: BorrowIntent, owner?: Address): Promis
   // well-collateralised plan the wallet could not fund, and the user paid gas to
   // watch openTrove revert (same gap the zap surface had).
   if (owner) {
-    const need = parseUnits(intent.collateralBTC, 18);
     const held = await publicClient().getBalance({ address: owner }).catch(() => 0n);
     const GAS_HEADROOM = 500_000_000_000_000n; // ~0.0005 BTC, matches the swap path
-    if (held < need + GAS_HEADROOM) {
+    if (held < collWad + GAS_HEADROOM) {
       throw new ActionUnavailableError(
         `Not enough BTC to post as collateral: you have ${formatUnits(held, 18)} BTC and this needs ` +
           `${intent.collateralBTC} BTC plus gas. Fund the wallet, or lower the collateral (which also lowers how much you can mint).`,
@@ -80,66 +204,73 @@ export async function buildBorrow(intent: BorrowIntent, owner?: Address): Promis
     }
   }
 
-  const fee = mintMUSD * 0.01;
-  const grossDebt = mintMUSD + fee;
+  // The debt the PROTOCOL will record: net mint + live borrowing fee + the
+  // 200 MUSD gas compensation. openTrove divides collateral by exactly this.
+  const fee = borrowingFee(mintWad, p, inRecovery);
+  const debt = compositeDebt(mintWad, p, inRecovery);
+  const required = requiredCR(p, inRecovery);
+  const icr = icrOf(collWad, priceWad, debt);
+  const collateralUsd = (collWad * priceWad) / 10n ** 18n;
+
   const summary = [
-    `Deposit collateral: ${intent.collateralBTC} BTC`,
-    `Mint: ${intent.mintMUSD} MUSD`,
-    `Borrowing fee (est. 1%): ~${fee.toFixed(2)} MUSD`,
-    `Total debt incl. fee: ~${grossDebt.toFixed(2)} MUSD`,
+    ...summaryDraft,
+    inRecovery
+      ? "Borrowing fee: waived (the system is in Recovery Mode)"
+      : `Borrowing fee (${fmtRate(p.borrowingRate)}): ~${fmtMusd(fee)} MUSD`,
+    `Gas compensation held against the Trove: ${fmtMusd(p.gasCompensation)} MUSD`,
+    `Total debt recorded: ~${fmtMusd(debt)} MUSD`,
   ];
-  const warnings = [
-    `Keep your collateral ratio above the ${(MCR * 100).toFixed(0)}% minimum or the Trove can be liquidated.`,
-  ];
-
-  if (NEEDED.some((k) => !registry.hasContract(k))) {
-    return borrowGated("🏦 Borrow MUSD (open Trove)", "borrow", summary, warnings);
-  }
-
-  // Live collateral-ratio check against the on-chain BTC price. Blocks an
-  // under-collateralized borrow HERE with exact numbers (min BTC / max mint), so
-  // the user never confirms an impossible Trove. Fail-open: if the price can't be
-  // read, we skip the check and let the pre-Confirm simulation catch it instead.
-  const btcPrice = await readBtcPriceUsd();
-  if (btcPrice !== undefined) {
-    const collateralUsd = collateralBTC * btcPrice;
-    const icr = collateralUsd / grossDebt; // ratio (1.0 = 100%)
-    const ok = icr >= MCR;
-    summary.push(
-      `Collateral ratio: ~${(icr * 100).toFixed(0)}% ${ok ? "✅" : "❌"} (min ${(MCR * 100).toFixed(0)}%, BTC ~$${Math.round(btcPrice).toLocaleString()})`,
+  const warnings: string[] = [];
+  if (inRecovery) {
+    warnings.push(
+      `⚠️ Mezo is in RECOVERY MODE. New Troves must open at ${pct(p.ccr)} or better (not the usual ${pct(p.mcr)}), ` +
+        `and the whole system is closer to liquidations than normal.`,
     );
-    if (ok) {
-      // Plain-language risk line (research: Brian/HeyAnon pattern) — the ONE
-      // number a borrower must know, computed, never generated.
-      const liqPrice = (MCR * grossDebt) / collateralBTC;
-      warnings.unshift(
-        `If BTC falls below ~$${Math.round(liqPrice).toLocaleString()}, this Trove can be liquidated and you lose the collateral.`,
-      );
-    }
-    if (!ok) {
-      const minColl = (MCR * grossDebt) / btcPrice;
-      const maxNetMint = collateralUsd / MCR / 1.01;
-      const hint =
-        maxNetMint >= MIN_NET_DEBT_MUSD
-          ? `The most you can borrow with ${intent.collateralBTC} BTC is ~${Math.floor(maxNetMint).toLocaleString()} MUSD.`
-          : `${intent.collateralBTC} BTC isn't enough to open a Trove at all (minimum debt is ${MIN_NET_DEBT_MUSD.toLocaleString()} MUSD).`;
-      throw new ActionUnavailableError(
-        `Under-collateralized. ${intent.collateralBTC} BTC (~$${Math.round(collateralUsd).toLocaleString()}) can't back ` +
-          `${intent.mintMUSD} MUSD debt - the 110% minimum needs ~$${Math.round(MCR * grossDebt).toLocaleString()} of collateral. ` +
-          `To mint ${intent.mintMUSD} MUSD you'd need ≥ ${minColl.toFixed(4)} BTC. ${hint} ` +
-          `Tip: aim for 150%+ so a price dip doesn't liquidate you.`,
-      );
-    }
-  } else {
-    warnings.push("Live collateral ratio is computed from the on-chain price immediately before signing.");
   }
+
+  const ok = icr >= required;
+  summary.push(
+    `Collateral ratio: ~${pct(icr)} ${ok ? "✅" : "❌"} (min ${pct(required)}, BTC ~$${fmtUsd(priceWad)})`,
+  );
+
+  if (!ok) {
+    const minColl = (required * debt) / priceWad;
+    const headroom = maxNetMint(collWad, priceWad, p, inRecovery);
+    const hint =
+      headroom >= p.minNetDebt
+        ? `The most you can borrow with ${intent.collateralBTC} BTC is ~${fmtMusd(headroom)} MUSD.`
+        : `${intent.collateralBTC} BTC isn't enough to open a Trove at all (minimum debt is ${fmtMusd(p.minNetDebt)} MUSD, ` +
+          `and every Trove also carries ${fmtMusd(p.gasCompensation)} MUSD of gas compensation).`;
+    const neededUsd = (required * debt) / 10n ** 18n;
+    throw new ActionUnavailableError(
+      `Under-collateralized. ${intent.collateralBTC} BTC (~$${fmtUsd(collateralUsd)}) can't back ` +
+        `${intent.mintMUSD} MUSD - with the ${fmtRate(p.borrowingRate)} fee and ${fmtMusd(p.gasCompensation)} MUSD gas ` +
+        `compensation the recorded debt is ~${fmtMusd(debt)} MUSD, and the ${pct(required)} minimum needs ` +
+        `~$${fmtUsd(neededUsd)} of collateral. ` +
+        `To mint ${intent.mintMUSD} MUSD you'd need ≥ ${formatUnits(minColl, 18).slice(0, 8)} BTC. ${hint} ` +
+        `Tip: aim for 150%+ so a price dip doesn't liquidate you.`,
+    );
+  }
+
+  // The ONE number a borrower must know — computed from the real recorded debt,
+  // never generated. It used to be up to 10% too low at small Troves, because it
+  // divided by a debt that omitted the gas compensation.
+  const liqPrice = liquidationPrice(collWad, debt, p);
+  warnings.unshift(
+    `If BTC falls below ~$${fmtUsd(liqPrice)}, this Trove can be liquidated: your debt is cleared, but the ` +
+      `collateral is taken and you keep neither it nor the ${fmtMusd(p.gasCompensation)} MUSD gas compensation. ` +
+      `Keep the ratio above ${pct(required)}.`,
+  );
+  warnings.push(REDEMPTION_NOTE);
 
   const bo = registry.contract("BorrowerOperations");
   // Agent fee (Mezo-approved) on the minted MUSD, charged AFTER the Trove opens.
   const agentFee = txnFee(musdToken(), parseUnits(intent.mintMUSD, 18));
   if (agentFee.summaryLine) summary.push(agentFee.summaryLine);
-  // Hints are placeholders here; the executor refreshes them via HintHelpers just
-  // before submit. Zero hints are valid fallbacks (linear scan from head).
+  // Zero hints: a valid Liquity fallback (the protocol linear-scans from the
+  // list head). Nothing refreshes them later - see the note at the top of this
+  // file. HintHelpers is still required in NEEDED because a deployment without
+  // it is not a live Borrow deployment.
   const step: ActionStep = {
     kind: "openTrove",
     to: bo,
@@ -161,8 +292,8 @@ export async function buildBorrow(intent: BorrowIntent, owner?: Address): Promis
 }
 
 export async function buildRepay(intent: RepayIntent, owner: Address): Promise<ActionPlan> {
-  const repay = Number(intent.repayMUSD);
-  if (repay <= 0) throw new ActionUnavailableError("Repay amount must be greater than zero.");
+  const repayWad = parseUnits(intent.repayMUSD, 18);
+  if (repayWad <= 0n) throw new ActionUnavailableError("Repay amount must be greater than zero.");
   const summary = [`Repay: ${intent.repayMUSD} MUSD`, `Reduces your Trove debt and improves your collateral ratio.`];
 
   if (!registry.hasContract("BorrowerOperations")) {
@@ -172,28 +303,30 @@ export async function buildRepay(intent: RepayIntent, owner: Address): Promise<A
   // Trove-existence + amount sanity check BEFORE building an approval the user
   // would otherwise sign for nothing. Without an open Trove there is nothing to
   // repay — the protocol reverts with "Trove does not exist", which is exactly
-  // the confusing path a user with no loan hits. Fail-open if unreadable.
-  const trove = await readTrove(owner);
-  if (trove) {
-    if (trove.debtMUSD <= 0) {
+  // the confusing path a user with no loan hits.
+  const trove = await readTroveRaw(owner);
+  const p = await musdParams();
+  if (trove && p) {
+    assertHasTrove(trove.status, trove.debt, "repay");
+    // The floor is on NET debt. Comparing the raw composite debt (which carries
+    // the 200 MUSD gas compensation) against the same floor made the two repay
+    // surfaces disagree, and blocked a legitimate ~200 MUSD band of repayments.
+    const netDebt = trove.debt > p.gasCompensation ? trove.debt - p.gasCompensation : 0n;
+    if (repayWad > netDebt) {
       throw new ActionUnavailableError(
-        "You don't have an open Trove, so there's nothing to repay. (You'd open one with a borrow first.)",
-      );
-    }
-    if (repay > trove.debtMUSD) {
-      throw new ActionUnavailableError(
-        `You asked to repay ${intent.repayMUSD} MUSD but your Trove debt is only ~${Math.round(trove.debtMUSD).toLocaleString()} MUSD. ` +
+        `You asked to repay ${intent.repayMUSD} MUSD but your repayable Trove debt is only ~${fmtMusd(netDebt)} MUSD ` +
+          `(the ${fmtMusd(p.gasCompensation)} MUSD gas compensation is settled when you close, not repaid). ` +
           `To clear it all and get your collateral back, use "close trove".`,
       );
     }
-    const remaining = trove.debtMUSD - repay;
-    if (remaining > 0 && remaining < MIN_NET_DEBT_MUSD) {
+    const remaining = netDebt - repayWad;
+    if (remaining > 0n && remaining < p.minNetDebt) {
       throw new ActionUnavailableError(
-        `Repaying ${intent.repayMUSD} MUSD would leave ~${Math.round(remaining).toLocaleString()} MUSD debt, below the ${MIN_NET_DEBT_MUSD.toLocaleString()} MUSD minimum. ` +
-          `Repay less, or use "close trove" to repay it all at once.`,
+        `Repaying ${intent.repayMUSD} MUSD would leave ~${fmtMusd(remaining)} MUSD of debt, below Mezo's ` +
+          `${fmtMusd(p.minNetDebt)} MUSD minimum. Repay less, or use "close trove" to clear it all at once.`,
       );
     }
-    summary.push(`Trove debt after: ~${Math.round(remaining).toLocaleString()} MUSD`);
+    summary.push(`Trove debt after: ~${fmtMusd(remaining)} MUSD (plus ${fmtMusd(p.gasCompensation)} MUSD gas compensation)`);
   }
 
   const bo = registry.contract("BorrowerOperations");
@@ -203,13 +336,14 @@ export async function buildRepay(intent: RepayIntent, owner: Address): Promise<A
     steps.push({
       kind: "approval", to: musd, value: 0n,
       data: encodeFunctionData({ abi: [{ type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ name: "s", type: "address" }, { name: "a", type: "uint256" }], outputs: [{ type: "bool" }] }] as const, functionName: "approve", args: [bo, parseUnits(intent.repayMUSD, 18)] }),
-      describe: `Approve ${intent.repayMUSD} MUSD`, erc20: { symbol: "MUSD", amount: parseUnits(intent.repayMUSD, 18) }, waitForReceipt: true,
+      describe: `Approve ${intent.repayMUSD} MUSD`, erc20: { symbol: "MUSD", amount: parseUnits(intent.repayMUSD, 18), kind: "approval" }, waitForReceipt: true,
     });
   }
   steps.push({
     kind: "repayMUSD", to: bo, value: 0n,
     data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "repayMUSD", args: [parseUnits(intent.repayMUSD, 18), ZERO, ZERO] }),
     describe: `Repay ${intent.repayMUSD} MUSD`,
+    erc20: { symbol: "MUSD", amount: parseUnits(intent.repayMUSD, 18), kind: "spend" },
   });
   return { action: "repay", title: "💵 Repay MUSD", summary, warnings: [], steps, allowedTargets: [bo, ...(musd ? [musd] : [])], executable: true, nativeValue: 0n };
 }
@@ -239,24 +373,64 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
   // Resulting collateral-ratio check. The generic pre-Confirm simulation can't
   // catch this: adjust runs ratio-IMPROVING steps first, so the ratio-lowering
   // step (mint/withdraw) is last and step-0 simulation looks fine. Read the
-  // current Trove + price, apply the delta, and block if it would drop below MCR
-  // — with real numbers. Fail-open on any unreadable read.
-  const trove = await readTrove(owner);
-  const price = await readBtcPriceUsd();
-  if (trove && price !== undefined) {
-    if (trove.debtMUSD <= 0) {
-      throw new ActionUnavailableError("You don't have an open Trove to adjust. Use borrow to open one first.");
+  // current Trove + live parameters, apply the delta, and block with real
+  // numbers if the protocol would reject it.
+  const { p, priceWad, inRecovery } = await marketOrRefuse();
+  const trove = await readTroveRaw(owner);
+  if (trove) {
+    assertHasTrove(trove.status, trove.debt, "adjust");
+
+    const addWad = intent.addCollateralBTC ? parseEther(intent.addCollateralBTC) : 0n;
+    const withdrawWad = intent.withdrawCollateralBTC ? parseEther(intent.withdrawCollateralBTC) : 0n;
+    const mintWad = intent.mintMUSD ? parseUnits(intent.mintMUSD, 18) : 0n;
+    const repayWad = intent.repayMUSD ? parseUnits(intent.repayMUSD, 18) : 0n;
+
+    if (withdrawWad > trove.coll) {
+      throw new ActionUnavailableError("That withdrawal would remove more collateral than the Trove holds.");
     }
-    const newColl = trove.collBTC + addColl - withdrawColl;
-    const newDebt = trove.debtMUSD + mint * 1.01 - repay; // new mint carries ~1% borrow fee
-    if (newColl <= 0) throw new ActionUnavailableError("That withdrawal would remove more collateral than the Trove holds.");
-    const newIcr = (newColl * price) / newDebt;
-    const ok = newDebt <= 0 || newIcr >= MCR;
-    summary.push(`Resulting collateral ratio: ~${(newIcr * 100).toFixed(0)}% ${ok ? "✅" : "❌"} (min ${(MCR * 100).toFixed(0)}%)`);
+    const newColl = trove.coll + addWad - withdrawWad;
+    // Live fee on the NEW mint only; existing debt already carries its own fee
+    // and the gas compensation, both of which getTroveDebt already includes.
+    const newDebt = trove.debt + mintWad + borrowingFee(mintWad, p, inRecovery) - repayWad;
+
+    // The sticky borrowing cap. This is the check whose absence made "add more
+    // BTC to borrow more" actively wrong advice: the cap is stamped at open time
+    // as coll*price/MCR and NEVER rises afterwards — not when BTC appreciates,
+    // not when collateral is added. Only `refinance` re-stamps it. Without this,
+    // any mint between the real headroom and the ratio-implied headroom passed
+    // our card and reverted on-chain.
+    if (mintWad > 0n) {
+      const cap = await maxBorrowingCapacity(owner);
+      if (cap !== undefined && cap > 0n) {
+        const headroom = cap > trove.debt ? cap - trove.debt : 0n;
+        summary.push(`Borrowing capacity left: ~${fmtMusd(headroom)} MUSD (cap ${fmtMusd(cap)} MUSD)`);
+        if (newDebt > cap) {
+          throw new ActionUnavailableError(
+            `Mezo caps each Trove's total debt at the amount stamped when it opened - yours is ${fmtMusd(cap)} MUSD, ` +
+              `and you currently owe ${fmtMusd(trove.debt)} MUSD, so you can mint about ${fmtMusd(headroom)} MUSD more. ` +
+              `Adding collateral will NOT raise this cap and neither will a higher BTC price; only refinancing the Trove ` +
+              `re-stamps it, which this bot doesn't do yet. Mint less, or close and reopen the Trove at today's price.`,
+          );
+        }
+      }
+    }
+
+    const required = requiredCR(p, inRecovery);
+    const newIcr = icrOf(newColl, priceWad, newDebt);
+    const ok = newDebt <= 0n || newIcr >= required;
+    summary.push(`Resulting collateral ratio: ~${pct(newIcr)} ${ok ? "✅" : "❌"} (min ${pct(required)})`);
+    if (inRecovery) {
+      warnings.push(`⚠️ Recovery Mode: adjustments are judged against ${pct(p.ccr)}, not the usual ${pct(p.mcr)}.`);
+    }
     if (!ok) {
       throw new ActionUnavailableError(
-        `That adjustment would drop your collateral ratio to ~${(newIcr * 100).toFixed(0)}% - below the ${(MCR * 100).toFixed(0)}% minimum, which the protocol rejects. ` +
-          `Add more BTC, mint less, or repay some MUSD first. (Current: ${trove.collBTC.toFixed(4)} BTC / ${Math.round(trove.debtMUSD).toLocaleString()} MUSD.)`,
+        `That adjustment would drop your collateral ratio to ~${pct(newIcr)} - below the ${pct(required)} minimum, which the protocol rejects. ` +
+          `Add more BTC, mint less, or repay some MUSD first. (Current: ${formatUnits(trove.coll, 18).slice(0, 8)} BTC / ${fmtMusd(trove.debt)} MUSD.)`,
+      );
+    }
+    if (newDebt > 0n) {
+      warnings.push(
+        `After this, liquidation would come into range around $${fmtUsd(liquidationPrice(newColl, newDebt, p))} per BTC.`,
       );
     }
   }
@@ -285,7 +459,7 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
           functionName: "approve", args: [bo, parseUnits(intent.repayMUSD!, 18)],
         }),
         describe: `Approve ${intent.repayMUSD} MUSD`,
-        erc20: { symbol: "MUSD", amount: parseUnits(intent.repayMUSD!, 18) },
+        erc20: { symbol: "MUSD", amount: parseUnits(intent.repayMUSD!, 18), kind: "approval" },
         waitForReceipt: true,
       });
     }
@@ -293,6 +467,7 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
       kind: "repayMUSD", to: bo, value: 0n,
       data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "repayMUSD", args: [parseUnits(intent.repayMUSD!, 18), ZERO, ZERO] }),
       describe: `Repay ${intent.repayMUSD} MUSD`,
+      erc20: { symbol: "MUSD", amount: parseUnits(intent.repayMUSD!, 18), kind: "spend" },
     });
   }
   if (withdrawColl > 0) {
@@ -327,25 +502,31 @@ export async function buildCloseTrove(owner: Address): Promise<ActionPlan> {
     return borrowGated("🔒 Close Trove", "closeTrove", summary);
   }
 
-  // Pre-check: an open Trove must exist, and the user must hold enough MUSD to
-  // cover the full debt (closeTrove burns the debt from their balance). Both
-  // surfaced as plain messages before signing. Fail-open if unreadable.
-  const trove = await readTrove(owner);
-  if (trove) {
-    if (trove.debtMUSD <= 0) {
-      throw new ActionUnavailableError("You don't have an open Trove to close.");
-    }
-    summary.push(`Outstanding debt to repay: ~${Math.round(trove.debtMUSD).toLocaleString()} MUSD`);
+  // Pre-check: an open Trove must exist, and the user must hold enough MUSD.
+  //
+  // closeTrove burns `debt - MUSD_GAS_COMPENSATION` from the wallet — the 200
+  // MUSD gas compensation was posted by the protocol at open and is returned
+  // from its own pool, not from the borrower. Demanding the full composite debt
+  // here was too strict by exactly 200 MUSD, and refused closes the protocol
+  // would have accepted.
+  const trove = await readTroveRaw(owner);
+  const p = await musdParams();
+  if (trove && p) {
+    assertHasTrove(trove.status, trove.debt, "close");
+    const owedByBorrower = trove.debt > p.gasCompensation ? trove.debt - p.gasCompensation : 0n;
+    summary.push(
+      `Debt to clear from your wallet: ~${fmtMusd(owedByBorrower)} MUSD ` +
+        `(total debt ${fmtMusd(trove.debt)} MUSD less ${fmtMusd(p.gasCompensation)} MUSD gas compensation)`,
+    );
     const musd = registry.erc20Of("MUSD");
     if (musd) {
       try {
         const bal = (await publicClient().readContract({
           address: musd, abi: erc20Abi, functionName: "balanceOf", args: [owner],
         })) as bigint;
-        const musdHeld = Number(formatUnits(bal, 18));
-        if (musdHeld < trove.debtMUSD) {
+        if (bal < owedByBorrower) {
           throw new ActionUnavailableError(
-            `Closing needs ~${Math.round(trove.debtMUSD).toLocaleString()} MUSD to clear the debt, but you hold ~${Math.round(musdHeld).toLocaleString()} MUSD. ` +
+            `Closing needs ~${fmtMusd(owedByBorrower)} MUSD to clear the debt, but you hold ~${fmtMusd(bal)} MUSD. ` +
               `Acquire the difference (e.g. swap into MUSD) or repay down first.`,
           );
         }
@@ -372,6 +553,44 @@ export async function buildCloseTrove(owner: Address): Promise<ActionPlan> {
     action: "closeTrove", title: "🔒 Close Trove", summary,
     warnings: ["This repays your entire debt in one transaction. Ensure your MUSD balance covers it."],
     steps: [step], allowedTargets: [bo], executable: true, nativeValue: 0n,
+  };
+}
+
+/**
+ * Claim collateral left in the surplus pool after a redemption or a Recovery-Mode
+ * liquidation.
+ *
+ * The protocol holds this and never pushes it back, so a borrower whose Trove was
+ * redeemed can be owed real BTC and have no idea. There is no pre-check here
+ * beyond the contract's own: `claimCollateral` reverts with
+ * "CollSurplusPool: No collateral available to claim", which the pre-signing
+ * simulation decodes into that exact sentence — clearer than anything we could
+ * infer, and one fewer read on a path most users take once.
+ */
+export async function buildClaimCollateral(owner: Address): Promise<ActionPlan> {
+  const summary = [
+    "Claims any BTC left over after your Trove was redeemed or liquidated.",
+    "Nothing happens if you're owed nothing - the protocol simply says so.",
+  ];
+  if (!registry.hasContract("BorrowerOperations")) {
+    return borrowGated("🪙 Claim collateral surplus", "claimCollateral", summary);
+  }
+  const trove = await readTroveRaw(owner).catch(() => undefined);
+  if (trove && (trove.status === "redeemed" || trove.status === "liquidated")) {
+    summary.unshift(`Your Trove was ${trove.status === "redeemed" ? "redeemed" : "liquidated"}.`);
+  }
+  const bo = registry.contract("BorrowerOperations");
+  return {
+    action: "claimCollateral",
+    title: "🪙 Claim collateral surplus",
+    summary,
+    warnings: [],
+    steps: [{
+      kind: "claimCollateral", to: bo, value: 0n,
+      data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "claimCollateral", args: [] }),
+      describe: "Claim collateral surplus",
+    }],
+    allowedTargets: [bo], executable: true, nativeValue: 0n,
   };
 }
 

@@ -7,6 +7,7 @@ import {
 } from "viem";
 import { publicClient } from "../../chain/client.js";
 import { registry } from "../../registry/registry.js";
+import type { AssetMove } from "../plan.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { routerAbi, feeRouterAbi } from "../../abis/router.js";
 
@@ -43,8 +44,8 @@ export type PlanStep = {
   describe: string;
   /** Wait for this step's receipt before the next (approval before spend). */
   waitForReceipt?: boolean;
-  /** ERC-20 amount this step moves, for the signer's per-token / BTC cap. */
-  erc20?: { symbol: string; amount: bigint };
+  /** What this step moves, for the caps. See AssetMove in surfaces/plan.ts. */
+  erc20?: AssetMove;
 };
 
 export type SwapFee = {
@@ -87,7 +88,16 @@ export type SwapPlan = {
 
 export class SwapUnavailableError extends Error {}
 
-const DEADLINE_SECONDS = 20 * 60;
+/**
+ * On-chain deadline for a swap.
+ *
+ * Matched to the confirmation TTL (3 minutes, src/bot/session.ts) plus a short
+ * allowance for signing and inclusion. It used to be 20 minutes — 6.7x looser
+ * than the preview the user actually approved — so a transaction submitted from
+ * a stale plan could still execute against a market that had moved, bounded only
+ * by the 0.5% slippage. The deadline should not outlive the quote it protects.
+ */
+const DEADLINE_SECONDS = 5 * 60;
 
 export async function buildSwap(params: {
   owner: Address;
@@ -239,6 +249,7 @@ export async function buildSwap(params: {
         kind: "approval", to: inRouting, value: 0n,
         data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [feeRouter, amountIn] }),
         describe: `Approve ${formatUnits(amountIn, tokenIn.decimals)} ${tokenIn.symbol} for the fee router`,
+        erc20: { symbol: tokenIn.symbol, amount: amountIn, kind: "approval" },
         waitForReceipt: true,
       });
     }
@@ -257,6 +268,14 @@ export async function buildSwap(params: {
         `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol} ` +
         `(fee ${fee.bps / 100}% collected in the same tx)`,
       erc20: { symbol: tokenIn.symbol, amount: amountIn },
+      // WAIT FOR THE RECEIPT. Without this the executor takes its
+      // fire-and-forget branch, records the step "ok" on SUBMISSION, and the
+      // handler renders "Swap complete" for a transaction that may revert
+      // seconds later. The legacy path below always set it; the atomic path —
+      // the one that actually runs when a FeeRouter is deployed — did not, so
+      // the headline flow was the one reporting success it had not verified.
+      // DCA's "🔁 DCA executed" notification inherited the same defect.
+      waitForReceipt: true,
     });
     // plan.router doubles as the primary allowlist target for execution.
     return { ...base, steps, executable: true, router: feeRouter };
@@ -319,7 +338,7 @@ export async function buildSwap(params: {
           : {
               kind, to: tokenIn.address, value: 0n,
               data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, amount] }),
-              describe: label, erc20: { symbol: tokenIn.symbol, amount },
+              describe: label, erc20: { symbol: tokenIn.symbol, amount, kind: "spend" },
             },
       );
     };

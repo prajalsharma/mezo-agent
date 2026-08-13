@@ -13,7 +13,9 @@ import { publicClient } from "../chain/client.js";
 import { store, type UserRecord, type SessionKey } from "../db/store.js";
 import { sessionKeyDelegateAbi } from "../abis/delegate.js";
 import { LocalKeyStore } from "./localKeystore.js";
-import { limitsOf, fmtBtc, tokenCapOf, BTC_PRECOMPILE } from "./policy.js";
+import { limitsOf, fmtBtc, tokenCapOf, dailyTokenCapOf, DAILY_TOKEN_CAP_MULTIPLE, BTC_PRECOMPILE } from "./policy.js";
+import { registry } from "../registry/registry.js";
+import { isAttested } from "./attest.js";
 
 /**
  * Signer — the isolated write path. Its only job is: "sign & submit this
@@ -34,8 +36,8 @@ export type SignablePlan = {
   policy: {
     /** Contracts the app intends to touch — signer rejects anything else. */
     allowedTargets: Address[];
-    /** ERC-20 amount this step moves, for per-token cap enforcement (optional). */
-    erc20?: { symbol: string; amount: bigint };
+    /** What this step moves, for cap enforcement. See AssetMove in surfaces/plan.ts. */
+    erc20?: { symbol: string; amount: bigint; kind?: "spend" | "approval" };
   };
 };
 
@@ -64,6 +66,31 @@ function btcWeiMoved(plan: SignablePlan): bigint {
   return wei;
 }
 
+/**
+ * Is this an address the SIGNER is willing to touch, independent of what the
+ * plan claims? Registry-known, the configured fee recipient, or an address a
+ * builder verified on-chain this session (see custody/attest.ts).
+ */
+function isVettedTarget(to: Address): boolean {
+  const a = to.toLowerCase();
+  if (registry.knownAddresses().has(a)) return true;
+  if (env.fees.recipient && a === env.fees.recipient.toLowerCase()) return true;
+  return isAttested(to);
+}
+
+/**
+ * BTC (wei) this step commits against the ROLLING 24h budget.
+ *
+ * An approval and the transfer it enables are the same funds, so counting both
+ * would charge a plan twice and lock users out of their own daily allowance. The
+ * approval is still bounded by the per-transaction cap above — it just doesn't
+ * consume the day's budget, because the spend that follows it will.
+ */
+function btcWeiSpent(plan: SignablePlan): bigint {
+  if (plan.policy.erc20?.kind === "approval") return plan.value ?? 0n;
+  return btcWeiMoved(plan);
+}
+
 function assertPolicy(user: UserRecord, plan: SignablePlan): void {
   if (user.mode === "watch-only") {
     throw new PolicyViolationError("Account is in watch-only mode; refusing to sign.");
@@ -72,6 +99,25 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
   if (!allowed.includes(plan.to.toLowerCase())) {
     throw new PolicyViolationError(
       `Target ${plan.to} is not in the allowlist for this action; refusing to sign.`,
+    );
+  }
+
+  // AN INDEPENDENT CHECK, not the plan's own opinion of itself.
+  //
+  // The check above asks the plan whether the plan is allowed: `allowedTargets`
+  // arrives inside the plan, so a builder that names a bad target also blesses
+  // it. That is exactly the property this layer exists to provide and it was
+  // the one thing it did not do — containment rested entirely on builder
+  // correctness, with nothing verifying it at the signing boundary.
+  //
+  // So the signer now independently requires every target to be an address the
+  // REGISTRY knows, or one a builder has separately validated on-chain (a gauge
+  // whose stakingToken matches its pool, a reward contract read from the Voter).
+  // A builder can still be wrong about which known contract to call; it can no
+  // longer invent a destination.
+  if (!isVettedTarget(plan.to)) {
+    throw new PolicyViolationError(
+      `Target ${plan.to} is not a known Mezo contract for this deployment; refusing to sign.`,
     );
   }
 
@@ -89,9 +135,10 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
     }
     const daily = BigInt(limits.dailyNativeWei);
     const spent = store.spentLast24hWei(user.telegramId);
-    if (spent + btc > daily) {
+    const committing = btcWeiSpent(plan);
+    if (spent + committing > daily) {
       throw new PolicyViolationError(
-        `Blocked: this would put 24h spend at ${fmtBtc(spent + btc)}, over the daily ` +
+        `Blocked: this would put 24h spend at ${fmtBtc(spent + committing)}, over the daily ` +
           `limit of ${fmtBtc(daily)} (already spent ${fmtBtc(spent)}). Raise it with /limits.`,
       );
     }
@@ -109,7 +156,33 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
           `(${cap} raw). Raise it with "/limits token ${e.symbol} <amount>".`,
       );
     }
+    // ROLLING 24h AGGREGATE. Without this, the per-tx cap bound each swap
+    // individually and nothing bound the sequence — so an hourly DCA was
+    // twenty-four separately-legal transactions adding up to twenty-four times
+    // the cap, and no layer anywhere could see the total. Unattended automation
+    // is precisely the case that needs the aggregate rather than the per-item
+    // limit. Approvals don't consume it (the spend they enable will).
+    if (e.kind !== "approval") {
+      const dailyCap = dailyTokenCapOf(user.limits, e.symbol);
+      const already = store.spentLast24hToken(user.telegramId, e.symbol);
+      if (already + e.amount > dailyCap) {
+        throw new PolicyViolationError(
+          `Blocked: this would put your 24h ${e.symbol} total at ${already + e.amount} raw, over the ` +
+            `rolling daily limit of ${dailyCap} raw (already moved ${already}). ` +
+            `The daily limit is ${DAILY_TOKEN_CAP_MULTIPLE}x the per-transaction cap - raise that with ` +
+            `"/limits token ${e.symbol} <amount>", or wait for the window to roll.`,
+        );
+      }
+    }
   }
+}
+
+/** The ERC-20 amount this step commits against the rolling 24h token window. */
+function tokenSpent(plan: SignablePlan): { symbol: string; amount: bigint } | undefined {
+  const e = plan.policy.erc20;
+  if (!e || e.kind === "approval") return undefined;
+  if (e.symbol === "BTC" || plan.to.toLowerCase() === BTC_PRECOMPILE.toLowerCase()) return undefined;
+  return { symbol: e.symbol, amount: e.amount };
 }
 
 /** True when the account is an EIP-7702 smart account with a live session key. */
@@ -129,7 +202,11 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
   // and this reservation run synchronously (no await between them), so two rapid
   // actions can't both pass the check against a stale total — closing the TOCTOU.
   // Uses btcWeiMoved (not msg.value) so precompile BTC spends are also ledgered.
-  const reservation = store.addSpend(user.telegramId, btcWeiMoved(plan), new Date().toISOString());
+  const at = new Date().toISOString();
+  const reservation = store.addSpend(user.telegramId, btcWeiSpent(plan), at);
+  // Same reserve-before-submit discipline for the token window.
+  const tok = tokenSpent(plan);
+  const tokenReservation = tok ? store.addSpend(user.telegramId, tok.amount, at, tok.symbol) : undefined;
 
   const session = usableSession(user);
   try {
@@ -153,8 +230,9 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
     }
     return await submitViaSession(user, session, plan);
   } catch (err) {
-    // Submission failed — release the reservation so it doesn't count against the cap.
+    // Submission failed — release the reservations so they don't count against the caps.
     store.releaseSpend(reservation);
+    if (tokenReservation) store.releaseSpend(tokenReservation);
     throw err;
   }
 }

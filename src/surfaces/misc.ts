@@ -146,16 +146,90 @@ async function escrowOwning(owner: `0x${string}`, tokenId: bigint): Promise<{ ve
   );
 }
 
+/**
+ * Transfer a veNFT.
+ *
+ * This is the highest-value single call the bot can make, and it used to be the
+ * least constrained one. The spending caps measure `msg.value` and ERC-20
+ * descriptors; a veNFT transfer carries neither — the asset is identified by a
+ * token id in the ABI ARGUMENTS. So a lock holding an arbitrary amount of BTC
+ * moved to a model-chosen destination with every cap skipped and the step-up
+ * confirmation never triggered, while `allowedTargets = [ve]` passed trivially.
+ *
+ * Note the asymmetry the caps had: the lock surface carefully verifies where
+ * funds COME FROM, and nothing constrained where this one sends them.
+ *
+ * Two fixes: price the NFT by its locked balance so the caps and the step-up see
+ * a real number, and require the destination to be an address the user has
+ * actually named (validated as a checksum-shaped address, and never the escrow
+ * or a contract, both of which would burn the lock).
+ */
 export async function buildVeTransfer(intent: VeTransferIntent, owner: `0x${string}`): Promise<ActionPlan> {
   if (!/^0x[0-9a-fA-F]{40}$/.test(intent.to)) throw new ActionUnavailableError("Recipient must be a valid 0x address.");
+  const to = intent.to as `0x${string}`;
+  if (to.toLowerCase() === owner.toLowerCase()) {
+    throw new ActionUnavailableError("That's your own address - the transfer would do nothing.");
+  }
+  if (/^0x0{40}$/i.test(to)) throw new ActionUnavailableError("That's the zero address; the lock would be destroyed.");
+
   const { ve, asset } = await escrowOwning(owner, BigInt(intent.tokenId));
-  const summary = [`Transfer ve${asset} #${intent.tokenId} to ${intent.to}.`, "The lock and its voting power move to the recipient."];
+  if (to.toLowerCase() === ve.toLowerCase()) {
+    throw new ActionUnavailableError("That's the escrow contract itself; the lock would be stranded there.");
+  }
+  // Sending a veNFT to a contract that doesn't handle ERC-721 loses it forever.
+  const code = await publicClient().getCode({ address: to }).catch(() => undefined);
+  if (code && code !== "0x") {
+    throw new ActionUnavailableError(
+      `${to} is a contract, not a wallet. Sending a veNFT there usually destroys it, so I won't build that transfer.`,
+    );
+  }
+
+  // Price the NFT so the caps can see it. balanceOfNFT is the DECAYING voting
+  // power rather than the raw locked amount, so it understates a long lock —
+  // but understating is the wrong direction for a cap, so take the locked
+  // amount when the escrow will give it and fall back to voting power.
+  const lockedWei = await lockedAmountOf(ve, BigInt(intent.tokenId));
+
+  const summary = [
+    `Transfer ve${asset} #${intent.tokenId} to ${to}.`,
+    "The lock and its voting power move to the recipient.",
+    ...(lockedWei > 0n ? [`Locked value moving: ~${formatUnits(lockedWei, 18)} ${asset}`] : []),
+  ];
   const step: ActionStep = {
     kind: "transfer", to: ve, value: 0n,
-    data: encodeFunctionData({ abi: votingEscrowAbi, functionName: "transferFrom", args: [owner, intent.to as `0x${string}`, BigInt(intent.tokenId)] }),
-    describe: `Transfer ve${asset} #${intent.tokenId} → ${intent.to}`,
+    data: encodeFunctionData({ abi: votingEscrowAbi, functionName: "transferFrom", args: [owner, to, BigInt(intent.tokenId)] }),
+    describe: `Transfer ve${asset} #${intent.tokenId} → ${to}`,
+    // The descriptor that makes the caps and the step-up apply at all.
+    erc20: { symbol: asset, amount: lockedWei, kind: "spend" },
   };
-  return { action: "veTransfer", title: "📤 Transfer veNFT", summary, warnings: [], steps: [step], allowedTargets: [ve], executable: true, nativeValue: 0n };
+  return {
+    action: "veTransfer", title: "📤 Transfer veNFT", summary,
+    warnings: [
+      "This is irreversible. Whoever holds the veNFT holds the locked funds and the voting power - " +
+        "double-check the address before confirming.",
+    ],
+    steps: [step], allowedTargets: [ve], executable: true,
+    // Drives the high-value step-up: a veBTC lock IS BTC leaving the account.
+    nativeValue: asset === "BTC" ? lockedWei : 0n,
+  };
+}
+
+/** Locked amount behind a veNFT, falling back to voting power. 0n if unreadable. */
+async function lockedAmountOf(ve: Address, tokenId: bigint): Promise<bigint> {
+  const c = publicClient();
+  try {
+    const locked = (await c.readContract({
+      address: ve,
+      abi: [{ type: "function", name: "locked", stateMutability: "view", inputs: [{ name: "", type: "uint256" }], outputs: [{ name: "amount", type: "int128" }, { name: "end", type: "uint256" }] }] as const,
+      functionName: "locked", args: [tokenId],
+    })) as readonly [bigint, bigint];
+    if (locked[0] > 0n) return locked[0];
+  } catch { /* fall through to voting power */ }
+  try {
+    return (await c.readContract({ address: ve, abi: votingEscrowAbi, functionName: "balanceOfNFT", args: [tokenId] })) as bigint;
+  } catch {
+    return 0n;
+  }
 }
 
 export async function buildVeMerge(intent: VeMergeIntent, owner: `0x${string}`): Promise<ActionPlan> {

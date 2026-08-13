@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { InlineKeyboard, type Context } from "grammy";
 import { env } from "../../config/env.js";
 import { createWallet, exportPrivateKey, getUser, importWallet, WalletImportError } from "../../wallet/walletService.js";
@@ -95,8 +96,12 @@ export async function handleCreate(ctx: Context): Promise<void> {
   // Attribute a pending deep-link referral now that the account exists.
   attributeReferral(telegramId);
 
+  // Points at /export rather than arming a reveal button directly. A live
+  // "reveal my key" button sitting in the wallet-creation card stays tappable
+  // forever, so anyone with a moment of access to an unlocked session could
+  // scroll back and dump the key with one tap and no second step.
   const kb = new InlineKeyboard()
-    .text("🔐 Back up my key now", "wallet:export-confirm")
+    .text("🔐 How to back up my key", "menu:tip:export")
     .row()
     .text("📥 Deposit", "menu:deposit").text("📊 Portfolio", "menu:portfolio");
   await ctx.reply(
@@ -139,18 +144,27 @@ export async function handleImportPrompt(ctx: Context): Promise<void> {
 export async function handleExportPrompt(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
-  if (!getUser(telegramId)) {
+  const user = getUser(telegramId);
+  if (!user) {
     await ctx.reply("No account yet - create one with /start first.");
     return;
   }
+  // SINGLE-USE, SHORT-LIVED token in the callback data.
+  //
+  // "wallet:export-confirm" used to be a constant string with no pending state,
+  // no TTL and no second factor, so EVERY export card the user had ever seen
+  // stayed armed forever — one tap on any of them dumped the key.
+  const token = armExport(telegramId, user.address);
   const kb = new InlineKeyboard()
-    .text("🔓 Yes, reveal my key", "wallet:export-confirm")
+    .text("🔓 Yes, reveal my key", `wallet:export-confirm:${token}`)
     .row()
-    .text("Cancel", "wallet:export-cancel");
+    .text("Cancel", `wallet:export-cancel:${token}`);
   await ctx.reply(
     `⚠️ ${b("Export private key?")}\n\n` +
       `Anyone who sees this key ${b("fully controls your funds")} - no confirmation, no limits, nothing this bot enforces applies to them.\n\n` +
-      `• It will appear in this chat for ${b("60 seconds")}, then auto-delete.\n` +
+      `• This prompt is valid for ${b("2 minutes")} and works ${b("once")}. After that, run /export again.\n` +
+      `• I will TRY to delete the key message after 60 seconds, but treat that as a courtesy, not a guarantee: ` +
+      `if the bot restarts, or Telegram refuses the delete, ${b("the key stays in this chat until you delete it")}.\n` +
       `• Telegram chat history syncs to every device you're logged in on.\n` +
       `• Best done in private, then imported straight into MetaMask/Rabby.\n\n` +
       `${i("Note: in-bot wallets are raw keys - there is no 12-word phrase to show. A seed phrase only exists for accounts you imported FROM a phrase.")}`,
@@ -158,22 +172,68 @@ export async function handleExportPrompt(ctx: Context): Promise<void> {
   );
 }
 
+/**
+ * Pending export authorisations: one per user, single-use, short-lived, and
+ * bound to the account that was active when /export was typed.
+ */
+const EXPORT_TTL_MS = 2 * 60 * 1000;
+const pendingExport = new Map<number, { token: string; address: string; expiresAt: number }>();
+
+function armExport(telegramId: number, address: string): string {
+  const token = randomBytes(9).toString("base64url");
+  pendingExport.set(telegramId, { token, address, expiresAt: Date.now() + EXPORT_TTL_MS });
+  return token;
+}
+
+/** Claim the authorisation for `token`, consuming it. Synchronous, no awaits. */
+function takeExport(telegramId: number, token: string): { address: string } | undefined {
+  const p = pendingExport.get(telegramId);
+  if (!p) return undefined;
+  if (Date.now() > p.expiresAt || p.token !== token) {
+    pendingExport.delete(telegramId);
+    return undefined;
+  }
+  pendingExport.delete(telegramId);
+  return { address: p.address };
+}
+
+function callbackToken(ctx: Context): string {
+  return (ctx.callbackQuery?.data ?? "").split(":")[2] ?? "";
+}
+
 export async function handleExportConfirm(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
+  // Consume the authorisation BEFORE any await, so a stale card and a
+  // double-tap both fail rather than revealing the key twice.
+  const authorised = takeExport(telegramId, callbackToken(ctx));
   await ctx.answerCallbackQuery().catch(() => {});
   // Remove the warning/buttons so the flow can't be re-triggered from an old card.
   await ctx.deleteMessage().catch(() => {});
 
+  if (!authorised) {
+    await ctx.reply("That export prompt has expired or was already used. Nothing was revealed - run /export again if you still want the key.");
+    return;
+  }
+  // The active account can be switched between typing /export and tapping
+  // confirm; revealing a different account's key than the one warned about is
+  // never what was intended.
+  const current = getUser(telegramId);
+  if (!current || current.address.toLowerCase() !== authorised.address.toLowerCase()) {
+    await ctx.reply("You switched active account since starting that export, so I revealed nothing. Run /export again.");
+    return;
+  }
+
   try {
     const key = await exportPrivateKey(telegramId);
     const sent = await ctx.reply(
-      `🔑 ${b("Your private key")} (auto-deletes in 60s):\n\n${code(key)}\n\n` +
-        `Import it into a wallet app now. Delete this message yourself once done.`,
+      `🔑 ${b("Your private key")}:\n\n${code(key)}\n\n` +
+        `${b("Delete this message yourself once you've saved it.")} I'll also try to remove it in 60 seconds, ` +
+        `but that's best-effort - it won't happen if the bot restarts first.`,
       { parse_mode: "HTML" },
     );
-    // Self-destruct. Best-effort: if the bot lacks delete rights the user was
-    // told to delete it manually.
+    // Self-destruct. Best-effort, and the copy above says so rather than
+    // promising an "auto-delete" that an in-process timer cannot guarantee.
     setTimeout(() => {
       ctx.api.deleteMessage(sent.chat.id, sent.message_id).catch(() => {});
     }, 60_000);
@@ -183,6 +243,8 @@ export async function handleExportConfirm(ctx: Context): Promise<void> {
 }
 
 export async function handleExportCancel(ctx: Context): Promise<void> {
+  const telegramId = ctx.from?.id;
+  if (telegramId) takeExport(telegramId, callbackToken(ctx));
   await ctx.answerCallbackQuery().catch(() => {});
   await ctx.deleteMessage().catch(() => {});
   await ctx.reply("Export cancelled. Nothing was revealed.");

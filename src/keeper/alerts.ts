@@ -4,6 +4,7 @@ import { readTrove } from "../surfaces/borrow.js";
 import { buildClaim } from "../surfaces/earn.js";
 import { ownedVeNfts } from "../core/veEnumeration.js";
 import { btcPriceUsd } from "../core/prices.js";
+import { musdParams } from "../core/musdParams.js";
 import { log, errMsg } from "../core/log.js";
 
 /**
@@ -42,6 +43,11 @@ export function msToEpochFlip(now = Date.now()): number {
 
 let timer: ReturnType<typeof setInterval> | undefined;
 
+export function stopAlerts(): void {
+  if (timer) clearInterval(timer);
+  timer = undefined;
+}
+
 export function startAlerts(notify: Notify, intervalMs = SWEEP_MS): void {
   if (timer) return;
   timer = setInterval(() => {
@@ -64,26 +70,39 @@ export async function sweepAlerts(notify: Notify, now = Date.now()): Promise<voi
 
 async function checkTrove(telegramId: number, owner: `0x${string}`, notify: Notify, now: number): Promise<void> {
   const trove = await readTrove(owner);
-  if (!trove || trove.debtMUSD <= 0) return;
+  if (!trove || trove.debtMUSD <= 0 || trove.collBTC <= 0) return;
   const price = await btcPriceUsd();
   if (!price) return;
   const icr = ((trove.collBTC * price) / trove.debtMUSD) * 100;
   if (icr >= TROVE_WARN_ICR) {
-    // Healthy again — clear the band so a future dip re-alerts promptly.
-    if (store.alertState(telegramId).troveICR !== undefined) store.patchAlertState(telegramId, { troveICR: undefined });
+    // Healthy again — clear the WHOLE alert record, not just the band.
+    //
+    // Clearing troveICR alone left troveAt pinned to the first alert, so the
+    // 24h cooldown could never elapse while droppedBand was permanently true
+    // (undefined band). A ratio hovering on the 150% line therefore re-alerted
+    // on EVERY 30-minute sweep, forever — which trains people to ignore exactly
+    // the message that precedes a liquidation.
+    const st = store.alertState(telegramId);
+    if (st.troveICR !== undefined || st.troveAt !== undefined) {
+      store.patchAlertState(telegramId, { troveICR: undefined, troveAt: undefined });
+    }
     return;
   }
   const st = store.alertState(telegramId);
   const cooledDown = !st.troveAt || now - st.troveAt > DAY_MS;
-  const droppedBand = st.troveICR === undefined || icr <= st.troveICR - TROVE_REALERT_DROP;
+  const droppedBand = st.troveICR !== undefined && icr <= st.troveICR - TROVE_REALERT_DROP;
   if (!cooledDown && !droppedBand) return;
 
-  const liqPrice = (1.1 * trove.debtMUSD) / trove.collBTC;
+  // Live MCR, not a hardcoded 1.1 — the same parameter the borrow card uses.
+  const p = await musdParams();
+  const mcr = p ? Number(p.mcr) / 1e18 : 1.1;
+  const liqPrice = (mcr * trove.debtMUSD) / trove.collBTC;
   await notify(
     telegramId,
     `⚠️ Trove health warning\n\n` +
       `Your collateral ratio is ~${icr.toFixed(0)}% (warning threshold ${TROVE_WARN_ICR}%).\n` +
-      `If BTC falls below ~$${Math.round(liqPrice).toLocaleString()} (now ~$${Math.round(price).toLocaleString()}), your Trove can be liquidated and you lose collateral.\n\n` +
+      `If BTC falls below ~$${Math.round(liqPrice).toLocaleString()} (now ~$${Math.round(price).toLocaleString()}), your Trove can be liquidated: ` +
+      `the debt is cleared but the collateral is taken, and a liquidator keeps a cut of it.\n\n` +
       `To make it safer, send:\n"add 0.01 BTC collateral"  or  "repay 200 MUSD"`,
   );
   store.patchAlertState(telegramId, { troveAt: now, troveICR: icr });

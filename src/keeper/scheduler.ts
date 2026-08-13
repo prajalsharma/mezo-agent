@@ -15,11 +15,18 @@ import type { DcaCreateIntent } from "../llm/intent.js";
  *     a smart account, the on-chain session-key limits), so a schedule can never
  *     exceed what a manual action could,
  *   • REVOCABLE — /dca cancel flips `active=false` immediately,
- *   • IDEMPOTENT — `nextRunAt` advances only after a run is accounted for, and a
- *     global kill-switch (KEEPER_ENABLED=false) pauses everything.
+ *   • IDEMPOTENT — the slot is CLAIMED (nextRunAt advanced) before the executor
+ *     runs, and overlapping ticks are refused outright. It used to be the other
+ *     way around, and the comment here claimed that was what made it idempotent;
+ *     in fact it was exactly what let a slow run execute two or three times.
+ *   • BOUNDED — a global kill-switch (KEEPER_ENABLED=false) pauses everything,
+ *     and no schedule may run more often than once an hour.
  */
 
 const HOUR_MS = 60 * 60 * 1000;
+/** Below this the keeper cannot pace itself: the tick is 60s and a run can take minutes. */
+const MIN_INTERVAL_HOURS = 1;
+const MAX_INTERVAL_HOURS = 24 * 365;
 
 export class ScheduleError extends Error {}
 
@@ -32,6 +39,27 @@ export function createDcaSchedule(user: UserRecord, intent: DcaCreateIntent, now
     throw new ScheduleError("From and to tokens must differ.");
   }
   if (Number(intent.amount) <= 0) throw new ScheduleError("Amount must be greater than zero.");
+
+  // The interval. This is the most important validation in the file and it did
+  // not exist: `everyHours: 0` produced nextRunAt = now, and after each run
+  // `now + 0` — still due. The schedule fired on EVERY 60s tick, forever, which
+  // is roughly 1,440 unattended swaps a day from one typed message. The Zod
+  // schema does require a positive integer, but the deterministic rule parser
+  // returned before validation, so nothing enforced it on the path users
+  // actually took. Both holes are closed now; this is the one that matters,
+  // because it is the last line of defence before an unattended signer.
+  if (!Number.isInteger(intent.everyHours) || intent.everyHours < MIN_INTERVAL_HOURS) {
+    throw new ScheduleError(
+      `The interval must be a whole number of hours, at least ${MIN_INTERVAL_HOURS}. ` +
+        `An interval of ${intent.everyHours} would run continuously.`,
+    );
+  }
+  if (intent.everyHours > MAX_INTERVAL_HOURS) {
+    throw new ScheduleError(`The longest interval I can schedule is ${MAX_INTERVAL_HOURS} hours (about a year).`);
+  }
+  if (intent.occurrences !== undefined && (!Number.isInteger(intent.occurrences) || intent.occurrences < 1)) {
+    throw new ScheduleError("Occurrences must be a whole number of runs, at least 1.");
+  }
 
   const schedule: DcaSchedule = {
     id: store.newId(),
@@ -75,6 +103,15 @@ const liveExecutor: SwapExecutor = async (user, s) => {
 };
 
 /**
+ * Is a tick already running? A DCA swap waits on receipts (up to 180s each,
+ * and a plan can hold several), while the timer fires every 60s — so one slow
+ * run could still be in flight for three or more ticks. Each of those ticks
+ * re-selected the same still-due schedule and executed it AGAIN: several
+ * on-chain swaps, and several fees, for one authorised run.
+ */
+let ticking = false;
+
+/**
  * Run every schedule that is due. Advances nextRunAt and decrements occurrences
  * regardless of whether the swap could execute (so a gated deployment doesn't
  * spin), but only counts a run as spent once. Returns a per-schedule report.
@@ -90,7 +127,19 @@ export async function runDueSchedules(
     log.warn("keeper.halted", { envEnabled: env.keeperEnabled, paused: store.isKeeperPaused() });
     return [];
   }
+  if (ticking) {
+    log.warn("keeper.tick-overlap-skipped");
+    return [];
+  }
+  ticking = true;
+  try {
+    return await runDueSchedulesInner(now, executor);
+  } finally {
+    ticking = false;
+  }
+}
 
+async function runDueSchedulesInner(now: number, executor: SwapExecutor): Promise<RunReport[]> {
   const nowIso = new Date(now).toISOString();
   const due = store.dueSchedules(nowIso);
   const reports: RunReport[] = [];
@@ -101,6 +150,28 @@ export async function runDueSchedules(
       reports.push({ id: s.id, ok: false, detail: "paused by user" });
       continue;
     }
+
+    // CLAIM THE SLOT BEFORE RUNNING IT.
+    //
+    // nextRunAt used to advance only AFTER the executor resolved, so for the
+    // whole duration of a slow swap the schedule stayed selectable by
+    // dueSchedules. Claiming first means a concurrent or overlapping selection
+    // sees a future nextRunAt and skips it. The cost of claiming first is that a
+    // crash mid-run skips one interval instead of repeating it — the right way
+    // round for something that spends money without a human present.
+    //
+    // The cadence is computed from the slot that was DUE, not from the wall
+    // clock, so a late tick doesn't permanently drag the schedule later. If the
+    // process was down long enough to miss several intervals, we skip forward to
+    // the next future slot rather than firing a burst of catch-up trades.
+    const nextRunAt = nextSlot(s.nextRunAt, s.everyHours, now);
+    const remaining = s.remaining < 0 ? -1 : s.remaining - 1;
+    store.updateSchedule(s.id, {
+      nextRunAt,
+      remaining,
+      active: remaining === 0 ? false : s.active,
+    });
+
     const user = store.listAccounts(s.telegramId).find((u) => u.address.toLowerCase() === s.accountAddress.toLowerCase());
     let detail = "no matching account";
     let ok = false;
@@ -114,18 +185,32 @@ export async function runDueSchedules(
       }
     }
 
-    // Advance idempotently: next run is one interval out; decrement occurrences.
-    const next = new Date(now + s.everyHours * HOUR_MS).toISOString();
-    const remaining = s.remaining < 0 ? -1 : s.remaining - 1;
-    store.updateSchedule(s.id, {
-      nextRunAt: next,
-      remaining,
-      active: remaining === 0 ? false : s.active,
-    });
     reports.push({ id: s.id, ok, detail });
     log.info("keeper.dca.run", { id: s.id, ok, remaining });
   }
   return reports;
+}
+
+/**
+ * The next run time on the schedule's ORIGINAL cadence that is strictly in the
+ * future. Anchoring on `previous + interval` (rather than on the tick's own
+ * clock) keeps an hourly schedule hourly instead of drifting a little later
+ * every run; skipping straight past missed slots keeps a restart after downtime
+ * from firing a burst of back-to-back trades.
+ *
+ * Exported for tests.
+ */
+export function nextSlot(previousIso: string, everyHours: number, now: number): string {
+  const interval = Math.max(MIN_INTERVAL_HOURS, everyHours) * HOUR_MS;
+  const previous = Date.parse(previousIso);
+  let next = Number.isFinite(previous) ? previous + interval : now + interval;
+  if (next <= now) {
+    // Jump to the first slot after `now` in one step, not in a loop.
+    const missed = Math.ceil((now - next) / interval);
+    next += missed * interval;
+    if (next <= now) next += interval;
+  }
+  return new Date(next).toISOString();
 }
 
 let timer: ReturnType<typeof setInterval> | undefined;

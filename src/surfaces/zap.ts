@@ -181,7 +181,9 @@ export async function buildZap(
 
   const router = registry.contract("Router");
   const factory = registry.contract("PoolFactory");
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
+  // Matched to the 3-minute confirmation TTL plus signing/inclusion headroom.
+  // A 20-minute deadline outlives the quote it is meant to protect.
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 5 * 60);
   const route = { from: registry.routingAddress(input), to: registry.routingAddress(other), stable: p.stable, factory };
 
   // Swap-leg slippage floor (the real value protection): 0.5% off the quote.
@@ -217,14 +219,14 @@ export async function buildZap(
       kind: "approval", to: inAddr, value: 0n,
       data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, feeRouter ? half : half * 2n] }),
       describe: `Approve ${inSym} for the router`,
-      erc20: { symbol: inSym, amount: feeRouter ? half : half * 2n }, waitForReceipt: true,
+      erc20: { symbol: inSym, amount: feeRouter ? half : half * 2n, kind: "approval" }, waitForReceipt: true,
     },
     ...(feeRouter
       ? [{
           kind: "approval", to: inAddr, value: 0n,
           data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [feeRouter, half] }),
           describe: `Approve ${inSym} for the fee router`,
-          erc20: { symbol: inSym, amount: half }, waitForReceipt: true,
+          erc20: { symbol: inSym, amount: half, kind: "approval" }, waitForReceipt: true,
         } satisfies ActionStep]
       : []),
     {
@@ -249,12 +251,18 @@ export async function buildZap(
           }),
       describe: `Swap ${formatUnits(swapLegNet, input.decimals)} ${inSym} → ~${formatUnits(otherOut, other.decimals)} ${otherSym}` +
         (feeRouter ? ` (incl. agent fee, collected in the same tx)` : ""),
+      // This half genuinely LEAVES the wallet. Untagged, it was invisible to
+      // btcWeiMoved, so a BTC zap only charged its approvals against the caps.
+      erc20: { symbol: inSym, amount: half, kind: "spend" },
       waitForReceipt: true,
     },
     {
       kind: "approval", to: otherAddr, value: 0n,
+      // Approve the QUOTED amount as a ceiling; the rebuild below decides what
+      // is actually deposited, and it can only ever be less than this.
       data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, otherOut] }),
       describe: `Approve ${formatUnits(otherOut, other.decimals)} ${otherSym} for the router`,
+      erc20: { symbol: otherSym, amount: otherOut, kind: "approval" },
       waitForReceipt: true,
     },
     {
@@ -263,7 +271,36 @@ export async function buildZap(
         abi: routerAbi, functionName: "addLiquidity",
         args: [inAddr, otherAddr, p.stable, half, otherOut, amountAMin, amountBMin, owner, deadline],
       }),
-      describe: `Add ~${formatUnits(half, input.decimals)} ${inSym} + ~${formatUnits(otherOut, other.decimals)} ${otherSym} as liquidity`,
+      // The second half of the input, deposited as the A side.
+      erc20: { symbol: inSym, amount: half, kind: "spend" },
+      /**
+       * Re-size from what the wallet ACTUALLY holds, immediately before signing.
+       *
+       * amountBDesired above is the PRE-SWAP quote. The swap leg only guarantees
+       * `minOther` (0.5% below it), so whenever the fill came in under the quote
+       * the router computed an optimal B larger than the balance and
+       * `transferFrom` reverted — with the swap already irreversibly settled and
+       * the user's funds stranded halfway through a zap. The 7% amountBMin does
+       * not help: the shortfall is in the BALANCE, not in the ratio.
+       *
+       * Reading the real balance here also stops the opposite waste: when the
+       * fill came in ABOVE the quote, the surplus used to be left behind.
+       */
+      rebuild: async (who) => {
+        const held = (await publicClient().readContract({
+          address: otherAddr, abi: erc20Abi, functionName: "balanceOf", args: [who],
+        })) as bigint;
+        const desiredB = held < otherOut ? held : otherOut;
+        if (desiredB === 0n) return undefined; // nothing arrived; let it revert loudly
+        // Keep the accepted-ratio floor proportional to what we now ask for, so
+        // a smaller deposit is not judged against the original quote's floor.
+        const minB = (desiredB * LP_MIN_BPS) / 10_000n;
+        return encodeFunctionData({
+          abi: routerAbi, functionName: "addLiquidity",
+          args: [inAddr, otherAddr, p.stable, half, desiredB, amountAMin, minB, who, deadline],
+        });
+      },
+      describe: `Add ~${formatUnits(half, input.decimals)} ${inSym} + up to ~${formatUnits(otherOut, other.decimals)} ${otherSym} as liquidity`,
     },
   ];
 
