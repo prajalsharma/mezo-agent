@@ -214,8 +214,35 @@ export class Store {
   private load(): Partial<LegacyDb> | undefined {
     for (const [path, label] of [[this.path, "database"], [this.bakPath, "backup"]] as const) {
       if (!existsSync(path)) continue;
+
+      // READ AND PARSE ARE DIFFERENT FAILURES, and conflating them is dangerous.
+      //
+      // A file that EXISTS but cannot be READ (EACCES on a volume whose
+      // ownership is wrong, EIO on a failing disk) is almost certainly a
+      // perfectly good database — the problem is the environment, not the data.
+      // Treating that like corruption would quarantine an intact key store and
+      // then, because load() returned undefined, let the constructor write a
+      // fresh EMPTY database over the top of it. Every sealed key, destroyed by
+      // a permissions mistake.
+      //
+      // So: an I/O failure REFUSES TO START and says what to fix. Only a genuine
+      // parse failure quarantines and falls through to the backup.
+      let raw: string;
       try {
-        const raw = readFileSync(path, "utf8");
+        raw = readFileSync(path, "utf8");
+      } catch (err) {
+        const cause = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+        log.error("store.unreadable", { path, error: String(cause) });
+        throw new Error(
+          `The ${label} at ${path} EXISTS but could not be read (${cause}). Refusing to start, because ` +
+            `continuing would overwrite it with an empty database and destroy every stored wallet.\n\n` +
+            `This is almost always volume ownership: the process runs as a non-root user while the ` +
+            `mounted volume is owned by root. Fix the ownership of the volume (the container entrypoint ` +
+            `does this automatically when it starts as root), or point DATA_DIR at a writable path.`,
+        );
+      }
+
+      try {
         if (raw.trim().length === 0) throw new Error("file is empty");
         const parsed = JSON.parse(raw) as Partial<LegacyDb>;
         if (label === "backup") {
@@ -224,8 +251,8 @@ export class Store {
         return parsed;
       } catch (err) {
         log.error("store.load-failed", { path, error: (err as Error).message });
-        // Preserve the damaged file for forensics instead of overwriting it —
-        // it may still contain recoverable sealed keys.
+        // Genuinely unparseable. Preserve it for forensics instead of
+        // overwriting it — it may still contain recoverable sealed keys.
         try {
           const quarantine = `${path}.corrupt.${Date.now()}`;
           renameSync(path, quarantine);
@@ -262,9 +289,12 @@ export class Store {
       renameSync(this.tmpPath, this.path);
     } catch (err) {
       throw new Error(
-        `Failed to persist wallet data to ${this.path}. The filesystem may be ` +
-          `read-only. Set DATA_DIR to a writable path or use Postgres. ` +
-          `Cause: ${(err as Error).message}`,
+        `Failed to persist wallet data to ${this.path}. Cause: ${(err as Error).message}\n\n` +
+          `On a container platform this is usually VOLUME OWNERSHIP: the app runs as a non-root ` +
+          `user while the mounted volume is owned by root, so the directory is not writable. The ` +
+          `container entrypoint fixes this when it starts as root (docker-entrypoint.sh); if you ` +
+          `overrode the entrypoint or the USER, that is the thing to check first. Otherwise the ` +
+          `filesystem may be read-only - set DATA_DIR to a writable path, or move to Postgres.`,
       );
     }
   }

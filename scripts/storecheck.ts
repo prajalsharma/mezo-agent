@@ -17,7 +17,7 @@ import "./_testenv.js"; // MUST be first: seeds env before config/env.js evaluat
  *
  *   npx tsx scripts/storecheck.ts
  */
-import { readFileSync, writeFileSync, existsSync, rmSync, mkdtempSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdtempSync, readdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -84,7 +84,44 @@ const dbName = `mezo-agent.${process.env.MEZO_NETWORK ?? "testnet"}.json`;
     readdirSync(dir).some((f: string) => f.includes(".corrupt.")));
 }
 
-// ── 3. Total loss degrades to an empty store, never a boot failure ──────────
+// ── 3. An UNREADABLE (not corrupt) file must never be destroyed ─────────────
+//
+// This is the failure mode a live Railway deploy actually hit: the volume was
+// mounted root-owned while the process ran as an unprivileged user, so every
+// read returned EACCES. The first version of this recovery code treated ANY
+// load error as corruption — it would have quarantined an intact database and
+// then written a fresh empty one over the top, destroying every sealed key
+// because of a permissions mistake.
+{
+  const dir = join(base, "unreadable");
+  const store = freshStore(dir);
+  const path = join(dir, dbName);
+  store.setUserPaused(1234, true);
+  const original = readFileSync(path, "utf8");
+
+  chmodSync(path, 0o000); // simulate EACCES on the data file
+  let threw = false;
+  let stillThere = false;
+  try {
+    freshStore(dir);
+  } catch (e) {
+    threw = /could not be read|EACCES/i.test((e as Error).message);
+  }
+  chmodSync(path, 0o600); // restore so we can inspect it
+  stillThere = existsSync(path) && readFileSync(path, "utf8") === original;
+
+  // Running as root defeats chmod, so only assert when the simulation took.
+  if (process.getuid?.() === 0) {
+    console.log("  - SKIP unreadable-file case (running as root; chmod has no effect)");
+  } else {
+    ok("an UNREADABLE database refuses to start rather than overwrite", threw);
+    ok("the intact database is left exactly as it was", stillThere);
+    ok("it was NOT quarantined as corrupt",
+      !readdirSync(dir).some((f: string) => f.startsWith(`${dbName}.corrupt`)));
+  }
+}
+
+// ── 4. Total loss degrades to an empty store, never a boot failure ──────────
 {
   const dir = join(base, "hopeless");
   const store = freshStore(dir);

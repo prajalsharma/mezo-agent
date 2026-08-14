@@ -37,10 +37,22 @@ ENV DATA_DIR=/data
 # reaches the graceful shutdown handler in src/index.ts → clean exit 0.
 RUN npm install tsx@^4.19.0
 
-# Drop root. node:slim ships an unprivileged `node` user; the image had no USER
-# directive, so the process — and anything that ever achieves execution inside
-# it — ran as uid 0 next to the encrypted key store.
-RUN mkdir -p /data && chown -R node:node /data /app
-USER node
+# Drop root — but at RUNTIME, not here.
+#
+# node:slim ships an unprivileged `node` user and the image had no USER
+# directive, so the process ran as uid 0 next to the encrypted key store. The
+# obvious fix (chown at build time + `USER node`) is WRONG on a platform with
+# attached volumes: Railway mounts its volume over /data after the image is
+# built, so the build-time ownership is thrown away and the mount arrives owned
+# by root. uid 1000 then gets EACCES on the file holding every user's sealed
+# key, and the container crash-loops on boot.
+#
+# So the entrypoint starts as root, chowns the volume that actually exists, and
+# then drops to `node` before exec'ing the app. /app is chowned here because it
+# is baked into the image and no mount covers it.
+RUN chown -R node:node /app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "--import", "tsx", "src/index.ts"]
