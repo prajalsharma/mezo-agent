@@ -205,11 +205,17 @@ That header is the authoritative list. The quarantine is verified:
 
 Shipping caps that *look* binding and are not is worse than shipping the
 contained-custodial path, whose caps genuinely hold in the signer. Two things
-must be true before it reopens: the prescribed balance-delta accounting rewrite
-plus a fresh audit, and removal of the session→root signing downgrade in
-`signer.ts`, which currently re-signs with the root key any operation the
-delegate refuses. That downgrade is unreachable today *only because* `/upgrade`
-is off.
+must be true before it reopens: the prescribed balance-delta accounting rewrite,
+plus a fresh audit.
+
+The **session→root signing downgrade is already gone**. The signer used to
+re-sign with the root key any operation the delegate refused, which made the
+delegate's on-chain caps advisory — anything outside them was not blocked, only
+routed around — so the guarantee the smart-account path advertises would have
+been void the moment it shipped. It refuses now, and points the user at
+`/revoke` if they genuinely want to sign directly again. It was unreachable
+today only because `/upgrade` is off, and "unreachable for now" is not a
+property to leave a rewrite standing on.
 
 ---
 

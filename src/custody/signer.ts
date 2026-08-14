@@ -225,7 +225,23 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
         await ensureSessionTargets(user);
       } catch { /* healing is best-effort */ }
       if (!(await sessionCanExecute(user.address, session.address as Address, plan))) {
-        return await submitDirect(user, plan);
+        // REFUSE, do not downgrade.
+        //
+        // This used to fall through to submitDirect — re-signing with the ROOT
+        // key any operation the delegate had just refused. That makes the
+        // delegate's on-chain caps advisory: anything outside them is not
+        // blocked, merely routed around, so the guarantee the smart-account path
+        // advertises would be void the moment it shipped. It was unreachable
+        // only because /upgrade is disabled, which is not a property to rely on.
+        //
+        // Self-healing above still covers the legitimate case (a contract wired
+        // into the registry after the account was upgraded). If the target is
+        // STILL not allowed after that, the delegate is deliberately saying no.
+        throw new PolicyViolationError(
+          `This account's on-chain session policy doesn't permit calling ${plan.to}, and I won't ` +
+            `sign around that with your root key - the whole point of the session key is that its ` +
+            `limits actually bind. Use /revoke to drop the session key if you want to sign directly again.`,
+        );
       }
     }
     return await submitViaSession(user, session, plan);
