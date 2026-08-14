@@ -634,11 +634,16 @@ export async function installBotProfile(bot: Bot): Promise<void> {
     { command: "fees", description: "💸 Fee disclosure" },
     { command: "help", description: "❓ How to use the bot" },
     { command: "pause", description: "🛑 Emergency stop automation" },
+    { command: "revoke", description: "🔒 Revoke this account's session key" },
     { command: "diag", description: "🩺 Health self-test" },
   ]).catch(() => {});
 
   await bot.api.setMyShortDescription(
-    "Operate the full Mezo Bitcoin-DeFi stack in plain language - borrow, swap, earn, lock & vote. Non-custodial, every action confirmed.",
+    // NOT "non-custodial". The EIP-7702 path that would make it so is
+    // deliberately disabled (see README), so the bot holds an encrypted key and
+    // signs on the user's behalf. Saying otherwise in the profile contradicts
+    // what the repo says about itself, and it is the first thing a user reads.
+    "Operate the full Mezo Bitcoin-DeFi stack in plain language - borrow, swap, earn, lock & vote. Spending caps, and every action confirmed before it signs.",
   ).catch(() => {});
 
   await bot.api.setMyDescription(

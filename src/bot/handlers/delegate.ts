@@ -1,7 +1,7 @@
 import type { Context } from "grammy";
 import { env } from "../../config/env.js";
 import { getUser } from "../../wallet/walletService.js";
-import { enableSmartAccount, isSmartAccount, DelegationError } from "../../custody/delegation.js";
+import { enableSmartAccount, isSmartAccount, revokeSession, DelegationError } from "../../custody/delegation.js";
 import { registry } from "../../registry/registry.js";
 import { explorerAddressUrl } from "../../chain/networks.js";
 import { limitsOf, fmtBtc } from "../../custody/policy.js";
@@ -94,4 +94,44 @@ export async function handleUpgrade(ctx: Context): Promise<void> {
       throw err; // surfaced by the global error boundary
     }
   }
+}
+
+/**
+ * /revoke — kill the account's session key immediately.
+ *
+ * The delegate has always had `revokeSession`, and nothing in the bot called it,
+ * so a leaked session key stayed valid for its full 30-day TTL with no way for
+ * the user to stop it. This is the caller.
+ *
+ * Deliberately NOT behind a confirmation card: revocation is the safe direction,
+ * and asking someone to tap twice while they believe their key is compromised is
+ * the wrong trade. The root key is unaffected — the account keeps working on the
+ * contained-custodial path.
+ */
+export async function handleRevoke(ctx: Context): Promise<void> {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+  const user = getUser(telegramId);
+  if (!user) {
+    await ctx.reply("You don't have an account yet. Send /start.");
+    return;
+  }
+  if (!user.session) {
+    await ctx.reply("There's no session key on this account, so there's nothing to revoke.");
+    return;
+  }
+
+  await ctx.reply("⏳ Revoking the session key…");
+  const { onChain, txHash } = await revokeSession(user);
+  await ctx.reply(
+    onChain
+      ? `🔒 ${b("Session key revoked.")}\n\nIt can no longer sign anything, on-chain or through this bot.\n` +
+          (txHash ? `${code(txHash)}\n\n` : "\n") +
+          `Your account still works normally - actions are signed directly again, within your /limits.`
+      : `🔒 ${b("Session key disabled in this bot.")}\n\n` +
+          `I could not land the on-chain revocation just now, so the key is still registered on the delegate ` +
+          `until it expires - but this bot will not sign through it again. ` +
+          `Run /revoke once more in a few minutes to clear it on-chain too.`,
+    { parse_mode: "HTML" },
+  );
 }

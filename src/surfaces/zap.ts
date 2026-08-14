@@ -9,7 +9,7 @@ import { erc20Abi } from "../abis/erc20.js";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 import { env, feesEnabled } from "../config/env.js";
 import { gatedPlan, ActionUnavailableError, type ActionPlan, type ActionStep } from "./plan.js";
-import type { ZapIntent } from "../llm/intent.js";
+import { MAX_SLIPPAGE_PCT, type ZapIntent } from "../llm/intent.js";
 import { btcPriceUsd } from "../core/prices.js";
 import type { TokenInfo } from "../registry/addresses.js";
 
@@ -175,8 +175,16 @@ export async function buildZap(
   // atomic action, so the true worst case is the swap-leg slippage (0.5%) + the
   // deposit-ratio tolerance (7%) + price impact, and it can be sandwiched in the
   // guaranteed inter-tx gap. Disclose it plainly rather than the per-leg 0.5%.
+  // HONOUR THE USER'S SLIPPAGE. ZapIntent accepts `slippagePct` and this used to
+  // ignore it completely, hardcoding 0.5% — so someone widening their tolerance
+  // to get a thin-pool zap through was silently given the same floor and watched
+  // it revert again with no explanation. The schema caps it at MAX_SLIPPAGE_PCT,
+  // so it cannot be widened without bound.
+  const slippagePct = Math.min(intent.slippagePct ?? 0.5, MAX_SLIPPAGE_PCT);
+  const slipBps = BigInt(Math.round(slippagePct * 100));
+
   const worstCaseLine =
-    "⚠️ Worst-case cost up to ~7.5% (0.5% swap slippage + up to 7% deposit-ratio tolerance + pool price impact). " +
+    `⚠️ Worst-case cost up to ~${(slippagePct + 7).toFixed(1)}% (${slippagePct}% swap slippage + up to 7% deposit-ratio tolerance + pool price impact). ` +
     "This zap is 4 separate transactions and can be front-run between them; use a small size on thin pools.";
 
   const router = registry.contract("Router");
@@ -187,7 +195,7 @@ export async function buildZap(
   const route = { from: registry.routingAddress(input), to: registry.routingAddress(other), stable: p.stable, factory };
 
   // Swap-leg slippage floor (the real value protection): 0.5% off the quote.
-  const minOther = (otherOut * 9_950n) / 10_000n;
+  const minOther = (otherOut * (10_000n - slipBps)) / 10_000n;
 
   // addLiquidity sizing (Audit R2 C2). The swap itself moves the pool price by
   // the fee + our own impact, so at deposit time the pool wants a DIFFERENT

@@ -140,6 +140,17 @@ token.
 - **Error text reached logs and chat unredacted.** Exception strings from
   viem/grammY routinely quote the RPC URL they called. `redact()` now strips
   key-, token- and credential-shaped substrings at both sinks.
+- **`revokeSession` had no caller.** The delegate has always exposed it and
+  nothing in the bot reached it, so a leaked session key stayed valid for its
+  full 30-day TTL with nothing the user could do. `/revoke` is that caller; it
+  clears the session locally even when the on-chain call has to be retried, so
+  the bot stops signing through it immediately.
+- **The zap ignored the user's slippage setting**, hardcoding 0.5% while
+  `ZapIntent` accepted a value — so widening tolerance to get a thin-pool zap
+  through changed nothing and it reverted again with no explanation.
+- **The bot's own profile called itself "non-custodial"** while the EIP-7702 path
+  that would make that true is deliberately disabled. It now describes what it
+  actually is.
 - **FeeRouter:** the per-call override ceiling was the bare `MAX_OVERRIDE_BPS`
   constant rather than the configured rate, so lowering `feeBps` to 50 still let
   a caller charge 200 — four times what the owner set, making `MAX_FEE_BPS`

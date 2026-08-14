@@ -19,7 +19,7 @@ import {
 } from "./handlers/onboarding.js";
 import { handlePortfolio, handleDeposit } from "./handlers/portfolio.js";
 import { handleLimits, handleWatch, handleLimitsConfirm, handleLimitsCancel } from "./handlers/limits.js";
-import { handleUpgrade } from "./handlers/delegate.js";
+import { handleUpgrade, handleRevoke } from "./handlers/delegate.js";
 import {
   handleSwapIntent,
   handleSwapConfirm,
@@ -158,6 +158,9 @@ export function buildBot(): Bot {
   bot.command("deposit", handleDeposit);
   bot.command("limits", handleLimits);
   bot.command("upgrade", handleUpgrade);
+  // The caller `revokeSession` never had. A leaked session key used to survive
+  // its whole 30-day TTL with nothing the user could do.
+  bot.command("revoke", handleRevoke);
   bot.command("watch", handleWatch);
   bot.command("export", handleExportPrompt);
   bot.command("accounts", (ctx) => handleAccount(ctx, { action: "account", op: "list" }));

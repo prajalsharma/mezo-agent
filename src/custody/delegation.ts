@@ -221,6 +221,52 @@ export async function ensureSessionTargets(user: UserRecord): Promise<number> {
   return missing.length;
 }
 
+/**
+ * Revoke the account's session key, on-chain and locally.
+ *
+ * `revokeSession` existed on the delegate and had NO CALLER anywhere, so a
+ * leaked session key stayed valid for its full 30-day TTL with nothing a user
+ * or an operator could do about it. A revocation primitive nobody can reach is
+ * not a revocation primitive.
+ *
+ * Signed by the ROOT key, because the delegate's revoke is `onlySelf` and the
+ * session key must not be able to manage its own scope. Local state is cleared
+ * regardless of whether the on-chain call lands: a session the bot refuses to
+ * use is strictly safer than one it keeps using because a transaction failed.
+ */
+export async function revokeSession(user: UserRecord): Promise<{ onChain: boolean; txHash?: Hex }> {
+  const session = user.session?.address as Address | undefined;
+  if (!session) return { onChain: false };
+
+  let onChain = false;
+  let txHash: Hex | undefined;
+  try {
+    const chain = chainFor(env.network);
+    await keystore().use(user.sealedKey, async (rootKey: Hex) => {
+      const rootAccount = privateKeyToAccount(rootKey);
+      const wallet = createWalletClient({ account: rootAccount, chain, transport: http(chain.rpcUrls.default.http[0]) });
+      const data = encodeFunctionData({
+        abi: sessionKeyDelegateAbi,
+        functionName: "revokeSession",
+        args: [session],
+      });
+      txHash = await wallet.sendTransaction({ to: user.address, data, gas: 200_000n } as never);
+      await publicClient().waitForTransactionReceipt({ hash: txHash, timeout: 90_000, retryCount: 6 });
+      onChain = true;
+    });
+  } catch (e) {
+    log.warn("delegation.revoke-onchain-failed", { error: errMsg(e) });
+  }
+
+  // Drop it locally either way. usableSession() in the signer reads this, so
+  // clearing it immediately stops the bot from signing through the session even
+  // if the on-chain revocation has to be retried.
+  delete user.session;
+  store.saveUser(user);
+  log.warn("delegation.session-revoked", { account: user.address, onChain });
+  return { onChain, txHash };
+}
+
 export async function isSmartAccount(user: UserRecord): Promise<boolean> {
   if (!user.delegation || !user.session) return false;
   const status = await getDelegation(user.address, user.delegation.target);
