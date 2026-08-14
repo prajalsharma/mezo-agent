@@ -114,9 +114,11 @@ export function getPending(telegramId: number): Pending | undefined {
   return p;
 }
 
+export type RefusalReason = "none" | "expired" | "superseded" | "account-switched";
+
 export type TakeResult =
   | { ok: true; pending: Pending }
-  | { ok: false; why: "none" | "expired" | "superseded" };
+  | { ok: false; why: RefusalReason };
 
 /**
  * Claim the pending plan for `id`, deleting it in the SAME synchronous step.
@@ -125,7 +127,7 @@ export type TakeResult =
  * two rapid confirm taps both read the plan and execute it twice against one
  * confirmation. Callers must therefore call this BEFORE `answerCallbackQuery`.
  */
-export function takePending(telegramId: number, id: string): TakeResult {
+export function takePending(telegramId: number, id: string, owner?: string): TakeResult {
   const p = pending.get(telegramId);
   if (!p) return { ok: false, why: "none" };
   if (Date.now() > p.expiresAt) {
@@ -135,25 +137,48 @@ export function takePending(telegramId: number, id: string): TakeResult {
   // The tapped card names a plan that is no longer the pending one: the user
   // asked for something else in between. Refuse rather than sign the newer plan.
   if (p.id !== id) return { ok: false, why: "superseded" };
+  // The account check lives HERE, not only at the call sites. Every call site
+  // guarded it on `pendingState.accountAddress &&`, so a plan stored without
+  // one would have been fail-open; making the comparison part of the claim
+  // means a future caller cannot forget it.
+  if (owner !== undefined && p.accountAddress !== undefined
+      && p.accountAddress.toLowerCase() !== owner.toLowerCase()) {
+    // NOT consumed: the user may switch back and confirm the plan they saw.
+    return { ok: false, why: "account-switched" };
+  }
   pending.delete(telegramId);
   return { ok: true, pending: p };
-}
-
-/** Re-park a plan under a NEW id (step-up confirmation), returning that id. */
-export function repark(telegramId: number, p: PendingInput, accountAddress?: string): string {
-  return setPending(telegramId, p, accountAddress);
 }
 
 export function clearPending(telegramId: number): void {
   pending.delete(telegramId);
 }
 
+/**
+ * Drop every expired entry. Expiry is otherwise lazy — checked only when a
+ * specific user's plan is read — so an abandoned preview kept a whole
+ * ActionPlan alive for the life of the process. Called on a slow timer.
+ */
+export function sweepPending(now = Date.now()): number {
+  let dropped = 0;
+  for (const [id, p] of pending) {
+    if (now > p.expiresAt) { pending.delete(id); dropped++; }
+  }
+  return dropped;
+}
+
 /** Human explanation for a refused confirm tap. */
-export function refusalText(why: "none" | "expired" | "superseded"): string {
+export function refusalText(why: RefusalReason): string {
   if (why === "superseded") {
     return (
       "That preview was replaced by a newer one, so I didn't execute it. " +
       "Scroll down to the most recent card and confirm there, or ask again."
+    );
+  }
+  if (why === "account-switched") {
+    return (
+      "You switched active account since that card was built, so I didn't execute it. " +
+      "Switch back and confirm, or ask again for the account you're on now."
     );
   }
   if (why === "expired") return "That preview expired (quotes are only held for 3 minutes). Please ask again.";

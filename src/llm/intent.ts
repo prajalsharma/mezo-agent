@@ -94,9 +94,12 @@ export const LockIntent = z.object({
 export const ExtendLockIntent = z.object({
   action: z.literal("extendLock"),
   tokenId: z.number().int().nonnegative(),
-  // Bounded by the longest lock any Mezo escrow allows (veMEZO, 4 years). It was
-  // unbounded, so an absurd extension reached the escrow and reverted opaquely.
-  addDays: z.number().int().positive().max(4 * 365).optional(),
+  // Only an absurdity guard. The REAL bound belongs to the surface, which knows
+  // which escrow the id lives on and can say "veBTC locks cap at 28 days". A
+  // tight schema max here shadowed that: "extend by 5 years" returned
+  // "Number must be less than or equal to 1460" — a number the user never typed,
+  // about a limit that is not the real one.
+  addDays: z.number().int().positive().max(100 * 365).optional(),
   addAmount: amount.optional(),
 });
 export const VoteIntent = z.object({

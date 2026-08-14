@@ -138,11 +138,16 @@ contract FeeRouter {
     event ConfigChanged(address feeRecipient, uint16 feeBps, uint16 maxReferralShareBps);
     event OwnerChanged(address indexed newOwner);
     event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferCancelled(address indexed from, address indexed cancelled);
     event ReferrerBound(address indexed trader, address indexed referrer);
     event FeeTokenSet(address indexed token, bool allowed);
     event ReferredFeeBpsChanged(uint16 referredFeeBps);
 
     error NotOwner();
+    /// @dev Distinct from NotOwner: the caller is not the NAMED successor. Sharing
+    ///      one error conflated "you are not the owner" with "you are not the
+    ///      pending owner", which read as an auth failure on the wrong account.
+    error NotPendingOwner();
     error Reentered();
     error FeeTooHigh();
     error ZeroAddress();
@@ -165,7 +170,9 @@ contract FeeRouter {
 
     constructor(address router_, address feeRecipient_, uint16 feeBps_, uint16 maxReferralShareBps_) {
         if (router_ == address(0) || feeRecipient_ == address(0)) revert ZeroAddress();
-        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > MAX_REFERRAL_SHARE_BPS) revert FeeTooHigh();
+        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ == 0 || maxReferralShareBps_ > MAX_REFERRAL_SHARE_BPS) {
+            revert FeeTooHigh();
+        }
         router = IVeloRouter(router_);
         owner = msg.sender;
         feeRecipient = feeRecipient_;
@@ -321,8 +328,18 @@ contract FeeRouter {
     ///      lowering feeBps to 50 still let a caller charge 200 — 4x the
     ///      configured rate. Bounding at 2x the CONFIGURED rate keeps that
     ///      closed while leaving every honest leg representable.
-    function _ceilingBps(address, uint16) private view returns (uint16) {
-        uint256 raw = uint256(feeBps) * MAX_LEG_MULTIPLIER;
+    function _ceilingBps(address referrer, uint16 floorMultiplier) private view returns (uint16) {
+        // Take the HIGHER of the headline and this caller's own base, so a
+        // referred caller is never given a narrower band than an unreferred one,
+        // and always scale by the LARGEST legitimate leg multiplier rather than
+        // this call's own. Using this call's multiplier collapsed a zap leg's
+        // band to the single point [base*2, base*2] — any drift between the
+        // caller's number and the chain's reverted a legitimate trade.
+        uint16 base = _baseBps(referrer);
+        uint256 headline = uint256(feeBps > base ? feeBps : base) * MAX_LEG_MULTIPLIER;
+        // Never below this call's own floor, or the band would be empty.
+        uint256 floorHere = uint256(base) * floorMultiplier;
+        uint256 raw = headline > floorHere ? headline : floorHere;
         return raw > MAX_OVERRIDE_BPS ? MAX_OVERRIDE_BPS : uint16(raw);
     }
 
@@ -400,7 +417,15 @@ contract FeeRouter {
 
     function setConfig(address feeRecipient_, uint16 feeBps_, uint16 maxReferralShareBps_) external onlyOwner {
         if (feeRecipient_ == address(0)) revert ZeroAddress();
-        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > MAX_REFERRAL_SHARE_BPS) revert FeeTooHigh();
+        // ZERO IS NOT A VALID SHARE. _referralActive requires a non-zero share
+        // (so a discount is never given without a payout), which means setting
+        // it to 0 flips every bound trader back to the FULL rate — putting the
+        // floor above what the caller sends and reverting every referred swap
+        // and zap until someone notices. "Stop paying referrers" is expressed by
+        // unbinding the traders, not by zeroing the share.
+        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ == 0 || maxReferralShareBps_ > MAX_REFERRAL_SHARE_BPS) {
+            revert FeeTooHigh();
+        }
         feeRecipient = feeRecipient_;
         feeBps = feeBps_;
         // RE-DERIVE, never one-way clamp: clamping only downward meant a
@@ -468,6 +493,18 @@ contract FeeRouter {
         }
     }
 
+    /// @notice Clear referral bindings, returning those traders to the full rate.
+    /// @dev The only way to stop paying a referrer. `bindReferrers` rejects the
+    ///      zero address, so a binding could previously be re-pointed but never
+    ///      removed — leaving no way to detach traders from a compromised or
+    ///      departed referrer, and no safe way to wind a programme down.
+    function unbindReferrers(address[] calldata traders) external onlyOwner {
+        for (uint256 i = 0; i < traders.length; i++) {
+            delete referrerOf[traders[i]];
+            emit ReferrerBound(traders[i], address(0));
+        }
+    }
+
     /// @notice Begin an ownership transfer. The new owner must ACCEPT it.
     /// @dev Two steps, because the one-step version handed ownership to whatever
     ///      address was typed: a wrong one permanently forfeited `rescue`, the
@@ -481,7 +518,7 @@ contract FeeRouter {
 
     /// @notice Accept a pending ownership transfer. Only the named successor.
     function acceptOwnership() external {
-        if (msg.sender != pendingOwner) revert NotOwner();
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
         owner = pendingOwner;
         pendingOwner = address(0);
         emit OwnerChanged(owner);
@@ -489,8 +526,12 @@ contract FeeRouter {
 
     /// @notice Abandon a pending transfer.
     function cancelOwnershipTransfer() external onlyOwner {
+        // Its own event. Re-using OwnershipTransferStarted(owner, 0) told any
+        // indexer a transfer had STARTED to the zero address — the opposite of
+        // what happened.
+        address was = pendingOwner;
         pendingOwner = address(0);
-        emit OwnershipTransferStarted(owner, address(0));
+        emit OwnershipTransferCancelled(owner, was);
     }
 
     /// @notice Rescue tokens accidentally sent here (the contract never holds

@@ -96,7 +96,20 @@ async function marketOrRefuse(): Promise<{ p: MusdParams; priceWad: bigint; inRe
         "Mezo rejects Trove operations on a stale oracle too, so this transaction would fail on-chain anyway. Try again in a minute.",
     );
   }
-  const inRecovery = (await recoveryMode(priceWad)) ?? false;
+  // `?? false` was assuming "normal" on an unreadable read — exactly what
+  // musdParams.recoveryMode's own doc says callers must not do. During Recovery
+  // Mode WITH a failed TroveManager read, that gated a new Trove on MCR (110%)
+  // when the protocol requires CCR (150%): a green card, then a revert, in the
+  // market conditions where users are most stressed. Refuse instead; the whole
+  // point of this function is that it is the one place allowed to say no.
+  const inRecovery = await recoveryMode(priceWad);
+  if (inRecovery === undefined) {
+    throw new ActionUnavailableError(
+      "I can't tell whether Mezo is in Recovery Mode right now, and that changes the collateral ratio " +
+        "this would be judged against (150% instead of 110%). I won't show you a ratio that might be " +
+        "measured against the wrong threshold - try again in a moment.",
+    );
+  }
   return { p, priceWad, inRecovery };
 }
 
@@ -392,6 +405,34 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
     // Live fee on the NEW mint only; existing debt already carries its own fee
     // and the gas compensation, both of which getTroveDebt already includes.
     const newDebt = trove.debt + mintWad + borrowingFee(mintWad, p, inRecovery) - repayWad;
+
+    // THE MINIMUM-NET-DEBT FLOOR ON THE REPAY LEG.
+    //
+    // buildRepay enforces this; buildAdjust did not enforce it at all, so
+    // "adjust … repay 300" against a net debt of 2,004 produced a green card
+    // for a remainder of 1,704 that the protocol rejects. musd requires
+    // `_getNetDebt(debt) - netDebtChange >= minNetDebt` on any debt DECREASE
+    // (BorrowerOperations `_requireAtLeastMinNetDebt`), and the basis is NET
+    // debt — the gas compensation is settled on close, never repaid — which is
+    // the same distinction buildRepay already makes.
+    if (repayWad > 0n) {
+      const netDebtNow = trove.debt > p.gasCompensation ? trove.debt - p.gasCompensation : 0n;
+      if (repayWad > netDebtNow) {
+        throw new ActionUnavailableError(
+          `You asked to repay ${intent.repayMUSD} MUSD but only ~${fmtMusd(netDebtNow)} MUSD of this Trove's debt ` +
+            `is repayable (the ${fmtMusd(p.gasCompensation)} MUSD gas compensation is settled when you close it). ` +
+            `Use "close trove" to clear the position entirely.`,
+        );
+      }
+      const netRemaining = netDebtNow - repayWad + mintWad;
+      if (netRemaining > 0n && netRemaining < p.minNetDebt) {
+        throw new ActionUnavailableError(
+          `That would leave ~${fmtMusd(netRemaining)} MUSD of debt, below Mezo's ${fmtMusd(p.minNetDebt)} MUSD minimum, ` +
+            `which the protocol rejects. Repay at most ${fmtMusd(netDebtNow - p.minNetDebt + mintWad)} MUSD, ` +
+            `or use "close trove" to clear it all at once.`,
+        );
+      }
+    }
 
     // The sticky borrowing cap. This is the check whose absence made "add more
     // BTC to borrow more" actively wrong advice: the cap is stamped at open time

@@ -133,7 +133,7 @@ export async function handleActionConfirm(ctx: Context): Promise<void> {
   if (!telegramId) return;
   // Claim the plan BEFORE any await — see handleSwapConfirm for why the gap
   // between "read" and "clear" was a double-execution race.
-  const taken = takePending(telegramId, callbackId(ctx));
+  const taken = takePending(telegramId, callbackId(ctx), getUser(telegramId)?.address);
   await ctx.answerCallbackQuery().catch(() => {});
   if (!taken.ok || taken.pending.kind !== "action") {
     await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
@@ -212,7 +212,7 @@ export async function handleActionCancel(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
   // By id, so cancelling a stale card can't disarm the live plan.
-  const taken = takePending(telegramId, callbackId(ctx));
+  const taken = takePending(telegramId, callbackId(ctx), getUser(telegramId)?.address);
   await ctx.answerCallbackQuery().catch(() => {});
   await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
   await ctx.reply(taken.ok ? "Cancelled. Nothing was signed." : "That card was already replaced or expired - nothing was signed.");

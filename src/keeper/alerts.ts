@@ -25,6 +25,12 @@ import { log, errMsg } from "../core/log.js";
 const SWEEP_MS = 30 * 60 * 1000; // 30 min between sweeps
 const TROVE_WARN_ICR = 150; // %
 const TROVE_REALERT_DROP = 10; // points below last alerted ICR
+/**
+ * Floor on how often a Trove alert may repeat, independent of the band and of
+ * whether the ratio recovered in between. Without it, a ratio oscillating
+ * across the warning threshold alerts on every other 30-minute sweep.
+ */
+const MIN_REALERT_MS = 4 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** ve(3,3) epochs flip weekly at Thursday 00:00 UTC (unix epoch was a Thursday). */
 const WEEK_MS = 7 * DAY_MS;
@@ -75,23 +81,32 @@ async function checkTrove(telegramId: number, owner: `0x${string}`, notify: Noti
   if (!price) return;
   const icr = ((trove.collBTC * price) / trove.debtMUSD) * 100;
   if (icr >= TROVE_WARN_ICR) {
-    // Healthy again — clear the WHOLE alert record, not just the band.
+    // Healthy again — clear the BAND, keep the timestamp.
     //
-    // Clearing troveICR alone left troveAt pinned to the first alert, so the
-    // 24h cooldown could never elapse while droppedBand was permanently true
-    // (undefined band). A ratio hovering on the 150% line therefore re-alerted
-    // on EVERY 30-minute sweep, forever — which trains people to ignore exactly
-    // the message that precedes a liquidation.
+    // Clearing the band is right: crossing back above the threshold is a real
+    // state change, so a fresh dip is genuinely new information and should not
+    // be suppressed for 24h (the original bug suppressed exactly that).
+    //
+    // But clearing `troveAt` as well left NO floor on how often we may re-alert,
+    // and with 30-minute sweeps a ratio oscillating across 150% produced an
+    // alert every other sweep. Keeping the timestamp preserves a minimum
+    // re-alert interval across the recovery, which is what stops the spam
+    // without hiding a real dip.
     const st = store.alertState(telegramId);
-    if (st.troveICR !== undefined || st.troveAt !== undefined) {
-      store.patchAlertState(telegramId, { troveICR: undefined, troveAt: undefined });
-    }
+    if (st.troveICR !== undefined) store.patchAlertState(telegramId, { troveICR: undefined });
     return;
   }
   const st = store.alertState(telegramId);
   const cooledDown = !st.troveAt || now - st.troveAt > DAY_MS;
+  // A FIRST observation below the threshold must alert. Requiring a previous
+  // band made a fast crash (149% → 111%) inside the cooldown window completely
+  // silent — the half of this that costs someone their collateral.
+  const firstBelow = st.troveICR === undefined;
   const droppedBand = st.troveICR !== undefined && icr <= st.troveICR - TROVE_REALERT_DROP;
-  if (!cooledDown && !droppedBand) return;
+  // ...but never more often than this, whatever the band did.
+  const rateOk = !st.troveAt || now - st.troveAt >= MIN_REALERT_MS;
+  if (!rateOk) return;
+  if (!cooledDown && !droppedBand && !firstBelow) return;
 
   // Live MCR, not a hardcoded 1.1 — the same parameter the borrow card uses.
   const p = await musdParams();

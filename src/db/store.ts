@@ -108,6 +108,8 @@ export type DcaSchedule = {
   nextRunAt: string; // ISO
   createdAt: string;
   active: boolean;
+  /** Consecutive failed runs. Reset on any success; stops the schedule at the cap. */
+  failures?: number;
 };
 
 /** Per-account epoch auto-compound preference (Phase 5 automation). */
@@ -264,7 +266,14 @@ export class Store {
         if (raw.trim().length === 0) throw new Error("file is empty");
         const parsed = JSON.parse(raw) as Partial<LegacyDb>;
         if (label === "backup") {
-          log.warn("store.recovered-from-backup", { path });
+          // Recovery is never a routine success. Say what was actually restored
+          // so an operator can compare it against what they expect, rather than
+          // reading "recovered" and assuming nothing was lost.
+          const accounts = Object.keys(parsed.accounts ?? {}).length;
+          log.error("store.RECOVERED-FROM-BACKUP", { path, accounts });
+          log.error("store.recovery-notice",
+            { detail: `The main database was unusable and the backup was used instead. It holds ${accounts} account(s). ` +
+              `Verify that against what you expect BEFORE users transact; the damaged file is preserved as .corrupt.*` });
         }
         return parsed;
       } catch (err) {
@@ -288,23 +297,49 @@ export class Store {
    * truncated one. The previous version was a bare `writeFileSync` of the entire
    * database, called from ~18 sites, with no temp file, no fsync and no backup.
    */
+  /** Write `body` to `path` atomically: temp file, fsync, rename. */
+  private writeAtomic(path: string, body: string): void {
+    const tmp = `${path}.tmp`;
+    // fsync the DATA before the rename, or the rename can land while the
+    // contents are still only in the page cache.
+    const fd = openSync(tmp, "w", 0o600);
+    try {
+      writeFileSync(fd, body);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  }
+
   private flush(): void {
     try {
       const body = JSON.stringify(this.db, null, 2);
-      // Keep the last known-good copy before replacing it.
-      if (existsSync(this.path)) {
-        try { copyFileSync(this.path, this.bakPath); } catch { /* best effort */ }
-      }
-      // fsync the DATA before the rename, or the rename can land while the
-      // contents are still only in the page cache.
-      const fd = openSync(this.tmpPath, "w", 0o600);
+      this.writeAtomic(this.path, body);
+
+      // THE BACKUP IS WRITTEN FROM MEMORY, AFTER THE MAIN FILE LANDS.
+      //
+      // It used to be `copyFileSync(main -> bak)` BEFORE the write, which had
+      // two failure modes that only show up at the moment the backup is needed:
+      //
+      //   1. It was always one flush stale. Restoring it returned the state as
+      //      of the PREVIOUS write — so the first user to onboard could be
+      //      recovered away, and `load()` would log a successful recovery while
+      //      silently returning fewer accounts than were held.
+      //   2. It copied whatever was on disk WITHOUT parsing it. Once the main
+      //      file was corrupt, the next flush copied that corruption over the
+      //      only good copy.
+      //
+      // Writing the same validated `body` we just persisted fixes both: the
+      // backup is a byte-identical, parseable copy of the CURRENT state, so a
+      // restore can never lose an account, and a corrupt main file can never
+      // propagate into it.
       try {
-        writeFileSync(fd, body);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
+        this.writeAtomic(this.bakPath, body);
+      } catch (e) {
+        // A failed backup must not fail the write that already succeeded.
+        log.warn("store.backup-write-failed", { error: (e as Error).message });
       }
-      renameSync(this.tmpPath, this.path);
     } catch (err) {
       throw new Error(
         `Failed to persist wallet data to ${this.path}. Cause: ${(err as Error).message}\n\n` +

@@ -103,7 +103,15 @@ export async function buildZap(
   // step after the zap lands (with retry + owed-ledger).
   const grossInput = effectiveRaw;
   const humanIn = formatUnits(grossInput, input.decimals);
-  const atomicFee = feesEnabled && env.fees.swapBps > 0 && registry.hasContract("FeeRouter");
+  // `caps.zapLeg` is part of the condition: without the dedicated entrypoint the
+  // only way to charge a zap's full fee atomically was to send an explicit 2x
+  // override through swapWithFee — an off-chain number with nothing
+  // synchronising it to the on-chain rate, checked against a band that can be a
+  // single point. A 1 bps drift reverted the swap leg AFTER both approvals were
+  // mined, stranding live allowances. An older router now takes the legacy path
+  // instead, where the fee is its own step and no override is sent at all.
+  const caps = await feeRouterCaps();
+  const atomicFee = feesEnabled && env.fees.swapBps > 0 && registry.hasContract("FeeRouter") && caps.zapLeg;
   // Referred users get the SAME lifetime discount on zaps as on swaps (audit:
   // zaps previously charged the full headline rate and paid referrers nothing).
   const effBps = referral ? env.fees.referredBps : env.fees.swapBps;
@@ -117,9 +125,10 @@ export async function buildZap(
   // older router, fall back to swapWithFee and supply the doubled rate as an
   // override, which is what that contract expects. Calling a function the live
   // bytecode lacks just reverts, after the approval has already been mined.
-  const caps = await feeRouterCaps();
-  const zapLegFn = caps.zapLeg ? ("zapLegWithFee" as const) : ("swapWithFee" as const);
-  const zapFeeBpsOverride = caps.zapLeg ? 0 : Math.min(effBps * 2, 200);
+  // Always the dedicated entrypoint, always override 0 — the CONTRACT picks the
+  // rate. atomicFee is false unless caps.zapLeg is true, so this is only ever
+  // reached on a router that has it.
+  const zapLegFn = "zapLegWithFee" as const;
   // What the contract will actually charge on the half it swaps, for quote and
   // minOut math only. Must mirror FeeRouter._takeFee's doubling, or the quote
   // understates the fee and minOut is set too high.
@@ -251,7 +260,7 @@ export async function buildZap(
             args: [half, minOther, [route], deadline,
               (referral?.recipient ?? ZERO_ADDRESS) as Address,
               referral ? Math.min(Math.round(referral.sharePct), 100) * 100 : 0,
-              caps.zapLeg ? 0 : zapFeeBpsOverride],
+              0],
           })
         : encodeFunctionData({
             abi: routerAbi, functionName: "swapExactTokensForTokens",

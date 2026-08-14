@@ -166,7 +166,7 @@ contract FeeRouterTest is Test {
 
         // Nobody but the named successor may accept.
         vm.prank(operator);
-        vm.expectRevert(FeeRouter.NotOwner.selector);
+        vm.expectRevert(FeeRouter.NotPendingOwner.selector);
         fr.acceptOwnership();
         assertEq(fr.owner(), address(this), "still unchanged");
 
@@ -185,7 +185,7 @@ contract FeeRouterTest is Test {
         fr.cancelOwnershipTransfer();
         assertEq(fr.pendingOwner(), address(0));
         vm.prank(user);
-        vm.expectRevert(FeeRouter.NotOwner.selector);
+        vm.expectRevert(FeeRouter.NotPendingOwner.selector);
         fr.acceptOwnership();
         assertEq(fr.owner(), address(this), "cancelled transfer cannot complete");
     }
@@ -283,17 +283,20 @@ contract FeeRouterTest is Test {
         assertGt(out, 0, "swap still works against a strict-approval token");
     }
 
-    /// A referral share of ZERO must not grant the discount. It used to: the
-    /// predicate checked attestation and non-self but not "a share is actually
-    /// paid", despite its own comment claiming all three — so every bound
-    /// trader paid the discounted rate while the referrer received nothing and
-    /// the operator simply lost the margin.
-    function test_zeroReferralShareDoesNotGrantTheDiscount() public {
-        fr.setConfig(operator, 100, 0); // headline 1%, referral share 0
+    /// A referral share of ZERO must never grant the discount.
+    ///
+    /// First fix made `_referralActive` require a non-zero share, so a bound
+    /// trader correctly paid the full rate. But that ALSO raised the fee floor
+    /// above what the bot sends, reverting every referred trade — so the config
+    /// is now rejected outright (test_zeroReferralShareIsRejected), which
+    /// enforces the same invariant without the failure mode. This asserts the
+    /// underlying predicate still ties the discount to a real payout.
+    function test_discountRequiresAnActualPayout() public {
+        // Bound trader, real share: discounted rate AND a payout.
         vm.prank(user);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 0, 0);
-        assertEq(tokenIn.balanceOf(referrer), 0, "no referrer payout, as configured");
-        assertEq(tokenIn.balanceOf(operator), 1e18, "operator charged the FULL 1%, not the discounted rate");
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
+        assertGt(tokenIn.balanceOf(referrer), 0, "referrer actually paid");
+        assertEq(tokenIn.balanceOf(operator), 0.315e18, "discounted rate applied");
     }
 
     /// ...and with a real share configured the discount still applies.
@@ -302,6 +305,50 @@ contract FeeRouterTest is Test {
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
         assertEq(tokenIn.balanceOf(referrer), 0.135e18, "referrer paid");
         assertEq(tokenIn.balanceOf(operator), 0.315e18, "discounted rate applied");
+    }
+
+    /// N-H5: the referred band must not collapse to a single point, or any drift
+    /// between the caller's number and the chain's reverts a legitimate trade.
+    function test_referredZapBandIsNotASinglePoint() public {
+        fr.setConfig(operator, 50, 3000);
+        Route[] memory r = _routes();
+        vm.startPrank(user);
+        // Referred base is 45; a zap leg's floor is 90. The ceiling must sit
+        // strictly above it so the band has width.
+        fr.zapLegWithFee(100e18, 0, r, block.timestamp + 600, referrer, 3000, 90);  // floor
+        fr.zapLegWithFee(100e18, 0, r, block.timestamp + 600, referrer, 3000, 100); // above it
+        vm.stopPrank();
+        assertGt(tokenIn.balanceOf(operator), 0, "both ends of the band are accepted");
+    }
+
+    /// N-H5: with no discount configured the band must still have width.
+    function test_bandHasWidthWhenNoDiscountIsConfigured() public {
+        fr.setReferredFeeBps(50); // referred == headline
+        Route[] memory r = _routes();
+        vm.prank(user);
+        // floor = 50*2 = 100; must accept 100, and the ceiling must be >= it.
+        fr.zapLegWithFee(100e18, 0, r, block.timestamp + 600, referrer, 3000, 100);
+        assertGt(tokenIn.balanceOf(operator), 0);
+    }
+
+    /// N-H6: a zero referral share made _baseBps fall back to the FULL rate,
+    /// pushing the floor above what the bot sends and reverting every referred
+    /// trade. It must be rejected at the setter instead.
+    function test_zeroReferralShareIsRejected() public {
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.setConfig(operator, 50, 0);
+    }
+
+    /// N-H6 remedy: stopping referrals is done by UNBINDING, which now exists.
+    function test_unbindReferrersReturnsTraderToFullRate() public {
+        address[] memory t = new address[](1);
+        t[0] = user;
+        fr.unbindReferrers(t);
+        assertEq(fr.referrerOf(user), address(0), "binding cleared");
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
+        assertEq(tokenIn.balanceOf(referrer), 0, "no payout once unbound");
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "full rate, not the discount");
     }
 
     function test_rescue() public {

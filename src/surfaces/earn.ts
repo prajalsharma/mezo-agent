@@ -37,7 +37,7 @@ function pool(poolId: string) {
  * approval target. A spoofed/unexpected address fails the identity check rather
  * than draining the LP. (Audit R2 H7.) Returns undefined when no gauge exists.
  */
-async function gaugeFor(poolAddr: Address): Promise<Address | undefined> {
+async function gaugeFor(poolAddr: Address, owner: Address): Promise<Address | undefined> {
   const voter = registry.contract("Voter");
   const g = (await publicClient().readContract({
     address: voter, abi: voterAbi, functionName: "gauges", args: [poolAddr],
@@ -60,7 +60,7 @@ async function gaugeFor(poolAddr: Address): Promise<Address | undefined> {
   // registry — but it HAS just been proven to be the real gauge for this pool.
   // Record that, so the signer's independent target check accepts it on the
   // strength of the verification rather than on the plan's say-so.
-  attest(g, `gauge for pool ${poolAddr} (stakingToken verified)`);
+  attest(owner, g, `gauge for pool ${poolAddr} (stakingToken verified)`);
   return g;
 }
 
@@ -76,7 +76,7 @@ export async function buildStakeLp(intent: StakeLpIntent, owner: Address): Promi
       reason: "Preview only - the Voter address isn't confirmed on this deployment yet." });
   }
 
-  const gauge = await gaugeFor(p.address);
+  const gauge = await gaugeFor(p.address, owner);
   if (!gauge) {
     throw new ActionUnavailableError(
       `No gauge exists for ${pair} on ${registry.networkName()} yet (Voter.gauges returned zero). ` +
@@ -125,7 +125,7 @@ export async function buildUnstakeLp(intent: UnstakeLpIntent, owner: Address): P
       reason: "Preview only - the Voter address isn't confirmed on this deployment yet." });
   }
 
-  const gauge = await gaugeFor(p.address);
+  const gauge = await gaugeFor(p.address, owner);
   if (!gauge) throw new ActionUnavailableError(`No gauge exists for ${pair} on ${registry.networkName()}.`);
 
   const staked = (await publicClient().readContract({
@@ -223,7 +223,7 @@ export async function buildClaim(intent: ClaimIntent, owner: Address): Promise<A
 
   if (intent.scope === "all" || intent.scope === "gauge") {
     for (const p of registry.pools()) {
-      const gauge = await gaugeFor(p.address);
+      const gauge = await gaugeFor(p.address, owner);
       if (!gauge) continue;
       const earned = (await publicClient().readContract({
         address: gauge, abi: gaugeAbi, functionName: "earned", args: [owner],

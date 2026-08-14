@@ -14,6 +14,11 @@ WORKDIR /app
 # `npm install` re-resolves every semver range at build time, so a compromised or
 # merely broken patch release of any transitive dependency lands in a container
 # that holds encrypted private keys, with nothing recording that it changed.
+#
+# `tsx` is a runtime DEPENDENCY here, not a devDependency: the CMD below runs the
+# TypeScript sources directly through it. It used to be omitted by `--omit=dev`
+# and then re-added with a bare `npm install tsx@^4.19.0`, which re-resolved it
+# against the live registry and defeated the very property this line establishes.
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
@@ -35,8 +40,6 @@ ENV DATA_DIR=/data
 # wrapper process intercepts SIGTERM on redeploy and exits non-zero, which
 # Railway reports as "Deployment crashed". With node as the process, SIGTERM
 # reaches the graceful shutdown handler in src/index.ts → clean exit 0.
-RUN npm install tsx@^4.19.0
-
 # Drop root — but at RUNTIME, not here.
 #
 # node:slim ships an unprivileged `node` user and the image had no USER

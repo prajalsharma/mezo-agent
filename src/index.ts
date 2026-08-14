@@ -4,6 +4,7 @@ import { log, errMsg } from "./core/log.js";
 import { env } from "./config/env.js";
 import { startKeeper, stopKeeper } from "./keeper/scheduler.js";
 import { startAlerts, stopAlerts } from "./keeper/alerts.js";
+import { sweepPending } from "./bot/session.js";
 import { installBotProfile } from "./bot/menu.js";
 import { setBotUsername } from "./bot/handlers/menu.js";
 
@@ -60,6 +61,15 @@ async function main() {
   });
   console.log("🔔 Alerts engine running (opt-in per user).");
 
+  // Expiry of pending previews is lazy — only checked when that user's plan is
+  // read — so an abandoned card kept a whole plan alive for the process
+  // lifetime. Sweep on a slow timer.
+  const pendingSweep = setInterval(() => {
+    const dropped = sweepPending();
+    if (dropped > 0) log.info("session.swept", { dropped });
+  }, 5 * 60 * 1000);
+  pendingSweep.unref?.();
+
   // Graceful shutdown. On every redeploy Railway sends SIGTERM to the OLD
   // instance; if it dies mid-poll it shows as "Deployment crashed". Awaiting
   // bot.stop() and exiting 0 makes the handover a clean STOP instead — and stops
@@ -74,8 +84,9 @@ async function main() {
     // paper — nothing called them — so on every redeploy a keeper tick could
     // start a swap while the process was on its way to process.exit, and be
     // killed between signing and recording it.
-    try { stopKeeper(); } catch { /* best effort */ }
+    try { await stopKeeper(); } catch { /* best effort */ }
     try { stopAlerts(); } catch { /* best effort */ }
+    try { clearInterval(pendingSweep); } catch { /* best effort */ }
     try {
       await bot.stop();
     } catch (err) {

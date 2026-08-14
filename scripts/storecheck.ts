@@ -62,6 +62,13 @@ const dbName = `mezo-agent.${process.env.MEZO_NETWORK ?? "testnet"}.json`;
   store.setUserPaused(9999, true); // write #2 — now a .bak exists
   ok("backup exists before the simulated crash", existsSync(`${path}.bak`));
 
+  // THE BACKUP MUST BE CURRENT, NOT ONE WRITE STALE. It used to be copied from
+  // the previous on-disk state before each write, so a restore returned the
+  // state as of the PREVIOUS flush — the first user to onboard could be
+  // recovered away while the log reported a successful recovery.
+  ok("backup is byte-identical to the live database, not one write behind",
+    readFileSync(`${path}.bak`, "utf8") === readFileSync(path, "utf8"));
+
   // Simulate a crash partway through writeFileSync: a half-written JSON file.
   const good = readFileSync(path, "utf8");
   writeFileSync(path, good.slice(0, Math.floor(good.length / 2)));
@@ -82,6 +89,9 @@ const dbName = `mezo-agent.${process.env.MEZO_NETWORK ?? "testnet"}.json`;
   ok("the damaged file was quarantined, not silently overwritten",
     // the corrupt copy is preserved for forensics
     readdirSync(dir).some((f: string) => f.includes(".corrupt.")));
+  // Both users must come back — the whole point of the backup being current.
+  ok("NO account was lost in recovery",
+    recovered === true && (() => { const s2 = freshStore(dir); return s2.isUserPaused(9999); })());
 }
 
 // ── 3. An UNREADABLE (not corrupt) file must never be destroyed ─────────────

@@ -121,6 +121,6 @@ export async function referralFor(telegramId: number, traderAddress: string): Pr
   // from the local store and confirmed against the on-chain binding above — not
   // something a model or a message can influence. It cannot be in the compiled-in
   // registry, so record it explicitly for the signer's independent target check.
-  attest(rec.address as Address, `referrer payout wallet for telegram:${referrerId}`);
+  attest(traderAddress as Address, rec.address as Address, `referrer payout wallet for telegram:${referrerId}`);
   return { recipient: rec.address as Address, sharePct, referrerTelegramId: referrerId };
 }

@@ -49,6 +49,10 @@ if [ "$(id -u)" = "0" ]; then
   # command turns out not to work (missing PAM config, a locked account, a
   # base-image quirk) the container dies and crash-loops, which is the failure
   # mode this whole file exists to prevent. A probe costs one fork.
+  # HOME must move with the uid. setpriv does not reset the environment, so the
+  # process kept HOME=/root after dropping to `node` — harmless today, but any
+  # dependency that caches under HOME would write somewhere it cannot read back.
+  export HOME="${APP_HOME:-/home/$APP_USER}"
   if command -v setpriv >/dev/null 2>&1 && setpriv --reuid="$APP_USER" --regid="$APP_USER" --init-groups -- true 2>/dev/null; then
     exec setpriv --reuid="$APP_USER" --regid="$APP_USER" --init-groups -- "$@"
   fi

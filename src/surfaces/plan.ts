@@ -4,6 +4,7 @@ import { publicClient } from "../chain/client.js";
 import { simulateCall } from "../core/simulator.js";
 import { signAndSubmit, PolicyViolationError } from "../custody/signer.js";
 import { store, type UserRecord } from "../db/store.js";
+import { refreshAttestations } from "../custody/attest.js";
 
 /**
  * Unified action framework. Every fund-moving surface (borrow, lock, vote, zap,
@@ -185,6 +186,15 @@ export async function executeActionPlan(
   }
 
   for (const original of plan.steps) {
+    // Keep this plan's verified targets alive across its own steps. A long plan
+    // (claim-all can run many steps, each waiting up to 180s for a receipt)
+    // could otherwise outlive the attestation window, and the signer's refusal
+    // is a PolicyViolationError — deterministic, never retried — so the plan
+    // stopped HALF EXECUTED, blaming an address that was verified minutes
+    // earlier. This only extends entries that are still live; it cannot create
+    // one, so an unverified address can never be laundered in.
+    refreshAttestations(user.address as Address, plan.allowedTargets);
+
     // Re-size from live state first, where the step asked for it. This runs
     // BEFORE the simulation, so a step whose sizing has drifted is corrected
     // rather than simulated-then-reverted.

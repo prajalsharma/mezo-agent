@@ -157,7 +157,7 @@ export async function handleSwapConfirm(ctx: Context): Promise<void> {
   // confirms both used to read the plan before either cleared it and execute the
   // swap twice against one confirmation.
   const id = callbackId(ctx);
-  const taken = takePending(telegramId, id);
+  const taken = takePending(telegramId, id, getUser(telegramId)?.address);
   await ctx.answerCallbackQuery().catch(() => {});
   if (!taken.ok || taken.pending.kind !== "swap") {
     await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
@@ -251,7 +251,7 @@ export async function handleSwapCancel(ctx: Context): Promise<void> {
   if (!telegramId) return;
   // Consume by id, so cancelling a STALE card cannot disarm the live plan the
   // user is actually looking at.
-  const taken = takePending(telegramId, callbackId(ctx));
+  const taken = takePending(telegramId, callbackId(ctx), getUser(telegramId)?.address);
   await ctx.answerCallbackQuery().catch(() => {});
   await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
   await ctx.reply(taken.ok ? "Swap cancelled. Nothing was signed." : "That card was already replaced or expired - nothing was signed.");

@@ -224,6 +224,64 @@ to its open-defect header, including that the **call-target allowlist is reused
 as the payee allowlist**, so a stolen session key can transfer tokens into
 another allowlisted token contract and burn them permanently.
 
+## Third round: defects introduced by the remediation
+
+A follow-up review read the ~4,700 lines of remediation itself and found six
+High, eight Medium and seven Low defects that did not exist before it. Two were
+regressions *inside fixes that had already been credited as clean*, which is the
+pattern worth stating plainly: confirming a fix exists is not confirming it
+works. All are closed, and `npm run followupcheck` asserts them — executing the
+behaviour where the defect was behavioural rather than textual.
+
+- **The backup written to prevent data loss was always one write stale.** It was
+  copied from the previous on-disk file *before* each write, so restoring it
+  returned the state as of the previous flush — the first user to onboard could
+  be recovered away while the log reported a successful recovery. It also copied
+  without parsing, so a corrupt main file propagated into the only good copy on
+  the next flush. Both fixed by writing the backup from the same validated
+  in-memory body, after the main file lands.
+- **Spend reservations could leak permanently.** They were taken *above* the
+  `try` and released in a `catch`; `addSpend` flushes to disk, so a failure on
+  the second reservation left the first committed with the throw originating
+  outside the guard. Leaked reservations only age out after 24h, ratcheting a
+  user's own daily budget toward zero. Now taken inside the guard and released
+  in a `finally`.
+- **A bounded DCA could die having executed nothing.** Claiming the slot before
+  the executor was right; decrementing the *occurrence* before it was not, so
+  every failure burned a run. `for 4 times` against an underfunded wallet went
+  inactive after four intervals with zero swaps, and vanished from the user's
+  list. Occurrences are now spent only on success, with a consecutive-failure
+  counter so a permanently broken schedule still stops.
+- **The alert fix removed the rate floor and silenced the first dip.** Clearing
+  the whole record on recovery was right in one direction and wrong in another:
+  it let an oscillating ratio alert every other sweep. And the `droppedBand`
+  inversion made a *first* observation below the threshold silent — a fast crash
+  from 149% to 111% inside the cooldown produced nothing. There is now an
+  explicit minimum re-alert interval that survives recovery, and a first
+  sub-threshold reading always alerts.
+- **Gauge attestations expired mid-plan and were process-global.** A 10-minute
+  TTL is shorter than a `claim all` (many steps, each waiting up to 180s), and
+  the signer's refusal is deterministic — so a plan stopped *half executed*,
+  blaming an address verified minutes earlier. They are keyed per account now,
+  and the executor refreshes a plan's own verified targets before each step.
+- **`buildAdjust`'s repay leg had no minimum-net-debt floor at all** — the M2 fix
+  was applied to `buildRepay` only.
+- **The Dockerfile defeated its own lockfile**: `tsx` was a devDependency, so
+  `npm ci --omit=dev` skipped it and the next line re-resolved it unpinned.
+- **Fee-path defects** (latent — fees default to 0 bps): the override ceiling
+  discarded its parameters, collapsing a referred zap's band to a single point;
+  and a zero referral share passed the setter while reverting every referred
+  trade. The bot no longer sends a fee override at all — a router without
+  `zapLegWithFee` takes the non-atomic path — which removes the off-chain/
+  on-chain drift that made a zero-width band dangerous. Zero shares are
+  rejected, and `unbindReferrers` now exists so a programme can be wound down.
+
+Also: a corrupt schedule row can no longer abandon every other user's tick; the
+account binding is enforced inside `takePending` rather than at each call site;
+expired previews are swept; `Recovery Mode` unreadable now refuses instead of
+assuming normal; and `increaseUnlockTime` rounds to the week boundary the escrow
+actually uses instead of only working for multiples of seven.
+
 ## Known limitations — stated, not hidden
 
 - **Mezo Market is partially implemented.** Browsing is a preview; purchases

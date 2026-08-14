@@ -504,10 +504,16 @@ async function borrowOpenTip(telegramId?: number): Promise<Card> {
     // the debt the protocol actually records (mint + fee + gas compensation).
     const minDebtRecorded = Number(compositeDebt(p.minNetDebt, p, false)) / 1e18;
     const safeBtc = Number(((1.5 * minDebtRecorded) / price).toFixed(4));
-    const affordable = btcHeld > 0 && btcHeld >= safeBtc;
+    // Match the builder's own test, gas headroom included. The card used to
+    // require only `btcHeld >= safeBtc` while buildBorrow refuses unless
+    // `held >= collateral + GAS_HEADROOM`, so at exactly `btcHeld === safeBtc`
+    // the button rendered and then dead-ended on a refusal.
+    const GAS_HEADROOM_BTC = 0.0005;
+    const affordable = btcHeld > 0 && btcHeld >= safeBtc + GAS_HEADROOM_BTC;
     // If they hold more than the minimum needs, size the example to THEIR stack
     // (60% of it, keeping a buffer) instead of a fixed number.
-    const useBtc = affordable ? Number(Math.max(safeBtc, btcHeld * 0.6).toFixed(4)) : safeBtc;
+    // Keep the suggested collateral clear of the gas headroom too.
+    const useBtc = affordable ? Number(Math.min(Math.max(safeBtc, btcHeld * 0.6), btcHeld - GAS_HEADROOM_BTC).toFixed(4)) : safeBtc;
     // Headroom at 150%, not at MCR, so the suggestion is comfortable rather than
     // borderline. maxNetMint already nets out the fee and the gas compensation.
     const headroomAt150 = Number(maxNetMint(parseEther(String(useBtc)), priceWad, p, false)) / 1e18 * (Number(p.mcr) / 1e18) / 1.5;

@@ -17,6 +17,8 @@ import type { LockIntent, ExtendLockIntent } from "../llm/intent.js";
 const VE_BTC_MAX_DAYS = 28;
 const VE_MEZO_MAX_DAYS = 4 * 365;
 const DAY = 24 * 60 * 60;
+/** ve escrows floor every unlock time to a week boundary. */
+const WEEK = BigInt(7 * DAY);
 
 /** Maximum lock horizon, in days, for an escrow's asset. */
 function maxLockDays(asset: "BTC" | "MEZO"): number {
@@ -137,7 +139,25 @@ export async function buildExtendLock(intent: ExtendLockIntent, owner: Address):
     const currentEnd = await lockEnd(ve, tokenId);
     const nowSec = BigInt(Math.floor(Date.now() / 1000));
     const base = currentEnd > nowSec ? currentEnd : nowSec;
-    const target = base + BigInt(intent.addDays * DAY);
+
+    // THE ESCROW MOVES IN WHOLE WEEKS. It computes
+    // `unlockTime = floor((now + duration) / WEEK) * WEEK` and then requires
+    // that to be strictly LATER than the current end. So asking for "+1 day" on
+    // a lock whose end is already week-aligned floors straight back onto the
+    // same boundary and reverts — the previous fix turned one reverting case
+    // into a narrower one while the card promised a new unlock date.
+    //
+    // Round the target UP to the next week boundary, and refuse up front when
+    // the request cannot advance a whole week, saying why.
+    const requested = base + BigInt(intent.addDays * DAY);
+    const target = ((requested + WEEK - 1n) / WEEK) * WEEK;
+    if (target <= ((base + WEEK - 1n) / WEEK) * WEEK && target <= currentEnd) {
+      const days = Math.ceil(Number(WEEK) / DAY);
+      throw new ActionUnavailableError(
+        `ve${asset} unlock times move in whole weeks, so +${intent.addDays} day(s) wouldn't push this lock past ` +
+          `its current unlock. Extend by at least ${days} days (or a multiple of ${days}).`,
+      );
+    }
     const duration = target - nowSec;
 
     // veBTC locks are capped (28 days); asking beyond the cap reverts opaquely.

@@ -110,16 +110,29 @@ check("H6", "secret guard is middleware over every text-bearing update",
   /ctx\.editedMessage\?\.text/.test(bot) && /ctx\.message\?\.caption/.test(bot));
 check("H7", "/export needs a fresh single-use token",
   onboard.includes("armExport") && onboard.includes("takeExport") && !/auto-deletes in 60s/.test(onboard));
+// Asserts the PROPERTY, not one spelling of it: the write is atomic (temp +
+// fsync + rename), a backup exists, and an I/O failure is distinguished from a
+// parse failure so an unreadable-but-intact file is never overwritten. The
+// follow-up round moved the write into writeAtomic(), which is why matching the
+// old literal broke while every guarantee still held.
 check("H8", "store writes atomically with a backup and a guarded load",
-  store.includes("renameSync(this.tmpPath, this.path)") && store.includes("fsyncSync") && store.includes("bakPath"));
+  /writeAtomic\(path: string, body: string\)[\s\S]{0,500}fsyncSync[\s\S]{0,200}renameSync\(tmp, path\)/.test(store)
+    && store.includes("this.writeAtomic(this.path, body)")
+    && store.includes("this.writeAtomic(this.bakPath, body)")
+    && store.includes("store.unreadable"));
 check("H9", "Recovery Mode / CCR is modelled",
   params.includes("recoveryMode") && params.includes("ccr") && borrow.includes("inRecovery"));
 check("H10", "redemption ranking is disclosed and claimCollateral exists",
   borrow.includes("REDEMPTION_NOTE") && borrow.includes("buildClaimCollateral") && intent.includes("ClaimCollateralIntent"));
 check("H11", "slippage is clamped well below 50%",
   /MAX_SLIPPAGE_PCT = 5\b/.test(intent) && intent.includes("max(MAX_SLIPPAGE_PCT)"));
-check("H12", "the trove alert clears troveAt, so it cannot flap",
-  /troveICR: undefined, troveAt: undefined/.test(alerts));
+// The invariant is "it cannot alert unboundedly", NOT the particular way that
+// was first achieved. Clearing troveAt fixed the original 30-minute loop but
+// removed the rate floor entirely; the floor is now explicit and survives a
+// recovery, which is the durable form of the same guarantee.
+check("H12", "the trove alert cannot repeat unboundedly",
+  alerts.includes("MIN_REALERT_MS") && /const rateOk = [\s\S]{0,120}MIN_REALERT_MS/.test(alerts)
+    && /if \(!rateOk\) return;/.test(alerts));
 check("H13", "increaseUnlockTime is sent a duration from now",
   lock.includes("lockEnd(") && /const duration = target - nowSec/.test(lock));
 check("H14", "zap addLiquidity is re-sized from the live balance",
@@ -141,8 +154,14 @@ check("M9", "the on-chain deadline matches the quote TTL",
   /DEADLINE_SECONDS = 5 \* 60/.test(swapB) && /Date\.now\(\) \/ 1000\) \+ 5 \* 60/.test(zap));
 check("M10", "liquidation consequences are stated accurately",
   /liquidator keeps a cut/.test(alerts) && /gas compensation/.test(borrow));
+// The ceiling must derive from the CONFIGURED rate, never the bare constant —
+// otherwise lowering feeBps leaves what a caller may charge unchanged. (The
+// follow-up round restored the parameters so the referred band cannot collapse;
+// both properties are asserted together.)
 check("M11", "the override ceiling tracks the configured rate",
-  feeRouter.includes("MAX_LEG_MULTIPLIER") && /_ceilingBps\(address, uint16\)/.test(feeRouter));
+  feeRouter.includes("MAX_LEG_MULTIPLIER")
+    && /function _ceilingBps\(address referrer, uint16 floorMultiplier\)/.test(feeRouter)
+    && /uint256\(feeBps > base \? feeBps : base\) \* MAX_LEG_MULTIPLIER/.test(feeRouter));
 check("M12", "referral share is bounded and ownership transfer is two-step",
   feeRouter.includes("MAX_REFERRAL_SHARE_BPS") && feeRouter.includes("acceptOwnership"));
 check("M13", "fee-on-transfer inputs are sized from what arrived",

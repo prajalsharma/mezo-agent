@@ -2,6 +2,7 @@ import type { Address, Hex } from "viem";
 import { awaitReceipt, approvalSatisfied, RECEIPT_TIMEOUT_MS } from "../../chain/receipt.js";
 import { publicClient } from "../../chain/client.js";
 import { trySignStep, recordFeeLoss } from "../plan.js";
+import { refreshAttestations } from "../../custody/attest.js";
 import { store, type UserRecord } from "../../db/store.js";
 import { registry } from "../../registry/registry.js";
 import type { PlanStep, SwapPlan } from "./swapBuilder.js";
@@ -53,6 +54,10 @@ export async function executeSwap(
   ];
 
   for (const step of plan.steps) {
+    // Same reason as executeActionPlan: keep this plan's verified targets alive
+    // across its own steps so a long run cannot outlive the window.
+    refreshAttestations(user.address as Address, allowedTargets);
+
     // Simulate-then-sign with retries for fee steps (revenue survives transient
     // RPC flakes; a lost fee is recorded as owed). Cap metadata travels ON the
     // step, so native BTC is capped via btcWeiMoved and tokens via the per-token

@@ -27,6 +27,8 @@ const HOUR_MS = 60 * 60 * 1000;
 /** Below this the keeper cannot pace itself: the tick is 60s and a run can take minutes. */
 const MIN_INTERVAL_HOURS = 1;
 const MAX_INTERVAL_HOURS = 24 * 365;
+/** A schedule that fails this many times in a row is broken, not unlucky. */
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 export class ScheduleError extends Error {}
 
@@ -78,7 +80,15 @@ export function createDcaSchedule(user: UserRecord, intent: DcaCreateIntent, now
   return schedule;
 }
 
-export type RunReport = { id: string; ok: boolean; detail: string };
+export type RunReport = {
+  id: string; ok: boolean; detail: string;
+  /** Occurrences left AFTER accounting for this run. */
+  remaining?: number;
+  /** False when this run ended the schedule. */
+  active?: boolean;
+  /** Set when the schedule stopped, with the reason, so the user is told. */
+  stopped?: string;
+};
 
 /** Executor seam so the keeper is testable without the network. */
 export type SwapExecutor = (user: UserRecord, s: DcaSchedule) => Promise<{ ok: boolean; detail: string }>;
@@ -145,32 +155,48 @@ async function runDueSchedulesInner(now: number, executor: SwapExecutor): Promis
   const reports: RunReport[] = [];
 
   for (const s of due) {
+    try {
+      await runOne(s, now, executor, reports);
+    } catch (e) {
+      // One malformed schedule must not take the whole tick down with it.
+      log.error("keeper.schedule-failed", { id: s.id, error: errMsg(e) });
+      reports.push({ id: s.id, ok: false, detail: "internal error; skipped this run" });
+    }
+  }
+  return reports;
+}
+
+async function runOne(
+  s: DcaSchedule, now: number, executor: SwapExecutor, reports: RunReport[],
+): Promise<void> {
+  {
     // Per-user pause: a user can freeze their own automation without cancelling.
     if (store.isUserPaused(s.telegramId)) {
       reports.push({ id: s.id, ok: false, detail: "paused by user" });
-      continue;
+      return;
     }
 
-    // CLAIM THE SLOT BEFORE RUNNING IT.
+    // CLAIM THE TIME SLOT — AND ONLY THE TIME SLOT — BEFORE RUNNING IT.
     //
     // nextRunAt used to advance only AFTER the executor resolved, so for the
     // whole duration of a slow swap the schedule stayed selectable by
-    // dueSchedules. Claiming first means a concurrent or overlapping selection
-    // sees a future nextRunAt and skips it. The cost of claiming first is that a
-    // crash mid-run skips one interval instead of repeating it — the right way
-    // round for something that spends money without a human present.
+    // dueSchedules and an overlapping tick ran it again. Claiming the slot first
+    // fixes that: a concurrent selection sees a future nextRunAt and skips it.
+    //
+    // The OCCURRENCE COUNT is deliberately not claimed here. Decrementing
+    // `remaining` up front meant every failure burned a run: "dca … for 4 times"
+    // against an underfunded wallet died after four intervals having executed
+    // ZERO swaps, went active:false, and vanished from the user's /dca list with
+    // no way to resume it. Any executor failure did it — a balance shortfall, a
+    // cap rejection, an RPC blip, a receipt timeout. An occurrence is what the
+    // user bought; it is spent only when a swap actually goes out.
     //
     // The cadence is computed from the slot that was DUE, not from the wall
     // clock, so a late tick doesn't permanently drag the schedule later. If the
     // process was down long enough to miss several intervals, we skip forward to
     // the next future slot rather than firing a burst of catch-up trades.
     const nextRunAt = nextSlot(s.nextRunAt, s.everyHours, now);
-    const remaining = s.remaining < 0 ? -1 : s.remaining - 1;
-    store.updateSchedule(s.id, {
-      nextRunAt,
-      remaining,
-      active: remaining === 0 ? false : s.active,
-    });
+    store.updateSchedule(s.id, { nextRunAt });
 
     const user = store.listAccounts(s.telegramId).find((u) => u.address.toLowerCase() === s.accountAddress.toLowerCase());
     let detail = "no matching account";
@@ -185,10 +211,29 @@ async function runDueSchedulesInner(now: number, executor: SwapExecutor): Promis
       }
     }
 
-    reports.push({ id: s.id, ok, detail });
-    log.info("keeper.dca.run", { id: s.id, ok, remaining });
+    // Account for the run only now that we know what happened.
+    let remaining = s.remaining;
+    let stillActive = s.active;
+    let stopped: string | undefined;
+    if (ok) {
+      remaining = s.remaining < 0 ? -1 : s.remaining - 1;
+      if (remaining === 0) { stillActive = false; stopped = "all runs completed"; }
+      store.updateSchedule(s.id, { remaining, active: stillActive, failures: 0 });
+    } else {
+      // A schedule that can NEVER succeed must still stop, or it retries forever
+      // and notifies on every interval. Consecutive failures are the honest
+      // signal for that — unlike an occurrence, they reset the moment one works.
+      const failures = (s.failures ?? 0) + 1;
+      if (failures >= MAX_CONSECUTIVE_FAILURES) {
+        stillActive = false;
+        stopped = `stopped after ${failures} consecutive failures`;
+      }
+      store.updateSchedule(s.id, { failures, active: stillActive });
+    }
+
+    reports.push({ id: s.id, ok, detail, remaining, active: stillActive, stopped });
+    log.info("keeper.dca.run", { id: s.id, ok, remaining, active: stillActive });
   }
-  return reports;
 }
 
 /**
@@ -201,7 +246,11 @@ async function runDueSchedulesInner(now: number, executor: SwapExecutor): Promis
  * Exported for tests.
  */
 export function nextSlot(previousIso: string, everyHours: number, now: number): string {
-  const interval = Math.max(MIN_INTERVAL_HOURS, everyHours) * HOUR_MS;
+  // A non-finite value from a corrupted record propagates through Math.max and
+  // makes `new Date(NaN).toISOString()` throw RangeError — which escaped
+  // runDueSchedules and abandoned every OTHER user's schedule on that tick.
+  const hours = Number.isFinite(everyHours) ? everyHours : MIN_INTERVAL_HOURS;
+  const interval = Math.max(MIN_INTERVAL_HOURS, hours) * HOUR_MS;
   const previous = Date.parse(previousIso);
   let next = Number.isFinite(previous) ? previous + interval : now + interval;
   if (next <= now) {
@@ -214,6 +263,8 @@ export function nextSlot(previousIso: string, everyHours: number, now: number): 
 }
 
 let timer: ReturnType<typeof setInterval> | undefined;
+/** The tick currently running, so shutdown can wait for it. */
+let inFlight: Promise<unknown> | undefined;
 
 /** Start the keeper loop (called at startup when KEEPER_ENABLED=true). */
 export type KeeperNotify = (telegramId: number, text: string) => Promise<void>;
@@ -221,7 +272,7 @@ export type KeeperNotify = (telegramId: number, text: string) => Promise<void>;
 export function startKeeper(intervalMs = 60_000, notify?: KeeperNotify): void {
   if (timer) return;
   timer = setInterval(() => {
-    void runDueSchedules()
+    const tick = runDueSchedules()
       .then(async (reports) => {
         // TELL THE USER. A scheduled trade that executes in silence is
         // indistinguishable from one that never ran - the reports used to be
@@ -232,19 +283,50 @@ export function startKeeper(intervalMs = 60_000, notify?: KeeperNotify): void {
           const s = store.scheduleById(r.id);
           if (!s) continue;
           const what = `${s.amount} ${s.fromToken} → ${s.toToken}`;
+          // Say what is TRUE of the schedule after this run. The failure message
+          // used to promise "it will try again at …" unconditionally, so a run
+          // that ended the schedule told the user it would retry — and, because
+          // the occurrence had already been consumed, "0 run(s) left" alongside
+          // it. Report the stop, and only promise a retry when one is coming.
           const left = s.remaining < 0 ? "runs until you cancel" : `${s.remaining} run(s) left`;
-          const text = r.ok
-            ? `🔁 DCA executed: ${what}\n${r.detail.startsWith("0x") ? `tx ${r.detail}\n` : ""}Next: ${new Date(s.nextRunAt).toUTCString()} (${left}).\nSay "cancel dca ${r.id}" to stop.`
-            : `⚠️ DCA skipped: ${what}\nReason: ${r.detail}\nIt will try again at ${new Date(s.nextRunAt).toUTCString()}. Say "cancel dca ${r.id}" to stop.`;
+          let text: string;
+          if (r.ok) {
+            text = `🔁 DCA executed: ${what}\n${r.detail.startsWith("0x") ? `tx ${r.detail}\n` : ""}` +
+              (r.active === false
+                ? `That was the last scheduled run - this DCA is now complete.`
+                : `Next: ${new Date(s.nextRunAt).toUTCString()} (${left}).\nSay "cancel dca ${r.id}" to stop.`);
+          } else if (r.active === false) {
+            text = `🛑 DCA stopped: ${what}\nReason: ${r.detail}\n` +
+              `${r.stopped ?? "the schedule was ended"}. No further runs will happen - ` +
+              `create a new schedule once the cause is fixed.`;
+          } else {
+            text = `⚠️ DCA skipped: ${what}\nReason: ${r.detail}\n` +
+              `This did NOT use up one of your scheduled runs. It will try again at ` +
+              `${new Date(s.nextRunAt).toUTCString()}. Say "cancel dca ${r.id}" to stop.`;
+          }
           await notify(s.telegramId, text).catch((e) => log.warn("keeper.notify-failed", { error: errMsg(e) }));
         }
       })
-      .catch((e) => log.warn("keeper.tick-failed", { error: String(e) }));
+      .catch((e) => log.warn("keeper.tick-failed", { error: String(e) }))
+      .finally(() => { if (inFlight === tick) inFlight = undefined; });
+    inFlight = tick;
   }, intervalMs);
   log.info("keeper.started", { intervalMs });
 }
 
-export function stopKeeper(): void {
+/**
+ * Stop the loop AND wait for a tick that is already running.
+ *
+ * Clearing the interval alone left an in-flight run to be killed by the
+ * `process.exit(0)` that follows — and since the slot is claimed before the
+ * executor, that run is skipped rather than retried. Awaiting it means a
+ * redeploy either completes the swap or has not started one.
+ */
+export async function stopKeeper(): Promise<void> {
   if (timer) clearInterval(timer);
   timer = undefined;
+  if (inFlight) {
+    log.info("keeper.awaiting-inflight-tick");
+    await inFlight.catch(() => {});
+  }
 }

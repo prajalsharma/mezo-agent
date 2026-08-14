@@ -71,11 +71,12 @@ function btcWeiMoved(plan: SignablePlan): bigint {
  * plan claims? Registry-known, the configured fee recipient, or an address a
  * builder verified on-chain this session (see custody/attest.ts).
  */
-function isVettedTarget(to: Address): boolean {
+function isVettedTarget(owner: Address, to: Address): boolean {
   const a = to.toLowerCase();
   if (registry.knownAddresses().has(a)) return true;
   if (env.fees.recipient && a === env.fees.recipient.toLowerCase()) return true;
-  return isAttested(to);
+  // Per-user: one user's build must not widen anyone else's target set.
+  return isAttested(owner, to);
 }
 
 /**
@@ -115,7 +116,7 @@ function assertPolicy(user: UserRecord, plan: SignablePlan): void {
   // whose stakingToken matches its pool, a reward contract read from the Voter).
   // A builder can still be wrong about which known contract to call; it can no
   // longer invent a destination.
-  if (!isVettedTarget(plan.to)) {
+  if (!isVettedTarget(user.address, plan.to)) {
     throw new PolicyViolationError(
       `Target ${plan.to} is not a known Mezo contract for this deployment; refusing to sign.`,
     );
@@ -202,14 +203,41 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
   // and this reservation run synchronously (no await between them), so two rapid
   // actions can't both pass the check against a stale total — closing the TOCTOU.
   // Uses btcWeiMoved (not msg.value) so precompile BTC spends are also ledgered.
-  const at = new Date().toISOString();
-  const reservation = store.addSpend(user.telegramId, btcWeiSpent(plan), at);
-  // Same reserve-before-submit discipline for the token window.
-  const tok = tokenSpent(plan);
-  const tokenReservation = tok ? store.addSpend(user.telegramId, tok.amount, at, tok.symbol) : undefined;
-
-  const session = usableSession(user);
+  // BOTH reservations are taken INSIDE the guarded region and released in a
+  // `finally`. They used to sit above the `try`, and `store.addSpend` flushes to
+  // disk — so if the TOKEN reservation's write threw, the BTC reservation was
+  // already committed, the throw originated outside the `try`, the `catch` never
+  // ran, and that reservation was permanent. Leaked reservations only age out
+  // after 24h, so repeats ratchet the user's own daily budget toward zero and
+  // lock them out of their funds over spend that never happened.
+  let reservation: string | undefined;
+  let tokenReservation: string | undefined;
+  let committed = false;
   try {
+    const at = new Date().toISOString();
+    reservation = store.addSpend(user.telegramId, btcWeiSpent(plan), at);
+    // Same reserve-before-submit discipline for the token window.
+    const tok = tokenSpent(plan);
+    if (tok) tokenReservation = store.addSpend(user.telegramId, tok.amount, at, tok.symbol);
+
+    const session = usableSession(user);
+    const hash = await submitWithin(user, plan, session);
+    committed = true;
+    return hash;
+  } finally {
+    // Release unless the submission actually went out. A `finally` (not a
+    // `catch`) so an early return or a throw from anywhere in the block —
+    // including the reservation writes themselves — cannot leak.
+    if (!committed) {
+      if (reservation) store.releaseSpend(reservation);
+      if (tokenReservation) store.releaseSpend(tokenReservation);
+    }
+  }
+}
+
+/** The submission itself, split out so the reservation guard above stays flat. */
+async function submitWithin(user: UserRecord, plan: SignablePlan, session: SessionKey | undefined): Promise<Hex> {
+  {
     if (!session) return await submitDirect(user, plan);
 
     // Session path: the delegate enforces an ON-CHAIN allowlist frozen at
@@ -245,11 +273,6 @@ export async function signAndSubmit(user: UserRecord, plan: SignablePlan): Promi
       }
     }
     return await submitViaSession(user, session, plan);
-  } catch (err) {
-    // Submission failed — release the reservations so they don't count against the caps.
-    store.releaseSpend(reservation);
-    if (tokenReservation) store.releaseSpend(tokenReservation);
-    throw err;
   }
 }
 
