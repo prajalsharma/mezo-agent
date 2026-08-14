@@ -267,7 +267,7 @@ export async function buildSwap(params: {
       describe:
         `Swap ${formatUnits(amountInNet, tokenIn.decimals)} ${tokenIn.symbol} → ~${formatUnits(expectedOut, tokenOut.decimals)} ${tokenOut.symbol} ` +
         `(fee ${fee.bps / 100}% collected in the same tx)`,
-      erc20: { symbol: tokenIn.symbol, amount: amountIn },
+      erc20: { symbol: tokenIn.symbol, amount: amountIn, kind: "spend" },
       // WAIT FOR THE RECEIPT. Without this the executor takes its
       // fire-and-forget branch, records the step "ok" on SUBMISSION, and the
       // handler renders "Swap complete" for a transaction that may revert

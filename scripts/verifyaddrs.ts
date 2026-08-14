@@ -141,8 +141,12 @@ async function main() {
 
   console.log(`\n  contracts verified: ${ok}/${ok + bad}   cross-refs matched: ${xok}/${checks.length}`);
   if (resolved["BorrowerOperations.musd"]) console.log(`  MUSD token per BorrowerOperations: ${resolved["BorrowerOperations.musd"]}`);
-  if (resolved["PriceFeed.lastGoodPrice"]) {
-    const p = resolved["PriceFeed.lastGoodPrice"] as bigint;
+  // Keyed on fetchPrice, matching the probe. This still said
+  // "PriceFeed.lastGoodPrice" after the probe was corrected, so the key could
+  // never be populated and the line silently never printed — the same phantom
+  // selector, surviving one layer up.
+  if (resolved["PriceFeed.fetchPrice"]) {
+    const p = resolved["PriceFeed.fetchPrice"] as bigint;
     console.log(`  BTC price (PriceFeed, 18dp): $${(Number(p) / 1e18).toFixed(2)}`);
   }
 }

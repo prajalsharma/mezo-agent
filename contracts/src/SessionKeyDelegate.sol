@@ -98,8 +98,12 @@ pragma solidity 0.8.24;
  *     the target allowlist gates who is CALLED and never who gets PAID. The
  *     default is now DENY, with an explicit per-target opt-in that is ignored on
  *     any target carrying token caps.
- *   - swapWithFee is now decoded: its feeBpsOverride must be 0, so a stolen key
- *     cannot burn up to MAX_OVERRIDE_BPS of the account's principal per swap.
+ *   - swapWithFee is now decoded and its feeBpsOverride must be 0. That closes
+ *     the RATE-PARAMETER half only. It does NOT bound the burn: see open item 7
+ *     — the sibling selector reaches the same MAX_OVERRIDE_BPS with the very
+ *     value this check demands. This entry previously claimed the full bound,
+ *     which is exactly the kind of stale all-clear that tells a reviewer not to
+ *     look here.
  *
  * The correct fix is balance-delta accounting — snapshot the account's balance
  * of each capped token around `_call` and charge the realized decrease — which
