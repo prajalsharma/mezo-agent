@@ -122,16 +122,29 @@ export async function handleRevoke(ctx: Context): Promise<void> {
   }
 
   await ctx.reply("⏳ Revoking the session key…");
-  const { onChain, txHash } = await revokeSession(user);
+  const { onChain, txHash, orphans } = await revokeSession(user);
+
+  if (onChain && orphans === 0) {
+    await ctx.reply(
+      `🔒 ${b("Session key revoked.")}\n\nIt can no longer sign anything, on-chain or through this bot.\n` +
+        (txHash ? `${code(txHash)}\n\n` : "\n") +
+        `Your account still works normally - actions are signed directly again, within your /limits.`,
+      { parse_mode: "HTML" },
+    );
+    return;
+  }
+
+  // Be explicit that the key is still live on-chain. The delegate can only
+  // revoke a key by name and registering a new one does NOT invalidate the old
+  // one, so "disabled in this bot" is a materially weaker statement than
+  // "revoked" and must not be worded as though it were the same thing.
   await ctx.reply(
-    onChain
-      ? `🔒 ${b("Session key revoked.")}\n\nIt can no longer sign anything, on-chain or through this bot.\n` +
-          (txHash ? `${code(txHash)}\n\n` : "\n") +
-          `Your account still works normally - actions are signed directly again, within your /limits.`
-      : `🔒 ${b("Session key disabled in this bot.")}\n\n` +
-          `I could not land the on-chain revocation just now, so the key is still registered on the delegate ` +
-          `until it expires - but this bot will not sign through it again. ` +
-          `Run /revoke once more in a few minutes to clear it on-chain too.`,
+    `⚠️ ${b("Partly revoked.")}\n\n` +
+      `This bot will not sign through the session key again - that took effect immediately.\n\n` +
+      `But I could not land the on-chain revocation, so ${b("the key is still valid on the delegate")} ` +
+      `until it expires. I've kept its address and will retry automatically the next time you run /revoke.\n\n` +
+      `${b("Run /revoke again in a few minutes")} until it reports a clean revocation.` +
+      (orphans > 1 ? `\n\n(${orphans} keys are pending on-chain revocation.)` : ""),
     { parse_mode: "HTML" },
   );
 }

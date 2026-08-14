@@ -206,14 +206,16 @@ contract FeeRouterTest is Test {
         fr.setConfig(operator, 20, 3000); // headline 0.2%
         Route[] memory r = _routes();
         vm.startPrank(user);
-        // 200 bps was the old ceiling regardless of feeBps. Now the plain-swap
-        // ceiling follows the configured rate (20), and the zap ceiling is 2x it.
+        // 200 bps was the old ceiling regardless of feeBps. Now the ceiling is
+        // 2x the CONFIGURED rate (40), on either entrypoint.
         vm.expectRevert(FeeRouter.FeeTooHigh.selector);
         fr.swapWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 200);
         vm.expectRevert(FeeRouter.FeeTooHigh.selector);
         fr.zapLegWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 200);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 41);
         uint256 out = fr.zapLegWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 40);
-        assertGt(out, 0, "2x the configured rate is still allowed on the zap leg");
+        assertGt(out, 0, "2x the configured rate is still allowed");
         vm.stopPrank();
     }
 
@@ -281,6 +283,27 @@ contract FeeRouterTest is Test {
         assertGt(out, 0, "swap still works against a strict-approval token");
     }
 
+    /// A referral share of ZERO must not grant the discount. It used to: the
+    /// predicate checked attestation and non-self but not "a share is actually
+    /// paid", despite its own comment claiming all three — so every bound
+    /// trader paid the discounted rate while the referrer received nothing and
+    /// the operator simply lost the margin.
+    function test_zeroReferralShareDoesNotGrantTheDiscount() public {
+        fr.setConfig(operator, 100, 0); // headline 1%, referral share 0
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 0, 0);
+        assertEq(tokenIn.balanceOf(referrer), 0, "no referrer payout, as configured");
+        assertEq(tokenIn.balanceOf(operator), 1e18, "operator charged the FULL 1%, not the discounted rate");
+    }
+
+    /// ...and with a real share configured the discount still applies.
+    function test_nonZeroReferralShareStillDiscounts() public {
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, referrer, 3000, 0);
+        assertEq(tokenIn.balanceOf(referrer), 0.135e18, "referrer paid");
+        assertEq(tokenIn.balanceOf(operator), 0.315e18, "discounted rate applied");
+    }
+
     function test_rescue() public {
         tokenIn.mint(address(fr), 5e18); // someone fat-fingers tokens in
         fr.rescue(address(tokenIn), operator, 5e18);
@@ -294,21 +317,37 @@ contract FeeRouterTest is Test {
     }
 
     /// Zap path: 2× bps on the swapped half == configured bps on the gross.
-    /// A PLAIN swap may not be charged above the configured rate. The ceiling
+    /// A swap may not be charged more than 2x the CONFIGURED rate — the ceiling
     /// used to be the bare MAX_OVERRIDE_BPS constant regardless of feeBps, so
-    /// with the deployed 0.5% rate a caller could still charge 2% — four times
-    /// what the owner configured and what the bot advertises.
-    function test_plainSwapCannotExceedConfiguredRate() public {
+    /// with the deployed 0.5% rate a caller could charge 2%, four times what the
+    /// owner configured.
+    ///
+    /// 2x (not 1x) is the right bound even on the plain entrypoint: when the
+    /// DEPLOYED router lacks zapLegWithFee the zap surface legitimately sends a
+    /// doubled override through swapWithFee. Capping at 1x there made that call
+    /// revert FeeTooHigh after both approvals had been mined.
+    function test_swapCannotExceedTwiceTheConfiguredRate() public {
         assertEq(fr.feeBps(), 50, "suite deploys at 0.5%");
         vm.startPrank(user);
+        // 200 bps = 4x the configured 50. Rejected.
         vm.expectRevert(FeeRouter.FeeTooHigh.selector);
         fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 200);
         vm.expectRevert(FeeRouter.FeeTooHigh.selector);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 51);
-        // Exactly the configured rate is fine.
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 50);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 101);
+        // The legacy zap fallback's doubled rate is accepted.
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 100);
         vm.stopPrank();
-        assertEq(tokenIn.balanceOf(operator), 0.5e18, "charged the configured 0.5%, not 2%");
+        assertEq(tokenIn.balanceOf(operator), 1e18, "charged 2x the configured rate, not 4x");
+    }
+
+    /// THE REGRESSION GUARD for the legacy zap path: exactly the calldata
+    /// src/surfaces/zap.ts emits when feeRouterCaps() reports the deployed
+    /// router has no zapLegWithFee. This must never revert.
+    function test_legacyZapFallbackCalldataIsAccepted() public {
+        uint16 sentByZapTs = uint16(fr.feeBps() * 2); // zap.ts: min(effBps*2, 200)
+        vm.prank(user);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, sentByZapTs);
+        assertEq(tokenIn.balanceOf(operator), 1e18, "legacy fallback collects the full zap fee");
     }
 
     /// The doubled rate a zap leg legitimately needs is available on the

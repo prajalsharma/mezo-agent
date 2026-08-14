@@ -64,9 +64,34 @@ pragma solidity 0.8.24;
  *      under attack refills the attacker's budget. registerSession does the same
  *      to BOTH the token rings and the native ring, so re-registering a key also
  *      refills it - the balance-delta rewrite must fix all three call sites.
- *   5. revokeSession/removeTarget have no caller in the bot, so a leaked key
- *      stays live until it expires (SESSION_TTL_DAYS). enableSmartAccount also
- *      mints a fresh key without revoking the previous one.
+ *   5. A key can only be revoked BY NAME. There is no enumeration, no session
+ *      epoch and no revokeAll, and registerSession installs the new key without
+ *      touching the old one - so a replacement does NOT invalidate its
+ *      predecessor and both remain able to sign. Whoever holds the only copy of
+ *      an un-revoked key's address is the only party who can ever revoke it.
+ *      (The bot now calls revokeSession from /revoke, retains the address when
+ *      the call fails so it can retry, and refuses to mint a replacement while
+ *      an un-revoked predecessor is live - but that is the CLIENT working around
+ *      a contract that cannot express "revoke everything".)
+ *   6. THE CALL-TARGET ALLOWLIST IS REUSED AS THE PAYEE ALLOWLIST.
+ *      `_enforceTokenPolicy` accepts a decoded transfer/approve counterparty if
+ *      `_allowed[key][counterparty]` — the set of addresses the key may CALL.
+ *      Every registry token is in that set (each needs its own approve/transfer
+ *      policy), and so are the Router and the FeeRouter. So a stolen key may
+ *      `transfer(MUSD, <the mUSDC token contract>, cap)` and permanently burn
+ *      the funds, or `transfer(MUSD, FeeRouter, cap)` where only the FeeRouter
+ *      owner can retrieve them. It stays within the per-tx/daily caps, so it is
+ *      not a cap escape — it is a destination the caps were never meant to
+ *      permit. The one excluded sink, `counterparty == token`, treats a single
+ *      instance of a category. Fix: a payee set distinct from the target set.
+ *   7. The FeeOverrideForbidden check on swapWithFee guards the fee-rate
+ *      PARAMETER, while the effective rate is chosen by the SELECTOR. Both
+ *      selectors are allowlisted on the same target, and zapLegWithFee's own
+ *      default is 2x the base rate - which at MAX_FEE_BPS equals exactly the
+ *      MAX_OVERRIDE_BPS the check exists to prevent. So a stolen key reaches the
+ *      same 2%-of-principal burn by passing feeBpsOverride = 0 through the other
+ *      door, unmetered, because the FeeRouter target carries no token caps.
+ *      The balance-delta rewrite subsumes this: charge what actually left.
  *
  * CLOSED since that audit (kept here so the list stays honest about what moved):
  *   - Undecodable selectors used to hit `else { return; }`, a free pass, because

@@ -14,7 +14,7 @@ import { publicClient } from "../chain/client.js";
 import { getDelegation } from "../chain/eip7702.js";
 import { registry } from "../registry/registry.js";
 import { sessionKeyDelegateAbi } from "../abis/delegate.js";
-import { store, type UserRecord } from "../db/store.js";
+import { store, type UserRecord, type OrphanedSession } from "../db/store.js";
 import { limitsOf } from "./policy.js";
 import { LocalKeyStore } from "./localKeystore.js";
 import { log, errMsg } from "../core/log.js";
@@ -221,6 +221,24 @@ export async function ensureSessionTargets(user: UserRecord): Promise<number> {
   return missing.length;
 }
 
+/** Ask the delegate to revoke one key. Root-signed; the delegate's revoke is onlySelf. */
+async function revokeOnChain(user: UserRecord, key: Address): Promise<Hex | undefined> {
+  const chain = chainFor(env.network);
+  let txHash: Hex | undefined;
+  await keystore().use(user.sealedKey, async (rootKey: Hex) => {
+    const rootAccount = privateKeyToAccount(rootKey);
+    const wallet = createWalletClient({ account: rootAccount, chain, transport: http(chain.rpcUrls.default.http[0]) });
+    const data = encodeFunctionData({
+      abi: sessionKeyDelegateAbi,
+      functionName: "revokeSession",
+      args: [key],
+    });
+    txHash = await wallet.sendTransaction({ to: user.address, data, gas: 200_000n } as never);
+    await publicClient().waitForTransactionReceipt({ hash: txHash, timeout: 90_000, retryCount: 6 });
+  });
+  return txHash;
+}
+
 /**
  * Revoke the account's session key, on-chain and locally.
  *
@@ -230,41 +248,61 @@ export async function ensureSessionTargets(user: UserRecord): Promise<number> {
  * not a revocation primitive.
  *
  * Signed by the ROOT key, because the delegate's revoke is `onlySelf` and the
- * session key must not be able to manage its own scope. Local state is cleared
- * regardless of whether the on-chain call lands: a session the bot refuses to
- * use is strictly safer than one it keeps using because a transaction failed.
+ * session key must not be able to manage its own scope.
+ *
+ * WHEN THE ON-CHAIN CALL FAILS, THE ADDRESS MUST SURVIVE. The delegate can only
+ * revoke a key by NAME — there is no enumeration and no revoke-all — and
+ * registering a replacement does not invalidate its predecessor. So dropping
+ * `user.session` on a failed revocation (which is what this function used to do,
+ * while its own comment talked about retrying) destroyed the single record of
+ * the address and left the key live and unreachable for the rest of its 30-day
+ * TTL. Orphans are recorded instead, and retried on the next attempt.
  */
-export async function revokeSession(user: UserRecord): Promise<{ onChain: boolean; txHash?: Hex }> {
+export async function revokeSession(user: UserRecord): Promise<{ onChain: boolean; txHash?: Hex; orphans: number }> {
   const session = user.session?.address as Address | undefined;
-  if (!session) return { onChain: false };
+
+  // Retry anything a previous attempt could not land, before doing anything
+  // else — those keys are the ones that have been live the longest.
+  const stillOrphaned: OrphanedSession[] = [];
+  for (const orphan of user.orphanedSessions ?? []) {
+    try {
+      await revokeOnChain(user, orphan.address as Address);
+      log.warn("delegation.orphan-revoked", { account: user.address, key: orphan.address });
+    } catch (e) {
+      log.warn("delegation.orphan-revoke-failed", { key: orphan.address, error: errMsg(e) });
+      stillOrphaned.push(orphan);
+    }
+  }
+
+  if (!session) {
+    user.orphanedSessions = stillOrphaned.length ? stillOrphaned : undefined;
+    store.saveUser(user);
+    return { onChain: false, orphans: stillOrphaned.length };
+  }
 
   let onChain = false;
   let txHash: Hex | undefined;
   try {
-    const chain = chainFor(env.network);
-    await keystore().use(user.sealedKey, async (rootKey: Hex) => {
-      const rootAccount = privateKeyToAccount(rootKey);
-      const wallet = createWalletClient({ account: rootAccount, chain, transport: http(chain.rpcUrls.default.http[0]) });
-      const data = encodeFunctionData({
-        abi: sessionKeyDelegateAbi,
-        functionName: "revokeSession",
-        args: [session],
-      });
-      txHash = await wallet.sendTransaction({ to: user.address, data, gas: 200_000n } as never);
-      await publicClient().waitForTransactionReceipt({ hash: txHash, timeout: 90_000, retryCount: 6 });
-      onChain = true;
-    });
+    txHash = await revokeOnChain(user, session);
+    onChain = true;
   } catch (e) {
     log.warn("delegation.revoke-onchain-failed", { error: errMsg(e) });
+    // KEEP THE ADDRESS. It is the only handle that can ever revoke this key.
+    stillOrphaned.push({
+      address: session,
+      expiresAt: user.session!.expiresAt,
+      orphanedAt: new Date().toISOString(),
+    });
   }
 
-  // Drop it locally either way. usableSession() in the signer reads this, so
-  // clearing it immediately stops the bot from signing through the session even
-  // if the on-chain revocation has to be retried.
+  // Drop the ACTIVE session either way: usableSession() in the signer reads it,
+  // so clearing it immediately stops the bot from signing through the key even
+  // when the on-chain revocation still has to be retried.
   delete user.session;
+  user.orphanedSessions = stillOrphaned.length ? stillOrphaned : undefined;
   store.saveUser(user);
-  log.warn("delegation.session-revoked", { account: user.address, onChain });
-  return { onChain, txHash };
+  log.warn("delegation.session-revoked", { account: user.address, onChain, orphans: stillOrphaned.length });
+  return { onChain, txHash, orphans: stillOrphaned.length };
 }
 
 export async function isSmartAccount(user: UserRecord): Promise<boolean> {
@@ -291,6 +329,25 @@ export async function enableSmartAccount(user: UserRecord): Promise<UserRecord> 
   const existing = await getDelegation(user.address, delegate);
   if (existing.delegated && existing.matchesExpected && user.session && user.delegation) {
     return user;
+  }
+
+  // REFUSE while a previous key is still live on-chain.
+  //
+  // `registerSession` installs the NEW key and touches nothing belonging to the
+  // old one — there is no epoch, no enumeration, no revoke-all — so minting a
+  // replacement over an un-revoked predecessor leaves BOTH keys able to sign,
+  // which is the opposite of what a user re-upgrading after a suspected
+  // compromise expects. Make them clear the old one first.
+  const liveOrphans = (user.orphanedSessions ?? []).filter(
+    (o) => o.expiresAt > Math.floor(Date.now() / 1000),
+  );
+  if (liveOrphans.length > 0) {
+    throw new DelegationError(
+      `A previous session key for this account is still registered on-chain (${liveOrphans[0]!.address}) ` +
+        `because its revocation could not be landed. Registering a new key would NOT invalidate it - the ` +
+        `delegate has no revoke-all - so both keys would be able to sign. Run /revoke until it reports a ` +
+        `clean revocation, then upgrade again.`,
+    );
   }
 
   // 1. Generate + seal the scoped session key.

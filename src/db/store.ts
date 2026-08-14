@@ -28,6 +28,22 @@ export type SessionKey = {
   expiresAt: number;
 };
 
+/**
+ * A session key whose ON-CHAIN revocation could not be landed.
+ *
+ * The delegate revokes only by NAME — no enumeration, no revoke-all — and
+ * registering a replacement key does not invalidate its predecessor. So the
+ * address of a key we failed to revoke is the only handle that can ever revoke
+ * it, and losing it leaves the key live for the rest of its TTL with no way to
+ * reach it. These are retried on the next /revoke.
+ */
+export type OrphanedSession = {
+  address: Address;
+  /** unix seconds — after this the key is inert even unrevoked. */
+  expiresAt: number;
+  orphanedAt: string;
+};
+
 /** On-chain delegation state once the account has been upgraded via a type-0x04 tx. */
 export type Delegation = {
   /** The SessionKeyDelegate address the root EOA points at. */
@@ -52,6 +68,8 @@ export type UserRecord = {
   createdAt: string;
   /** Telegram id of the user who referred this one (deep-link attribution). */
   referredBy?: number;
+  /** Session keys whose on-chain revocation failed and must be retried. */
+  orphanedSessions?: OrphanedSession[];
 };
 
 export type TxRecord = {

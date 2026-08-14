@@ -32,6 +32,9 @@ import { getUser } from "../src/wallet/walletService.js";
 const ownerAbi = [
   { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "feeTokenCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  // The LATCH is what _swap branches on; feeTokenCount is never read on-chain.
+  // Older deployments predate it, hence the catch at every call site.
+  { type: "function", name: "feeTokenGateEnabled", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
 ] as const;
 
 const address = (process.env.FEE_ROUTER_ADDRESS ??
@@ -72,14 +75,43 @@ for (const [referrer, traders] of byReferrer) {
   if (missing.length) pending.set(referrer, missing);
 }
 
-const feeTokens = registry.allTokens().map((t) => t.address as Address);
+// ROUTING addresses, not `.address`.
+//
+// Two bugs in one map(). The fee is charged on `routes[0].from`, and swaps set
+// that to `registry.routingAddress(tokenIn)` — for BTC that is the precompile
+// 0x7b7C…0000, NOT its `.address`, which is the zero sentinel. So:
+//   1. `t.address` put address(0) in the batch, and setFeeTokens reverts the
+//      WHOLE batch on a zero entry — meaning this transaction could never land
+//      and `feeTokenGateEnabled` has never been true in production. The one
+//      control that stops the fee being denominated in an attacker-minted dust
+//      token was silently off, and the script printed a warning saying so while
+//      sending a transaction that could not fix it.
+//   2. Even with the revert gone, allowlisting `.address` would leave the BTC
+//      precompile off the list, and then every BTC-input swap would revert
+//      FeeTokenNotAllowed — arming the gate would have broken the main asset.
+const feeTokens = registry.allTokens().map((t) => registry.routingAddress(t));
 
 console.log(`FeeRouter ${address} on ${env.network}`);
 console.log(`owner            : ${owner}`);
 console.log(`referral pairs   : ${[...byReferrer.values()].flat().length} known, ${[...pending.values()].flat().length} to bind`);
 if (unresolved) console.log(`  (${unresolved} skipped: referrer or trader has no wallet yet)`);
 console.log(`fee tokens       : ${feeTokenCount} on-chain, ${feeTokens.length} in the registry`);
-if (feeTokenCount === 0n) console.log("⚠️  fee-token allowlist is EMPTY: the fee can currently be paid in ANY token.");
+// Report the LATCH, not the counter. feeTokenGateEnabled is what _swap actually
+// branches on; feeTokenCount is never read on-chain. They disagree after the
+// last token is removed (count 0, latch still true = everything reverts), and
+// the old line reported that state as "the fee can be paid in ANY token" — the
+// exact inverse of the truth.
+const gateArmed = (await c.readContract({
+  address, abi: ownerAbi, functionName: "feeTokenGateEnabled",
+}).catch(() => false)) as boolean;
+console.log(`fee-token gate   : ${gateArmed ? "ARMED" : "OFF"} (${feeTokenCount} token(s) allowed)`);
+if (!gateArmed) {
+  console.log("⚠️  fee-token allowlist is NOT armed: the fee can currently be paid in ANY token,");
+  console.log("    including one an attacker mints. Run with --apply to arm it.");
+} else if (feeTokenCount === 0n) {
+  console.log("🛑 gate ARMED but ZERO tokens allowed: every swap through the FeeRouter reverts.");
+  console.log("   Re-add the routing addresses with --apply.");
+}
 
 if (!process.argv.includes("--apply")) {
   console.log("\nDry run - re-run with --apply to send the transactions.");
@@ -95,19 +127,38 @@ if (account.address.toLowerCase() !== owner.toLowerCase()) {
 const chain = chainFor(env.network);
 const wallet = createWalletClient({ account, chain, transport: http(chain.rpcUrls.default.http[0]) });
 
-if (feeTokenCount === 0n && feeTokens.length) {
+/**
+ * Send and CONFIRM. Every write here passed an explicit `gas`, which makes viem
+ * skip eth_estimateGas — so a call that reverts is still submitted — and the
+ * receipt was awaited but its `status` discarded. A reverting setFeeTokens
+ * therefore printed a tx hash and then "✅ synced", and the operator had no
+ * signal at all that the fee-token gate was still wide open. Anything that
+ * reverts must now stop the script.
+ */
+async function send(label: string, functionName: "setFeeTokens" | "bindReferrers", args: readonly unknown[]) {
   const hash = await wallet.writeContract({
-    address, abi: feeRouterAbi, functionName: "setFeeTokens", args: [feeTokens, true], gas: 500_000n,
+    address, abi: feeRouterAbi, functionName, args: args as never, gas: 500_000n,
   });
-  console.log("setFeeTokens tx:", hash);
-  await c.waitForTransactionReceipt({ hash, timeout: 120_000, retryCount: 8 });
+  console.log(`${label} tx:`, hash);
+  const receipt = await c.waitForTransactionReceipt({ hash, timeout: 120_000, retryCount: 8 });
+  if (receipt.status !== "success") {
+    console.error(`❌ ${label} REVERTED (${hash}). Nothing downstream was applied.`);
+    process.exit(1);
+  }
+  return receipt;
+}
+
+if (!gateArmed && feeTokens.length) {
+  await send("setFeeTokens", "setFeeTokens", [feeTokens, true]);
 }
 
 for (const [referrer, traders] of pending) {
-  const hash = await wallet.writeContract({
-    address, abi: feeRouterAbi, functionName: "bindReferrers", args: [traders, referrer as Address], gas: 500_000n,
-  });
-  console.log(`bindReferrers(${traders.length} traders -> ${referrer}) tx:`, hash);
-  await c.waitForTransactionReceipt({ hash, timeout: 120_000, retryCount: 8 });
+  await send(`bindReferrers(${traders.length} traders -> ${referrer})`, "bindReferrers", [traders, referrer as Address]);
 }
-console.log("✅ synced.");
+
+// Re-read rather than assume: the whole point of this script is that the gate
+// ends up ARMED, and the previous version reported success without checking.
+const armedAfter = (await c.readContract({
+  address, abi: ownerAbi, functionName: "feeTokenGateEnabled",
+}).catch(() => false)) as boolean;
+console.log(armedAfter ? "✅ synced - fee-token gate is ARMED." : "⚠️  synced, but the fee-token gate is still OFF.");

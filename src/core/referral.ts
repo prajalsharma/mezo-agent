@@ -65,9 +65,20 @@ async function onChainSharePct(): Promise<number | undefined> {
 
 async function boundReferrer(trader: string): Promise<string | undefined> {
   if (!env.contracts.feeRouter) return undefined;
-  // An older router has no binding registry; it honours the referrer passed in
-  // calldata, so requiring a binding there would silently kill every referral.
-  if (!(await feeRouterCaps()).referrerOf) return trader ? SKIP_BINDING : SKIP_BINDING;
+  const caps = await feeRouterCaps();
+  // A FAILED probe is not evidence of an old router. Treating it as one skipped
+  // the on-chain binding check entirely, so the bot quoted the referred
+  // discount the FeeRouter would not give and credited the referrer a
+  // commission the FeeRouter would never pay — the trader silently overpaid and
+  // the ledger accrued a liability that does not exist on-chain. Exactly what
+  // the "fail CLOSED" comment below promises, applied to the probe as well.
+  if (!caps.probed) {
+    log.warn("referral.caps-unknown-failing-closed");
+    return undefined;
+  }
+  // An older router genuinely has no binding registry; it honours the referrer
+  // passed in calldata, so requiring a binding there would kill every referral.
+  if (!caps.referrerOf) return SKIP_BINDING;
   const key = trader.toLowerCase();
   const hit = bindingCache.get(key);
   if (hit && Date.now() - hit.at < BINDING_TTL_MS) return hit.referrer;

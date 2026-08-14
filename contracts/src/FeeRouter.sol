@@ -53,6 +53,10 @@ contract FeeRouter {
     ///      operator — a config that reads as valid and silently zeroes revenue.
     ///      Half is far above any real referral programme.
     uint16 public constant MAX_REFERRAL_SHARE_BPS = 5000;
+    /// @dev Largest legitimate leg multiplier: a zap leg pays for BOTH halves on
+    ///      the half it swaps. Used for the override CEILING, independent of
+    ///      which entrypoint was called — see _ceilingBps.
+    uint16 public constant MAX_LEG_MULTIPLIER = 2;
     uint16 public constant BPS = 10_000;
 
     IVeloRouter public immutable router;
@@ -97,8 +101,14 @@ contract FeeRouter {
      *      trade settle on a later hop: every rate check still passes because
      *      they constrain the RATE, never the UNIT the rate applies to.
      *      Result: the operator is paid in dust. (Audit finding.)
-     *      Empty set = unconfigured = allow all (so a fresh deploy is not
-     *      bricked); the deploy script populates it immediately.
+     *      Empty set = unconfigured = allow all, so a fresh deploy is not
+     *      bricked. THAT WINDOW IS REAL AND MUST BE CLOSED BY THE OPERATOR:
+     *      nothing in this contract or in Deploy.s.sol arms the gate, and until
+     *      `npm run bindreferrers -- --apply` lands successfully the fee's UNIT
+     *      is caller-chosen. It must be armed with the ROUTING addresses (BTC's
+     *      is its 0x7b7C…0000 precompile, not its zero sentinel) — arming it
+     *      with the wrong ones latches the gate on and reverts every BTC swap,
+     *      and the latch never clears.
      */
     mapping(address => bool) public isFeeToken;
     uint256 public feeTokenCount;
@@ -174,7 +184,10 @@ contract FeeRouter {
      *        trader-chosen share let the trader starve their own referrer.
      *        clamped to `maxReferralShareBps`. Ignored when referrer is zero.
      * @param feeBpsOverride optional per-call fee rate; 0 uses the default
-     *        `feeBps`. Bounded on BOTH sides: `feeBps <= override <= MAX_OVERRIDE_BPS`.
+     *        `feeBps`. Bounded on BOTH sides: the floor is what this caller
+     *        would owe anyway, and the ceiling is MAX_LEG_MULTIPLIER x the
+     *        CONFIGURED `feeBps` (never the bare MAX_OVERRIDE_BPS constant, or
+     *        lowering feeBps would not lower what a caller may charge).
      *        The upper 2× headroom exists solely so a zap can collect its WHOLE
      *        fee on the swapped half (2× bps on half == bps on gross); the lower
      *        bound is what makes "a caller may only volunteer a HIGHER rate"
@@ -290,16 +303,27 @@ contract FeeRouter {
         }
     }
 
-    /// @dev The most this leg may charge: the configured rate scaled by the leg
-    ///      multiplier, and never above the absolute constant.
-    function _ceilingBps(address referrer, uint16 floorMultiplier) private view returns (uint16) {
-        // Use the FULL rate as the ceiling basis even for a referred trader, so
-        // a discount never narrows the band below what an unreferred zap needs.
-        uint256 raw = uint256(feeBps) * floorMultiplier;
-        if (raw > MAX_OVERRIDE_BPS) return MAX_OVERRIDE_BPS;
-        // Referred callers must still be able to pass the full-rate value.
-        uint256 discounted = uint256(_baseBps(referrer)) * floorMultiplier;
-        return uint16(raw > discounted ? raw : discounted);
+    /// @dev The most ANY leg may charge: the configured rate times the largest
+    ///      legitimate leg multiplier, and never above the absolute constant.
+    ///
+    ///      The ceiling deliberately does NOT depend on which entrypoint was
+    ///      called. Scaling it by this call's own `floorMultiplier` collapsed
+    ///      `swapWithFee`'s band to the single point [feeBps, feeBps], which
+    ///      broke the legacy zap path: when the DEPLOYED router lacks
+    ///      `zapLegWithFee`, src/surfaces/zap.ts falls back to `swapWithFee`
+    ///      carrying an explicit 2x override — a legitimate zap leg — and that
+    ///      then reverted FeeTooHigh *after* both approvals had been mined,
+    ///      stranding live allowances. That is the exact failure the zap surface
+    ///      already carries a comment about having fixed once.
+    ///
+    ///      What the ceiling is really for is keeping governance over `feeBps`
+    ///      meaningful: before, it was the bare MAX_OVERRIDE_BPS constant, so
+    ///      lowering feeBps to 50 still let a caller charge 200 — 4x the
+    ///      configured rate. Bounding at 2x the CONFIGURED rate keeps that
+    ///      closed while leaving every honest leg representable.
+    function _ceilingBps(address, uint16) private view returns (uint16) {
+        uint256 raw = uint256(feeBps) * MAX_LEG_MULTIPLIER;
+        return raw > MAX_OVERRIDE_BPS ? MAX_OVERRIDE_BPS : uint16(raw);
     }
 
     function _baseBps(address referrer) private view returns (uint16) {
@@ -311,7 +335,15 @@ contract FeeRouter {
     ///      and the PAYOUT must agree on this — gating them on different
     ///      conditions let callers take the discount while paying no referrer.
     function _referralActive(address referrer) private view returns (bool) {
-        return referrer != address(0) && referrer != msg.sender && referrerOf[msg.sender] == referrer;
+        // `maxReferralShareBps != 0` implements the third condition the comment
+        // above has always claimed. Without it, a share of 0 — a legal config
+        // the setters accept — still unlocked the DISCOUNT while paying the
+        // referrer nothing: the operator forfeited the discount margin on every
+        // bound trader and received no referral in exchange. The discount and
+        // the payout now stand or fall together, which is what "must agree on
+        // this" means.
+        return referrer != address(0) && referrer != msg.sender && maxReferralShareBps != 0
+            && referrerOf[msg.sender] == referrer;
     }
 
     /// @dev Split the fee between referrer (clamped share) and the operator.

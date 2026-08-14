@@ -164,6 +164,66 @@ token.
 
 ---
 
+## Second review round (12 adversarial agents, both contracts)
+
+A second multi-agent pass over `FeeRouter.sol` and `SessionKeyDelegate.sol`
+after the fixes above. It found one **live production** defect, two regressions
+introduced by those very fixes, and two contract defects; all are closed.
+
+- **The fee-token allowlist had never been armed, and could not be.** The gate
+  that binds which token the fee is *denominated* in is fail-open until an
+  operator arms it — and the only script that arms it built its list from each
+  token's `.address`, which for native BTC is the zero sentinel. `setFeeTokens`
+  reverts the whole batch on a zero entry, so the transaction could never
+  succeed. Worse, the script passed an explicit `gas`, which makes viem skip
+  `estimateGas`, and it discarded the receipt's `status` — so it printed a tx
+  hash and then "✅ synced" while the gate stayed off. With the gate off, the
+  fee is charged on `routes[0].from`, which is caller-chosen: an attacker mints
+  a worthless token, makes it hop 0, settles the real trade on hop 1, and the
+  operator is paid in dust. Fixed by allowlisting **routing** addresses (BTC's
+  precompile, which is what `routes[0].from` actually carries — allowlisting
+  `.address` would have latched the gate on and reverted every BTC swap) and by
+  asserting `receipt.status` on every write.
+- **My own `_ceilingBps` fix broke the legacy zap path.** Scaling the override
+  ceiling by *this call's* leg multiplier collapsed `swapWithFee`'s band to the
+  single point `[feeBps, feeBps]`. When the deployed router lacks
+  `zapLegWithFee`, the zap surface legitimately sends a doubled override through
+  `swapWithFee` — which then reverted `FeeTooHigh` *after* both approvals had
+  been mined, stranding live allowances. The ceiling is now 2x the **configured**
+  rate regardless of entrypoint: governance over `feeBps` stays meaningful (it
+  was the bare constant before, so lowering the rate to 50 still permitted 200),
+  and every honest leg is representable. Regression test added.
+- **My own `/revoke` fix could orphan a session key permanently.** It deleted
+  the local record even when the on-chain revocation failed — and the delegate
+  can only revoke a key *by name*, with no enumeration and no revoke-all. The
+  address was the only handle that could ever revoke it, so the key stayed live
+  for the rest of its 30-day TTL, unreachable. The comment even talked about
+  retrying. Orphans are now recorded and retried, `/revoke` says plainly that
+  the key is still live on-chain, and `enableSmartAccount` refuses to mint a
+  replacement while an un-revoked predecessor exists (registering a new key does
+  **not** invalidate the old one).
+- **A cached probe failure created phantom referral liabilities.** `feeRouterCaps`
+  memoised its result including failures, and reported "capability absent" for
+  both "the router lacks it" and "I could not read the bytecode". One RPC blip
+  at startup therefore made the bot skip the on-chain referral binding check for
+  the rest of the process: it quoted the referred discount the contract would not
+  give (the trader silently overpaid, absorbed by slippage) and credited
+  referrers commissions the contract never paid. Failures are no longer cached,
+  the two states are distinguished, and the referral path fails **closed** on an
+  unknown capability.
+- **A zero referral share was a pure giveaway.** `_referralActive`'s own comment
+  claimed three conditions — attested, not self, *and a share actually paid* —
+  but implemented two. With `maxReferralShareBps == 0` (a config the setters
+  accept) every bound trader received the discount while the referrer was paid
+  nothing. The predicate now matches its comment.
+
+Also corrected: two NatSpec claims the agents showed to be false (the override
+band, and the fee-token gate being "populated immediately by the deploy script"
+— nothing populates it), and two previously-undisclosed delegate defects added
+to its open-defect header, including that the **call-target allowlist is reused
+as the payee allowlist**, so a stolen session key can transfer tokens into
+another allowlisted token contract and burn them permanently.
+
 ## Known limitations — stated, not hidden
 
 - **Mezo Market is partially implemented.** Browsing is a preview; purchases
@@ -176,6 +236,14 @@ token.
 - **Hints are passed as zero** on Trove operations. That is a valid Liquity
   fallback and cheap at current Trove counts; `getApproxHint` is not called. The
   code used to claim otherwise and no longer does.
+- **The zap's doubled fee is not enforceable on-chain.** `zapLegWithFee` charges
+  2x because the caller chose that entrypoint, and the selector is calldata like
+  any other — a caller composing their own zap can use `swapWithFee` and pay 1x.
+  The contract's claim that "the leg kind is no longer calldata the caller
+  chooses" was false and has been corrected. This is bounded: the same caller can
+  bypass the FeeRouter entirely and pay zero, so fee capture is a routing
+  convenience, not an on-chain constraint. Making it real means executing both
+  zap legs inside the contract, which is a redesign, not a patch.
 - **This has not had a third-party smart-contract audit.** The FeeRouter and the
   delegate have been through adversarial multi-agent review and the findings are
   fixed, but that is not the same thing and should not be presented as if it
