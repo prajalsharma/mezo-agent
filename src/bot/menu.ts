@@ -46,9 +46,14 @@ export async function homeCard(telegramId: number): Promise<{ text: string; menu
   try {
     const holdings = await getPortfolio(user.address);
     const nonzero = holdings.filter((h) => Number(h.formatted) > 0);
+    // A token whose balance could not be READ is not a token with no balance.
+    // Saying "no balance yet" during an RPC blip invites a duplicate deposit.
+    const unreadable = holdings.filter((h) => h.unreadable);
     balLine = nonzero.length
       ? nonzero.map((h) => `• ${b(h.token.symbol)}: ${prettyAmount(h.formatted)}`).join("\n")
-      : i("No balance yet - tap Deposit to fund your wallet.");
+      : unreadable.length
+        ? i("Couldn't read your balances just now (network hiccup) - tap Refresh. This does NOT mean the wallet is empty.")
+        : i("No balance yet - tap Deposit to fund your wallet.");
   } catch {
     balLine = i("(couldn't read balances just now - tap Refresh)");
   }
@@ -80,9 +85,12 @@ async function portfolioCard(telegramId: number): Promise<Card> {
   try {
     const holdings = await getPortfolio(user.address);
     const nonzero = holdings.filter((h) => Number(h.formatted) > 0);
+    const unreadable = holdings.filter((h) => h.unreadable);
     body = nonzero.length
       ? nonzero.map((h) => `• ${b(h.token.symbol)}: ${prettyAmount(h.formatted)}`).join("\n")
-      : i("No balance yet - tap Deposit to fund your wallet.");
+      : unreadable.length
+        ? i("Couldn't read your balances just now (network hiccup) - tap Refresh. This does NOT mean the wallet is empty.")
+        : i("No balance yet - tap Deposit to fund your wallet.");
   } catch {
     body = i("(couldn't read balances just now - tap Refresh)");
   }

@@ -10,12 +10,12 @@ contract MockERC20 {
     mapping(address => mapping(address => uint256)) public allowance;
 
     function mint(address to, uint256 a) external { balanceOf[to] += a; }
-    function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
+    function approve(address s, uint256 a) public virtual returns (bool) { allowance[msg.sender][s] = a; return true; }
     function transfer(address to, uint256 a) external returns (bool) {
         require(balanceOf[msg.sender] >= a, "bal");
         balanceOf[msg.sender] -= a; balanceOf[to] += a; return true;
     }
-    function transferFrom(address f, address to, uint256 a) external returns (bool) {
+    function transferFrom(address f, address to, uint256 a) public virtual returns (bool) {
         require(balanceOf[f] >= a, "bal");
         require(allowance[f][msg.sender] >= a, "allow");
         allowance[f][msg.sender] -= a; balanceOf[f] -= a; balanceOf[to] += a; return true;
@@ -42,6 +42,31 @@ contract MockRouter {
         amounts = new uint256[](2);
         amounts[0] = amountIn; amounts[1] = out;
     }
+}
+
+/// A token that burns 1% on every transfer. The suite's plain MockERC20 moves
+/// exactly what it is asked to, which made the entire fee-on-transfer class
+/// structurally invisible to every test in this file.
+contract FeeOnTransferERC20 is MockERC20 {
+    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
+        require(balanceOf[from] >= amount, "bal");
+        require(allowance[from][msg.sender] >= amount, "allow");
+        allowance[from][msg.sender] -= amount;
+        uint256 burned = amount / 100; // 1% disappears in transit
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount - burned;
+        return true;
+    }
+}
+
+/// Refuses to move an allowance from one non-zero value to another (USDT).
+contract StrictApprovalERC20 is MockERC20 {
+    function approve(address s, uint256 a) public override returns (bool) {
+        require(a == 0 || allowance[msg.sender][s] == 0, "unsafe approve");
+        allowance[msg.sender][s] = a;
+        return true;
+    }
+    function forceAllowance(address o, address s, uint256 a) external { allowance[o][s] = a; }
 }
 
 contract FeeRouterTest is Test {
@@ -133,10 +158,127 @@ contract FeeRouterTest is Test {
         vm.expectRevert(FeeRouter.NotOwner.selector);
         fr.setConfig(user, 50, 3000);
 
-        fr.setOwner(user);
+        // Ownership transfer is TWO steps: a mistyped successor no longer
+        // permanently forfeits rescue/fee config/the referrer registry.
+        fr.transferOwnership(user);
+        assertEq(fr.owner(), address(this), "owner unchanged until accepted");
+        assertEq(fr.pendingOwner(), user);
+
+        // Nobody but the named successor may accept.
+        vm.prank(operator);
+        vm.expectRevert(FeeRouter.NotOwner.selector);
+        fr.acceptOwnership();
+        assertEq(fr.owner(), address(this), "still unchanged");
+
+        vm.prank(user);
+        fr.acceptOwnership();
+        assertEq(fr.owner(), user, "successor is now owner");
+        assertEq(fr.pendingOwner(), address(0), "pending cleared");
+
         vm.prank(user);
         fr.setConfig(user, 10, 1000);
         assertEq(fr.feeBps(), 10);
+    }
+
+    function test_ownershipTransferCanBeCancelled() public {
+        fr.transferOwnership(user);
+        fr.cancelOwnershipTransfer();
+        assertEq(fr.pendingOwner(), address(0));
+        vm.prank(user);
+        vm.expectRevert(FeeRouter.NotOwner.selector);
+        fr.acceptOwnership();
+        assertEq(fr.owner(), address(this), "cancelled transfer cannot complete");
+    }
+
+    /// A 100% referral share reads as valid config and silently zeroes revenue.
+    function test_referralShareCannotReachOneHundredPercent() public {
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.setConfig(operator, 100, 10_000);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.setConfig(operator, 100, 5001);
+        fr.setConfig(operator, 100, 5000); // the documented maximum is accepted
+        assertEq(fr.maxReferralShareBps(), 5000);
+    }
+
+    /// The override ceiling must track the CONFIGURED rate, not the bare
+    /// constant — otherwise lowering feeBps leaves callers able to charge 4x it.
+    function test_overrideCeilingTracksConfiguredRate() public {
+        fr.setConfig(operator, 20, 3000); // headline 0.2%
+        Route[] memory r = _routes();
+        vm.startPrank(user);
+        // 200 bps was the old ceiling regardless of feeBps. Now the plain-swap
+        // ceiling follows the configured rate (20), and the zap ceiling is 2x it.
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 200);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.zapLegWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 200);
+        uint256 out = fr.zapLegWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 40);
+        assertGt(out, 0, "2x the configured rate is still allowed on the zap leg");
+        vm.stopPrank();
+    }
+
+    /// FEE-ON-TRANSFER. The fee, the referrer's cut and the amount handed to the
+    /// router must all be sized from what ARRIVED, not what was requested.
+    /// Sizing from the request means charging a fee on tokens the contract never
+    /// received — which either reverts or spends a third party's stranded
+    /// balance. This was invisible to the whole suite because MockERC20 moves
+    /// exactly what it is asked to and MockRouter always mints.
+    function test_feeOnTransferTokenIsSizedFromWhatArrived() public {
+        FeeOnTransferERC20 fot = new FeeOnTransferERC20();
+        MockRouter r2 = new MockRouter(tokenOut);
+        FeeRouter fr2 = new FeeRouter(address(r2), operator, 50, 3000);
+        address[] memory fts = new address[](1);
+        fts[0] = address(fot);
+        fr2.setFeeTokens(fts, true);
+
+        fot.mint(user, 1_000e18);
+        vm.prank(user);
+        fot.approve(address(fr2), type(uint256).max);
+
+        // A THIRD PARTY's tokens are sitting in the contract (dust, a mistake).
+        // They must not be touched.
+        fot.mint(address(fr2), 500e18);
+
+        Route[] memory r = new Route[](1);
+        r[0] = Route({from: address(fot), to: address(tokenOut), stable: false, factory: address(0xFAC)});
+
+        vm.prank(user);
+        fr2.swapWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 0);
+
+        // 100 requested, 1% burned in transit => 99 arrived. Fee is 0.5% of 99.
+        assertEq(fot.balanceOf(operator), (99e18 * 50) / 10_000, "fee charged on what arrived, not what was asked");
+
+        // The stranded third-party balance is untouched. 99 arrived, the fee and
+        // the swap leg consumed exactly that 99, and the pre-existing 500 was
+        // never drawn on. Sizing from the 100 REQUESTED would have taken a slice
+        // of it — which is the whole finding.
+        assertEq(fot.balanceOf(address(fr2)), 500e18, "did not spend a third party's stranded balance");
+    }
+
+    /// USDT-style tokens revert on a non-zero -> non-zero allowance change.
+    /// Writing the absolute value alone bricked such a token for this router
+    /// permanently, with no way to clear the leftover allowance.
+    function test_usdtStyleApprovalIsResetFirst() public {
+        StrictApprovalERC20 strict = new StrictApprovalERC20();
+        MockRouter r2 = new MockRouter(tokenOut);
+        FeeRouter fr2 = new FeeRouter(address(r2), operator, 50, 3000);
+        address[] memory fts = new address[](1);
+        fts[0] = address(strict);
+        fr2.setFeeTokens(fts, true);
+
+        strict.mint(user, 1_000e18);
+        vm.prank(user);
+        strict.approve(address(fr2), type(uint256).max);
+
+        Route[] memory r = new Route[](1);
+        r[0] = Route({from: address(strict), to: address(tokenOut), stable: false, factory: address(0xFAC)});
+
+        // Leave a stale non-zero allowance, exactly what bricks the naive path.
+        strict.forceAllowance(address(fr2), address(r2), 1);
+
+        vm.prank(user);
+        uint256 out = fr2.swapWithFee(100e18, 0, r, block.timestamp + 600, address(0), 0, 0);
+        assertGt(out, 0, "swap still works against a strict-approval token");
     }
 
     function test_rescue() public {
@@ -152,22 +294,38 @@ contract FeeRouterTest is Test {
     }
 
     /// Zap path: 2× bps on the swapped half == configured bps on the gross.
-    function test_feeBpsOverrideForZapLeg() public {
-        vm.prank(user);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 100); // 1% override
-        assertEq(tokenIn.balanceOf(operator), 1e18, "override 1% applied instead of default 0.5%");
+    /// A PLAIN swap may not be charged above the configured rate. The ceiling
+    /// used to be the bare MAX_OVERRIDE_BPS constant regardless of feeBps, so
+    /// with the deployed 0.5% rate a caller could still charge 2% — four times
+    /// what the owner configured and what the bot advertises.
+    function test_plainSwapCannotExceedConfiguredRate() public {
+        assertEq(fr.feeBps(), 50, "suite deploys at 0.5%");
+        vm.startPrank(user);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 200);
+        vm.expectRevert(FeeRouter.FeeTooHigh.selector);
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 51);
+        // Exactly the configured rate is fine.
+        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 50);
+        vm.stopPrank();
+        assertEq(tokenIn.balanceOf(operator), 0.5e18, "charged the configured 0.5%, not 2%");
     }
 
-    function test_feeBpsOverrideAllowsZapDouble() public {
+    /// The doubled rate a zap leg legitimately needs is available on the
+    /// dedicated entrypoint — which is the whole reason that entrypoint exists.
+    function test_zapLegMayChargeDoubleTheConfiguredRate() public {
         vm.prank(user);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 200); // 2% on the half-leg
-        assertEq(tokenIn.balanceOf(operator), 2e18, "200 bps override for zap half-leg accounting");
+        fr.zapLegWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 100); // 2 x 50 bps
+        assertEq(tokenIn.balanceOf(operator), 1e18, "zap half-leg pays 2x on the half it swaps");
     }
 
     function test_feeBpsOverrideCappedAtMax() public {
+        // Raise the configured rate to the maximum so this exercises the
+        // ABSOLUTE ceiling rather than the rate-relative one.
+        fr.setConfig(operator, 100, 3000);
         vm.prank(user);
         vm.expectRevert(FeeRouter.FeeTooHigh.selector);
-        fr.swapWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 201); // > override cap rejected
+        fr.zapLegWithFee(100e18, 0, _routes(), block.timestamp + 600, address(0), 0, 201); // > MAX_OVERRIDE_BPS
     }
 
     // ── Audit regressions ────────────────────────────────────────────────────

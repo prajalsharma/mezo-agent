@@ -120,6 +120,24 @@ export const env = {
       .filter((n) => Number.isSafeInteger(n) && n > 0),
   ),
 
+  /**
+   * Telegram ids allowed to use OPERATOR commands (the global automation
+   * kill-switch, and anything else that affects other users).
+   *
+   * There were no privilege tiers at all: `setKeeperPaused` — the emergency stop
+   * for every user's scheduled automation — was reachable from no command, so
+   * the operator's own kill-switch could only be used by redeploying with
+   * KEEPER_ENABLED=false. Meanwhile an empty access allowlist left a
+   * key-custodying bot open to anyone who found it. Empty here means NO ONE has
+   * operator rights, which is the right default.
+   */
+  operatorUserIds: new Set(
+    optional("TELEGRAM_OPERATOR_USER_IDS")
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isSafeInteger(n) && n > 0),
+  ),
+
   /** Keeper (DCA / auto-compound) global kill-switch. Off unless explicitly on. */
   keeperEnabled: optional("KEEPER_ENABLED", "false").toLowerCase() === "true",
 
@@ -173,6 +191,11 @@ export const txnFeesEnabled = env.fees.txnBps > 0 && validRecipient;
 
 /** True when the bot is restricted to a fixed set of Telegram user IDs. */
 export const accessRestricted = env.allowedUserIds.size > 0;
+
+/** Is this user allowed to run operator commands? Empty set => nobody is. */
+export function isOperator(telegramId: number | undefined): boolean {
+  return telegramId !== undefined && env.operatorUserIds.has(telegramId);
+}
 
 /** True when the LLM parser is usable; otherwise the deterministic parser is used. */
 export const llmEnabled =

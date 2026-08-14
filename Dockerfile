@@ -9,9 +9,13 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# package-lock.json is gitignored in this repo, so `npm ci` is not available.
-COPY package.json ./
-RUN npm install --omit=dev
+# `npm ci` — NOT `npm install`. The lockfile is committed precisely so the
+# production image gets the exact dependency tree that was reviewed and audited.
+# `npm install` re-resolves every semver range at build time, so a compromised or
+# merely broken patch release of any transitive dependency lands in a container
+# that holds encrypted private keys, with nothing recording that it changed.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -32,4 +36,11 @@ ENV DATA_DIR=/data
 # Railway reports as "Deployment crashed". With node as the process, SIGTERM
 # reaches the graceful shutdown handler in src/index.ts → clean exit 0.
 RUN npm install tsx@^4.19.0
+
+# Drop root. node:slim ships an unprivileged `node` user; the image had no USER
+# directive, so the process — and anything that ever achieves execution inside
+# it — ran as uid 0 next to the encrypted key store.
+RUN mkdir -p /data && chown -R node:node /data /app
+USER node
+
 CMD ["node", "--import", "tsx", "src/index.ts"]

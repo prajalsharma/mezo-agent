@@ -48,10 +48,17 @@ contract FeeRouter {
     ///      an override only lets the CALLER volunteer a higher rate on their
     ///      own call — the default every plain swap pays stays capped at 1%.
     uint16 public constant MAX_OVERRIDE_BPS = 200;
+    /// @dev Ceiling on the referrer's cut of each fee. `> BPS` admitted exactly
+    ///      10000, i.e. 100% of every fee to referrers and nothing to the
+    ///      operator — a config that reads as valid and silently zeroes revenue.
+    ///      Half is far above any real referral programme.
+    uint16 public constant MAX_REFERRAL_SHARE_BPS = 5000;
     uint16 public constant BPS = 10_000;
 
     IVeloRouter public immutable router;
     address public owner;
+    /// @dev Named successor awaiting acceptOwnership(). Zero when none pending.
+    address public pendingOwner;
     address public feeRecipient;
     uint16 public feeBps;
     /// @dev Discounted rate REFERRED traders pay (owner-set, must be <= feeBps;
@@ -120,6 +127,7 @@ contract FeeRouter {
     );
     event ConfigChanged(address feeRecipient, uint16 feeBps, uint16 maxReferralShareBps);
     event OwnerChanged(address indexed newOwner);
+    event OwnershipTransferStarted(address indexed from, address indexed to);
     event ReferrerBound(address indexed trader, address indexed referrer);
     event FeeTokenSet(address indexed token, bool allowed);
     event ReferredFeeBpsChanged(uint16 referredFeeBps);
@@ -147,7 +155,7 @@ contract FeeRouter {
 
     constructor(address router_, address feeRecipient_, uint16 feeBps_, uint16 maxReferralShareBps_) {
         if (router_ == address(0) || feeRecipient_ == address(0)) revert ZeroAddress();
-        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > BPS) revert FeeTooHigh();
+        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > MAX_REFERRAL_SHARE_BPS) revert FeeTooHigh();
         router = IVeloRouter(router_);
         owner = msg.sender;
         feeRecipient = feeRecipient_;
@@ -229,13 +237,28 @@ contract FeeRouter {
         if (feeTokenGateEnabled && !isFeeToken[tokenIn]) revert FeeTokenNotAllowed(tokenIn);
         _requireContract(tokenIn);
 
-        _pull(tokenIn, msg.sender, amountIn);
-        uint256 fee = _takeFee(tokenIn, amountIn, referrer, feeBpsOverride, floorMultiplier);
+        // Everything downstream is sized from what ARRIVED, not what was asked
+        // for. With a fee-on-transfer token those differ, and using the request
+        // meant charging a fee on tokens the contract never received — which
+        // either reverts or quietly spends someone else's stranded balance.
+        // `received` is immediately reduced to the swappable remainder so this
+        // frame keeps one local rather than three (the function is already at
+        // the stack limit).
+        uint256 received = _pullMeasured(tokenIn, msg.sender, amountIn);
+        received -= _takeFee(tokenIn, received, referrer, feeBpsOverride, floorMultiplier);
 
-        _approve(tokenIn, address(router), amountIn - fee);
+        _approve(tokenIn, address(router), received);
+        return _routeSwap(received, amountOutMin, routes, deadline);
+    }
+
+    /// @dev Split out purely to keep `_swap` under the stack limit.
+    function _routeSwap(uint256 amountIn, uint256 amountOutMin, Route[] calldata routes, uint256 deadline)
+        private
+        returns (uint256)
+    {
         uint256[] memory amounts =
-            router.swapExactTokensForTokens(amountIn - fee, amountOutMin, routes, msg.sender, deadline);
-        amountOut = amounts[amounts.length - 1];
+            router.swapExactTokensForTokens(amountIn, amountOutMin, routes, msg.sender, deadline);
+        return amounts[amounts.length - 1];
     }
 
     /// @dev The rate this caller actually pays before any override: the
@@ -256,7 +279,27 @@ contract FeeRouter {
         if (feeBpsOverride == 0) return; // 0 => the contract picks the rate
         uint256 rawFloor = uint256(_baseBps(referrer)) * floorMultiplier;
         uint16 floorBps = rawFloor > MAX_OVERRIDE_BPS ? MAX_OVERRIDE_BPS : uint16(rawFloor);
-        if (feeBpsOverride > MAX_OVERRIDE_BPS || feeBpsOverride < floorBps) revert FeeTooHigh();
+        // The CEILING is the configured rate for this leg, not the bare
+        // constant. Bounding only by MAX_OVERRIDE_BPS decoupled the two: with
+        // feeBps lowered to 50 the ceiling stayed 200, so a caller could still
+        // charge 4x the configured rate and governance over MAX_FEE_BPS was
+        // cosmetic. The override exists to let a zap leg pay 2x on the half it
+        // swaps — it is not a licence to exceed the rate the owner set.
+        if (feeBpsOverride > _ceilingBps(referrer, floorMultiplier) || feeBpsOverride < floorBps) {
+            revert FeeTooHigh();
+        }
+    }
+
+    /// @dev The most this leg may charge: the configured rate scaled by the leg
+    ///      multiplier, and never above the absolute constant.
+    function _ceilingBps(address referrer, uint16 floorMultiplier) private view returns (uint16) {
+        // Use the FULL rate as the ceiling basis even for a referred trader, so
+        // a discount never narrows the band below what an unreferred zap needs.
+        uint256 raw = uint256(feeBps) * floorMultiplier;
+        if (raw > MAX_OVERRIDE_BPS) return MAX_OVERRIDE_BPS;
+        // Referred callers must still be able to pass the full-rate value.
+        uint256 discounted = uint256(_baseBps(referrer)) * floorMultiplier;
+        return uint16(raw > discounted ? raw : discounted);
     }
 
     function _baseBps(address referrer) private view returns (uint16) {
@@ -280,6 +323,7 @@ contract FeeRouter {
         uint16 floorMultiplier
     ) private returns (uint256 fee)
     {
+        address paidReferrer;
         // Same base as the floor: an attested referral is CHARGED the discount
         // even when the caller passes no override.
         // The leg kind must drive the CHARGED rate, not just the floor. It used
@@ -304,19 +348,27 @@ contract FeeRouter {
                 // 99.97% of the commission destroyed by the very person the
                 // referrer brought in (audit).
                 referrerShare = (fee * maxReferralShareBps) / BPS;
-                if (referrerShare > 0) _push(tokenIn, referrer, referrerShare);
+                if (referrerShare > 0) {
+                    _push(tokenIn, referrer, referrerShare);
+                    paidReferrer = referrer;
+                }
             }
             uint256 operatorShare = fee - referrerShare;
             if (operatorShare > 0) _push(tokenIn, feeRecipient, operatorShare);
         }
-        emit SwappedWithFee(msg.sender, tokenIn, amountIn, fee, referrer, referrerShare);
+        // Emit the referrer ONLY when they were actually paid. On a small trade
+        // the share truncates to zero, and indexing the address anyway produced
+        // an event stream in which a referrer appeared to earn on trades that
+        // paid them nothing — an off-chain indexer summing those over-reports
+        // liabilities that were never incurred.
+        emit SwappedWithFee(msg.sender, tokenIn, amountIn, fee, paidReferrer, referrerShare);
     }
 
     // ── Owner controls ────────────────────────────────────────────────────────
 
     function setConfig(address feeRecipient_, uint16 feeBps_, uint16 maxReferralShareBps_) external onlyOwner {
         if (feeRecipient_ == address(0)) revert ZeroAddress();
-        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > BPS) revert FeeTooHigh();
+        if (feeBps_ > MAX_FEE_BPS || maxReferralShareBps_ > MAX_REFERRAL_SHARE_BPS) revert FeeTooHigh();
         feeRecipient = feeRecipient_;
         feeBps = feeBps_;
         // RE-DERIVE, never one-way clamp: clamping only downward meant a
@@ -384,10 +436,29 @@ contract FeeRouter {
         }
     }
 
-    function setOwner(address newOwner) external onlyOwner {
+    /// @notice Begin an ownership transfer. The new owner must ACCEPT it.
+    /// @dev Two steps, because the one-step version handed ownership to whatever
+    ///      address was typed: a wrong one permanently forfeited `rescue`, the
+    ///      fee configuration and the referrer registry, with no way back. The
+    ///      zero-address guard caught only the single most obvious typo.
+    function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
-        owner = newOwner;
-        emit OwnerChanged(newOwner);
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Accept a pending ownership transfer. Only the named successor.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotOwner();
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnerChanged(owner);
+    }
+
+    /// @notice Abandon a pending transfer.
+    function cancelOwnershipTransfer() external onlyOwner {
+        pendingOwner = address(0);
+        emit OwnershipTransferStarted(owner, address(0));
     }
 
     /// @notice Rescue tokens accidentally sent here (the contract never holds
@@ -411,6 +482,27 @@ contract FeeRouter {
         if (size == 0) revert NotAContract(token);
     }
 
+    /// @dev Pull `amount` and return what ACTUALLY ARRIVED.
+    ///      A fee-on-transfer or rebasing token delivers less than `amount`, and
+    ///      this used to assume the request equalled the receipt. Every number
+    ///      downstream — the fee, the referrer's cut, the amount handed to the
+    ///      router — was then computed against tokens the contract did not hold,
+    ///      so it either reverted or, worse, spent a THIRD PARTY's balance that
+    ///      happened to be sitting here. Measuring the delta is the only honest
+    ///      answer and costs two balance reads.
+    function _pullMeasured(address token, address from, uint256 amount) private returns (uint256) {
+        uint256 before = _balanceOf(token, address(this));
+        _pull(token, from, amount);
+        uint256 arrived = _balanceOf(token, address(this)) - before;
+        return arrived < amount ? arrived : amount;
+    }
+
+    function _balanceOf(address token, address who) private view returns (uint256) {
+        (bool ok, bytes memory ret) = token.staticcall(abi.encodeWithSelector(0x70a08231, who)); // balanceOf
+        if (!ok || ret.length < 32) revert TransferFailed();
+        return abi.decode(ret, (uint256));
+    }
+
     function _pull(address token, address from, uint256 amount) private {
         (bool ok, bytes memory ret) =
             token.call(abi.encodeWithSelector(0x23b872dd, from, address(this), amount)); // transferFrom
@@ -422,8 +514,21 @@ contract FeeRouter {
         if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) revert TransferFailed();
     }
 
+    /// @dev Set an allowance, tolerating tokens that refuse a non-zero->non-zero
+    ///      change (USDT-style). Writing the absolute value alone reverted
+    ///      permanently for such a token once any dust allowance was left
+    ///      behind, bricking it for this router with no way to clear it.
     function _approve(address token, address spender, uint256 amount) private {
+        if (!_tryApprove(token, spender, amount)) {
+            // Reset to zero first, then retry. If the reset itself fails there
+            // is nothing further to try and the revert is correct.
+            if (!_tryApprove(token, spender, 0)) revert TransferFailed();
+            if (!_tryApprove(token, spender, amount)) revert TransferFailed();
+        }
+    }
+
+    function _tryApprove(address token, address spender, uint256 amount) private returns (bool) {
         (bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(0x095ea7b3, spender, amount)); // approve
-        if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) revert TransferFailed();
+        return ok && (ret.length == 0 || abi.decode(ret, (bool)));
     }
 }

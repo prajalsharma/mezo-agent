@@ -403,12 +403,14 @@ Testnet BTC/MEZO faucet: https://faucet.test.mezo.org/
 - Spending caps bind **native BTC** value plus an opt-in raw per-token cap;
   true USD-denominated caps come with the price feed. Seed-phrase import uses the
   standard EVM path `m/44'/60'/0'/0/0` (account 0).
-- The `SessionKeyDelegate` contract now has a passing Foundry test suite
-  (`npm run contracts:test`, **25 tests**, 14 of them audit regressions). It went
-  through **two rounds** of adversarial audit (Pashov `solidity-auditor`: 12 agents
-  on the original, 6 on the hardened rewrite). **Every finding from both rounds is
-  fixed and regression-tested** - self-call escalation, stale allowlist, ERC-20
-  calldata caps, trailing-24h window, `transferFrom` source validation, and a
-  revocation-DoS. See **[AUDIT.md](AUDIT.md)**. Deploy it with
+- The contracts have a passing Foundry suite (`npm run contracts:test`, **66
+  tests**), and both went through adversarial multi-agent audit. **The current
+  security posture lives in [SECURITY.md](SECURITY.md)** - `AUDIT.md` and
+  `AUDIT2.md` are superseded history and carry banners saying so, because a stale
+  audit document is what the next reviewer uses to decide what NOT to re-examine.
+  A later conformance review found three areas those rounds never covered
+  (protocol conformance, the confirmation boundary, automation bounds); all are
+  closed and SECURITY.md says how. Deploy the delegate with
   `contracts/script/Deploy.s.sol` and set `DELEGATE7702_ADDRESS` to enable
-  `/upgrade`. It remains unaudited by a third party pending the security review.
+  `/upgrade` - though it is deliberately disabled, see above. Neither contract has
+  had a third-party audit.

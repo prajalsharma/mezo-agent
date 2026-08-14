@@ -1,5 +1,33 @@
 # Security Audit — Round 2 (post feature-batch)
 
+> ## ⚠️ SUPERSEDED — read this first
+>
+> This document records a **round that has been overtaken**, and it is kept only
+> as a history of what was found and when. Do not read it as a statement of the
+> system's current security posture, and do not use it to decide what does not
+> need re-examining.
+>
+> Two things in it were wrong in the dangerous direction:
+>
+> 1. **The all-clear was too broad.** Fixes listed here were verified against the
+>    surfaces the round covered. A later conformance review found three areas the
+>    earlier rounds never examined at all — whether the agent agrees with the
+>    deployed `musd` protocol, whether the plan a user approves is the plan that
+>    gets signed, and whether unattended automation is bounded — and each held
+>    critical defects. A finding marked FIXED here means "fixed as scoped then",
+>    not "the area is sound".
+> 2. **Some claimed controls did not exist.** Notably, the signer-side
+>    registry-known target assertion described in round 2 was never implemented;
+>    it exists now. Where a claim here and the code disagree, the code is the
+>    authority.
+>
+> **Current status lives in `SECURITY.md`**, which supersedes this file and
+> `AUDIT2.md`. The delegate's own header in
+> `contracts/src/SessionKeyDelegate.sol` is the authoritative list of its open
+> defects.
+
+
+
 Pashov-style multi-agent audit (access-control, flow-gap, trust-gap,
 economic-security) over the new surfaces: /export, vault deposits, claim-all,
 veNFT enumeration, incentives feed, optimal voting, zap execution, delegate

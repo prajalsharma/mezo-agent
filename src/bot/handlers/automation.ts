@@ -98,7 +98,14 @@ export async function handleAutoCompound(ctx: Context, intent: AutoCompoundInten
   store.setAutoCompound({ telegramId: id, accountAddress: user.address, enabled: intent.enabled, intoToken: into });
   await ctx.reply(
     intent.enabled
-      ? `${b("Auto-compound enabled.")}\nAt each epoch, claimable rewards are claimed and swapped into ${code(into)}. ${i("Runs within your spending limits; execution activates when swaps/claims are enabled.")}`
+      // PRESENT TENSE WAS A LIE. The keeper iterates DCA schedules only, and
+      // getAutoCompound has no call sites anywhere — so this recorded a
+      // preference and nothing ever acted on it, while the copy said rewards
+      // "are claimed and swapped". A user reading that would stop claiming
+      // manually and quietly lose every epoch's rewards.
+      ? `${b("Auto-compound preference saved")} - rewards to be compounded into ${code(into)}.\n\n` +
+        `⚠️ ${b("Not yet automatic.")} The keeper currently runs DCA schedules only, so nothing claims for you yet. ` +
+        `Keep claiming with ${code("claim all")} - turn on reward alerts under /alerts and I'll remind you when there's something to claim.`
       : `${b("Auto-compound disabled.")}`,
     { parse_mode: "HTML" },
   );

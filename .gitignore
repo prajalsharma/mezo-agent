@@ -10,7 +10,10 @@ data/
 
 # test-run data dirs
 data-*/
-package-lock.json
+# package-lock.json is deliberately COMMITTED. This service custodies encrypted
+# private keys, so `npm install` re-resolving semver ranges on every build — a
+# different dependency tree in production than the one that was reviewed — is
+# not an acceptable property. See the lockfile note in the Dockerfile.
 
 # Foundry (contracts/) build output and vendored deps
 contracts/out/

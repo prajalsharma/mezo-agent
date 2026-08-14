@@ -1,6 +1,6 @@
 import { Bot, InlineKeyboard, type Context } from "grammy";
 import { formatUnits } from "viem";
-import { env, llmEnabled, feesEnabled, accessRestricted } from "../config/env.js";
+import { env, llmEnabled, feesEnabled, accessRestricted, isOperator } from "../config/env.js";
 import { log, redact } from "../core/log.js";
 import { registry } from "../registry/registry.js";
 import { parseIntent, resolveDollarPhrases } from "../llm/adapter.js";
@@ -35,6 +35,24 @@ import { installBotProfile, homeCard, screenCard, feesText } from "./menu.js";
 import { explainerFor } from "./explainers.js";
 import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
 import { faucetReply } from "./faucet.js";
+
+/**
+ * Per-user conversational scratch. BOUNDED: these are caches, not state, and an
+ * unbounded Map keyed by telegramId retains every user's last message for the
+ * life of the process — an unnecessary store of user content, and a slow leak.
+ * Oldest entries are evicted once the cap is reached (Map preserves insertion
+ * order, so the first key is the oldest).
+ */
+const MAX_CACHED_USERS = 500;
+function remember<V>(m: Map<number, V>, k: number, v: V): void {
+  m.delete(k); // re-insert so a recently-active user moves to the back
+  m.set(k, v);
+  while (m.size > MAX_CACHED_USERS) {
+    const oldest = m.keys().next().value;
+    if (oldest === undefined) break;
+    m.delete(oldest);
+  }
+}
 
 /** Last free-text message per user, for one-turn conversational context. */
 const lastUserMessage = new Map<number, string>();
@@ -185,6 +203,41 @@ export function buildBot(): Bot {
   bot.command("fees", async (ctx) => {
     await ctx.reply(feesText(), { parse_mode: "HTML" });
   });
+  /**
+   * OPERATOR ONLY — the global automation kill-switch.
+   *
+   * `store.setKeeperPaused` existed but no command reached it, so the operator's
+   * emergency stop for every user's scheduled automation could only be used by
+   * redeploying with KEEPER_ENABLED=false. An incident is the worst moment to
+   * need a redeploy.
+   *
+   * Unauthorized callers get NOTHING, not a refusal: telling a stranger that an
+   * operator command exists is free reconnaissance.
+   */
+  bot.command("keeper", async (ctx) => {
+    if (!isOperator(ctx.from?.id)) {
+      log.warn("operator.denied", { command: "keeper", telegramId: ctx.from?.id ?? "unknown" });
+      return;
+    }
+    const arg = (ctx.message?.text ?? "").trim().split(/\s+/)[1]?.toLowerCase();
+    if (arg === "pause" || arg === "resume") {
+      const paused = arg === "pause";
+      store.setKeeperPaused(paused);
+      log.warn("operator.keeper-toggled", { telegramId: ctx.from!.id, paused });
+      await ctx.reply(
+        paused
+          ? "🛑 <b>GLOBAL keeper paused.</b> Every user's scheduled automation is frozen. Send <code>/keeper resume</code> to restart it."
+          : "▶️ <b>GLOBAL keeper resumed.</b> Scheduled automation runs again for all users.",
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    await ctx.reply(
+      `Keeper: ${store.isKeeperPaused() ? "🛑 PAUSED (globally)" : env.keeperEnabled ? "▶️ running" : "⏸️ disabled by KEEPER_ENABLED"}\n\n` +
+        "Usage: /keeper pause | /keeper resume",
+    );
+  });
+
   bot.command("cancel", async (ctx) => {
     if (ctx.from?.id) clearPending(ctx.from.id);
     await ctx.reply("Cancelled.");
@@ -274,7 +327,7 @@ export function buildBot(): Bot {
         const suggestions = [...ex.matchAll(/"([^"\n]{3,64})"/g)].map((m) => m[1]!).slice(0, 3);
         const kb = new InlineKeyboard();
         if (uid && suggestions.length) {
-          suggestionCache.set(uid, suggestions);
+          remember(suggestionCache, uid, suggestions);
           suggestions.forEach((sug, idx) => kb.text(`▶ ${sug.length > 40 ? sug.slice(0, 39) + "…" : sug}`, `sugg:${idx}`).row());
         }
         kb.text("🏠 Menu", "menu:home");
@@ -326,7 +379,7 @@ export function buildBot(): Bot {
           const minBtc = (mcr * recorded) / price;
           const safeBtc = Number(((1.5 * recorded) / price).toFixed(4));
           const cmd = `borrow ${debt} MUSD against ${safeBtc} BTC`;
-          if (uid) suggestionCache.set(uid, [cmd]);
+          if (uid) remember(suggestionCache, uid, [cmd]);
           await ctx.reply(
             `${b(`To borrow ${debt.toLocaleString()} MUSD you need BTC collateral:`)}\n\n` +
               `• Bare minimum (${(mcr * 100).toFixed(0)}%): ${b(`${minBtc.toFixed(4)} BTC`)} - liquidated on any dip\n` +
@@ -377,7 +430,7 @@ export function buildBot(): Bot {
     // Conversational context: remember the last message per user so a follow-up
     // like "do it to MUSD then" can inherit the amount/tokens from it.
     const prior = uid ? lastUserMessage.get(uid) : undefined;
-    if (uid) lastUserMessage.set(uid, text);
+    if (uid) remember(lastUserMessage, uid, text);
 
     // Lazy grounding for GUIDE mode: the user's real balances, live routes and
     // the BTC price — fetched only when the rule parser can't handle the message.
@@ -415,7 +468,7 @@ export function buildBot(): Bot {
       const suggestions = [...intent.text.matchAll(/"([^"\n]{3,64})"/g)].map((m) => m[1]!).slice(0, 3);
       const kb = new InlineKeyboard();
       if (uid && suggestions.length) {
-        suggestionCache.set(uid, suggestions);
+        remember(suggestionCache, uid, suggestions);
         suggestions.forEach((s, idx) => kb.text(`▶ ${s.length > 40 ? s.slice(0, 39) + "…" : s}`, `sugg:${idx}`).row());
       }
       kb.text("🏠 Menu", "menu:home");
