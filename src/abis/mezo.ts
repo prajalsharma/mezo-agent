@@ -41,6 +41,16 @@ export const borrowerOperationsAbi = [
   // protocol does not push it back. Verified live: calling it with nothing owed
   // reverts "CollSurplusPool: No collateral available to claim".
   { type: "function", name: "claimCollateral", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  // The ONLY mechanism that re-stamps a Trove's maxBorrowingCapacity, which is
+  // frozen at open-time price and never rises on its own — not when BTC
+  // appreciates, not when collateral is added. Signature confirmed live: calling
+  // it reverts "BorrowerOps: Trove does not exist or is closed" (the same reason
+  // closeTrove gives), whereas a nonexistent selector returns empty revert data.
+  { type: "function", name: "refinance", stateMutability: "nonpayable", inputs: [
+    { name: "_upperHint", type: "address" }, { name: "_lowerHint", type: "address" },
+  ], outputs: [] },
+  // Refinancing fee, as a percentage OF the borrowing rate (live value: 20).
+  { type: "function", name: "refinancingFeePercentage", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   // Live market parameters. Every one of these was a hardcoded constant in the
   // borrow surface until the conformance audit; several had drifted from the
   // deployed contracts (see src/core/musdParams.ts). All verified on testnet:

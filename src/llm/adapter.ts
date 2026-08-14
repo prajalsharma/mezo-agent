@@ -435,6 +435,9 @@ export function fallbackParse(message: string, knownSymbols: string[], ctx?: Par
   // The redemption/liquidation warnings tell users to say exactly this, so it
   // must not depend on the LLM being available to understand it.
   if (/\bclaim\s+(?:my\s+)?(?:collateral|surplus)\b/i.test(lower)) return { action: "claimCollateral" };
+  // The cap-blocked mint error tells users to say exactly this, so it must not
+  // depend on the LLM being reachable.
+  if (/\brefinance\b/i.test(lower)) return { action: "refinance" };
 
   // Adjust Trove — the tip card teaches EXACTLY these phrasings ("add 0.05 BTC
   // collateral", "withdraw 0.02 BTC", "mint 500 MUSD"), but no rule existed, so

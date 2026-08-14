@@ -142,7 +142,14 @@ console.log("\nMEDIUM\n");
 check("M1", "cap-raise confirmation has a TTL and an id", limits.includes('kind: "limits-raise"') && session.includes("RAISE_TTL_MS"));
 check("M2", "repay uses the NET debt basis", /netDebt = trove\.debt > p\.gasCompensation/.test(borrow));
 check("M3", "closeTrove needs debt minus gas compensation", borrow.includes("owedByBorrower"));
-known("M4", "refinance still not implemented", "documented; adjust now says the cap cannot be raised by adding collateral");
+check("M4", "refinance is implemented — the only way to re-stamp the borrowing cap",
+  abis.includes('name: "refinance"') && borrow.includes("export async function buildRefinance")
+    && read("src/surfaces/dispatch.ts").includes('case "refinance"')
+    && intent.includes("RefinanceIntent")
+    && /\\brefinance\\b/.test(adapter)
+    // ...and the cap-blocked mint must POINT at it rather than say it doesn't exist.
+    && /Say "refinance" to re-price the limit/.test(borrow)
+    && !/which this bot doesn't do yet/.test(borrow));
 check("M5", "trove status distinguishes liquidated/redeemed", borrow.includes("assertHasTrove") && borrow.includes('"liquidated"'));
 check("M6", "account switch between render and confirm is caught",
   session.includes("accountAddress") && swapH.includes("You switched active account"));
@@ -188,7 +195,12 @@ check("L2", "lockfile is committed and the image uses npm ci",
 check("L3", "error text is redacted before log and chat",
   log.includes("export function redact") && bot.includes("redact(message)"));
 check("L4", "per-user caches are bounded", bot.includes("MAX_CACHED_USERS"));
-known("L5", "8-dec tokens still use the 18-dec fallback cap", "latent; those tokens have no pool on Mezo");
+check("L5", "token caps are denominated in each token's OWN decimals",
+  policy.includes("function unknownTokenCapRaw(symbol: string)")
+    && policy.includes("registry.tryToken(symbol)")
+    && !/UNKNOWN_TOKEN_CAP_RAW/.test(policy)
+    // A BTC-denominated wrapper must be capped like BTC, not like a dollar.
+    && policy.includes("isBtcDenominated"));
 check("L6", "alert divides safely; /limits escapes; referrer event is honest",
   /trove\.collBTC <= 0/.test(alerts) && limits.includes("esc(fmtBtc(current))") && feeRouter.includes("paidReferrer"));
 

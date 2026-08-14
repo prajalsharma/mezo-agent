@@ -1,4 +1,5 @@
 import { formatEther, parseEther, parseUnits, type Address } from "viem";
+import { registry } from "../registry/registry.js";
 
 /**
  * Spending policy — the bounty requires "spending limits and confirmation
@@ -35,20 +36,88 @@ export type SpendingLimits = {
 
 /**
  * Conservative per-token defaults so an ERC-20 outbound plan is never uncapped.
- * Raw units (decimals baked in). A token with no entry falls back to
- * UNKNOWN_TOKEN_CAP_RAW rather than "unlimited" — fail-closed, not fail-open.
+ *
+ * DECIMALS COME FROM THE REGISTRY, NOT FROM A HARDCODED TABLE. The table only
+ * named four symbols, and everything else fell back to a cap denominated in
+ * 1e18 — so an 8-decimal token got a cap of 1e21 raw, i.e. ten trillion tokens,
+ * which is no cap at all. The registry already knows every token's real
+ * decimals; asking it means a token added later is capped correctly on the day
+ * it is added rather than the day someone remembers this table exists.
+ *
+ * The HUMAN size is chosen by what the token is worth, not by its symbol:
+ * BTC-denominated assets are capped like BTC (a few units), dollar-denominated
+ * ones in thousands. Getting that backwards is how a 0.05 BTC limit once became
+ * 12,500 mcbBTC in the delegate.
  */
-const TOKEN_DECIMALS: Record<string, number> = { MUSD: 18, mUSDC: 6, mUSDT: 6, MEZO: 18 };
 const TOKEN_DEFAULT_HUMAN: Record<string, string> = {
   MUSD: "10000", mUSDC: "10000", mUSDT: "10000", MEZO: "100000",
 };
-/** Fallback cap for any ERC-20 the defaults don't name (assumes 18-dec worst case). */
-export const UNKNOWN_TOKEN_CAP_RAW = parseUnits("1000", 18).toString();
+/** Human-unit fallback for a token the table does not name, by denomination. */
+const FALLBACK_HUMAN_BTC_DENOMINATED = "1";
+const FALLBACK_HUMAN_OTHER = "1000";
+/** LP shares are pool claims, not the asset in their name. Matches the old cap. */
+const FALLBACK_HUMAN_LP = "1000";
+
+/** Is this symbol denominated in BTC (so ~1 unit ≈ 1 BTC, not ≈ $1)? */
+function isBtcDenominated(symbol: string): boolean {
+  return /btc/i.test(symbol);
+}
+
+/** Velodrome LP shares. Always 18-decimal, and NOT priced like their pair. */
+function isLpShare(symbol: string): boolean {
+  return /\bLP\b/i.test(symbol);
+}
+
+/**
+ * The smallest decimals any real token is likely to use.
+ *
+ * For a symbol whose decimals we genuinely do NOT know, a raw cap has to be
+ * computed against SOME assumption, and the only safe one is the smallest:
+ * a raw number sized for 6 decimals is conservative if the token turns out to
+ * have 8 or 18, whereas one sized for 18 is "no cap" for anything smaller.
+ * That asymmetry is the whole bug — a single 1e18-denominated constant meant an
+ * 8-decimal token could move ten trillion units.
+ */
+const UNKNOWN_DECIMALS_ASSUMPTION = 6;
+
+/**
+ * Raw per-tx cap for a symbol, in ITS OWN decimals wherever those are knowable.
+ *
+ * Exported for tests. Three cases, in order:
+ *   1. a REGISTRY token — exact decimals, sized by what it is worth,
+ *   2. an LP share — 18 decimals by construction, sized as a pool share rather
+ *      than as the BTC in its name (a "BTC/MUSD LP" symbol contains "BTC" but is
+ *      not denominated in BTC),
+ *   3. genuinely unknown — fail CLOSED at the smallest plausible decimals, so
+ *      the cap can never silently become unlimited. It is deliberately tight;
+ *      `/limits token <SYM> <amount>` is the way to widen it deliberately.
+ */
+export function unknownTokenCapRaw(symbol: string): string {
+  const t = registry.tryToken(symbol);
+  if (t) return parseUnits(defaultHumanFor(symbol), t.decimals).toString();
+  if (isLpShare(symbol)) return parseUnits(FALLBACK_HUMAN_LP, 18).toString();
+  return parseUnits(FALLBACK_HUMAN_OTHER, UNKNOWN_DECIMALS_ASSUMPTION).toString();
+}
+
+/** Human-unit default cap for a symbol whose decimals are known. */
+function defaultHumanFor(symbol: string): string {
+  if (TOKEN_DEFAULT_HUMAN[symbol]) return TOKEN_DEFAULT_HUMAN[symbol]!;
+  if (isLpShare(symbol)) return FALLBACK_HUMAN_LP;
+  return isBtcDenominated(symbol) ? FALLBACK_HUMAN_BTC_DENOMINATED : FALLBACK_HUMAN_OTHER;
+}
 
 function defaultTokenCaps(): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [sym, human] of Object.entries(TOKEN_DEFAULT_HUMAN)) {
-    out[sym] = parseUnits(human, TOKEN_DECIMALS[sym] ?? 18).toString();
+  // Every registry token gets an explicit cap in its own decimals, so nothing
+  // depends on the fallback in normal operation.
+  for (const t of registry.allTokens()) {
+    if (t.native) continue; // native BTC is bounded by the native caps
+    out[t.symbol] = parseUnits(defaultHumanFor(t.symbol), t.decimals).toString();
+  }
+  // Keep any named default the registry does not carry on this network. Their
+  // decimals are unknowable here, so use the same fail-closed assumption.
+  for (const sym of Object.keys(TOKEN_DEFAULT_HUMAN)) {
+    out[sym] ??= unknownTokenCapRaw(sym);
   }
   return out;
 }
@@ -62,7 +131,9 @@ function defaultTokenCaps(): Record<string, string> {
 export function tokenCapOf(limits: SpendingLimits | undefined, symbol: string): bigint {
   const caps = limitsOf(limits).perTxTokenCaps;
   const raw = caps[symbol];
-  return BigInt(raw ?? UNKNOWN_TOKEN_CAP_RAW);
+  // The fallback is computed FOR THIS SYMBOL, in its own decimals — a single
+  // 1e18-denominated constant was "no cap" for anything with fewer.
+  return BigInt(raw ?? unknownTokenCapRaw(symbol));
 }
 
 /**

@@ -64,6 +64,16 @@ export const CloseTroveIntent = z.object({ action: z.literal("closeTrove") });
  * way to recover what they were owed.
  */
 export const ClaimCollateralIntent = z.object({ action: z.literal("claimCollateral") });
+/**
+ * Re-stamp the Trove's borrowing cap at today's price.
+ *
+ * The cap is set when the Trove opens and only ever ratchets DOWN, so a
+ * borrower whose collateral has appreciated cannot mint against it however much
+ * BTC they add — the bot used to say "add more BTC", which provably does not
+ * work. Refinancing is the answer, and without this action there was nothing to
+ * point them at.
+ */
+export const RefinanceIntent = z.object({ action: z.literal("refinance") });
 export const VaultDepositIntent = z.object({
   action: z.literal("vaultDeposit"),
   token: symbol,
@@ -215,6 +225,7 @@ export const Intent = z.discriminatedUnion("action", [
   AdjustIntent,
   CloseTroveIntent,
   ClaimCollateralIntent,
+  RefinanceIntent,
   VaultDepositIntent,
   StakeLpIntent,
   UnstakeLpIntent,
@@ -296,7 +307,7 @@ export const INTENT_TOOL_SCHEMA = {
     "Translate the user's message into a single structured Mezo intent. Never invent token " +
     "symbols, amounts, addresses, or ids. If a required field is missing or ambiguous, use " +
     "action \"clarify\" with a specific question. Supported actions: swap, borrow, repay, adjust, " +
-    "closeTrove, claimCollateral, vaultDeposit, stakeLp, unstakeLp, claim, lock, extendLock, vote, marketBrowse, " +
+    "closeTrove, claimCollateral, refinance, vaultDeposit, stakeLp, unstakeLp, claim, lock, extendLock, vote, marketBrowse, " +
     "marketBuy, zap, matchbox, veTransfer, veMerge, dcaCreate, dcaCancel, autoCompound, account, " +
     "portfolio, clarify.",
   input_schema: {

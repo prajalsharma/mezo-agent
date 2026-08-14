@@ -79,6 +79,25 @@ export async function musdParams(): Promise<MusdParams | undefined> {
   }
 }
 
+/**
+ * Refinancing fee, expressed as a PERCENTAGE OF the borrowing rate (live: 20,
+ * i.e. a fifth of the borrowing rate). Returns undefined when unreadable, and
+ * callers must then refuse rather than quote a fee they guessed.
+ */
+export async function refinancingFeePct(): Promise<bigint | undefined> {
+  if (!registry.hasContract("BorrowerOperations")) return undefined;
+  try {
+    return (await publicClient().readContract({
+      address: registry.contract("BorrowerOperations"),
+      abi: borrowerOperationsAbi,
+      functionName: "refinancingFeePercentage",
+    })) as bigint;
+  } catch (e) {
+    log.warn("musd.refinancing-fee-unreadable", { error: errMsg(e) });
+    return undefined;
+  }
+}
+
 /** Test seam - drops the cached read. */
 export function resetMusdParams(): void {
   cache = undefined;

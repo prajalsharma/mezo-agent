@@ -288,12 +288,25 @@ actually uses instead of only working for multiples of seven.
   route as swaps. The README says so on the surface itself.
 - **The vote optimizer's coverage is partial** on mainnet. The card now says how
   partial, every time, rather than presenting a 3-of-26-gauge answer as optimal.
-- **`refinance` is not implemented**, which is the only mechanism that re-stamps
-  a Trove's borrowing cap. When a mint is blocked by the cap, the bot says
-  exactly that instead of advising "add more BTC", which does not raise it.
+- **`refinance` IS now implemented.** It was the last open finding: the borrowing
+  cap is stamped at open-time price and only ever ratchets down, so a borrower
+  whose collateral has appreciated could not mint against it however much BTC
+  they added. The signature was confirmed against the deployed contract rather
+  than assumed — `refinance(address,address)` reverts "BorrowerOps: Trove does
+  not exist or is closed" exactly as `closeTrove()` does, while a nonexistent
+  selector returns empty revert data. The card reads the live
+  `refinancingFeePercentage`, shows the old and new limits side by side, and
+  refuses outright when re-pricing would not raise the cap (so nobody pays the
+  fee for nothing) or when the fee would push the ratio below the minimum.
 - **Hints are passed as zero** on Trove operations. That is a valid Liquity
   fallback and cheap at current Trove counts; `getApproxHint` is not called. The
   code used to claim otherwise and no longer does.
+- **Token caps are now denominated in each token's own decimals.** The last low
+  finding: one 1e18-denominated fallback served every token a hardcoded table did
+  not name, so an 8-decimal asset got a "cap" of ten trillion units. Decimals come
+  from the registry where they are knowable; where they are not, the fallback
+  assumes the SMALLEST plausible decimals so an unknown token fails closed
+  instead of open. `npm run capcheck` asserts every cap is a real bound.
 - **The zap's doubled fee is not enforceable on-chain.** `zapLegWithFee` charges
   2x because the caller chose that entrypoint, and the selector is calldata like
   any other — a caller composing their own zap can use `swapWithFee` and pay 1x.

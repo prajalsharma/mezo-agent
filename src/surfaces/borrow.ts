@@ -11,7 +11,7 @@ import type { BorrowIntent, RepayIntent, AdjustIntent } from "../llm/intent.js";
 // amounts) — see src/core/prices.ts.
 import { btcPriceWad } from "../core/prices.js";
 import {
-  musdParams, recoveryMode, maxBorrowingCapacity,
+  musdParams, recoveryMode, maxBorrowingCapacity, refinancingFeePct,
   compositeDebt, borrowingFee, requiredCR, maxNetMint, liquidationPrice, icrOf, pct,
   type MusdParams,
 } from "../core/musdParams.js";
@@ -449,8 +449,8 @@ export async function buildAdjust(intent: AdjustIntent, owner: Address): Promise
           throw new ActionUnavailableError(
             `Mezo caps each Trove's total debt at the amount stamped when it opened - yours is ${fmtMusd(cap)} MUSD, ` +
               `and you currently owe ${fmtMusd(trove.debt)} MUSD, so you can mint about ${fmtMusd(headroom)} MUSD more. ` +
-              `Adding collateral will NOT raise this cap and neither will a higher BTC price; only refinancing the Trove ` +
-              `re-stamps it, which this bot doesn't do yet. Mint less, or close and reopen the Trove at today's price.`,
+              `Adding collateral will NOT raise this cap and neither will a higher BTC price on its own. ` +
+              `Say "refinance" to re-price the limit at today's BTC price, then mint - or mint less.`,
           );
         }
       }
@@ -630,6 +630,97 @@ export async function buildClaimCollateral(owner: Address): Promise<ActionPlan> 
       kind: "claimCollateral", to: bo, value: 0n,
       data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "claimCollateral", args: [] }),
       describe: "Claim collateral surplus",
+    }],
+    allowedTargets: [bo], executable: true, nativeValue: 0n,
+  };
+}
+
+/**
+ * Refinance — re-stamp the Trove's borrowing cap at TODAY's price.
+ *
+ * The cap is set when the Trove opens as `collateral * price / MCR` and only
+ * ever ratchets DOWN (on a collateral withdrawal). It does not rise when BTC
+ * appreciates, and it does not rise when the borrower adds collateral — which
+ * is why "add more BTC to borrow more" was provably wrong advice, and why a
+ * mint blocked by the cap previously had no remedy the bot could offer.
+ *
+ * This is that remedy. Signature verified against the deployed contract:
+ * `refinance(address,address)` reverts "BorrowerOps: Trove does not exist or is
+ * closed" exactly as `closeTrove()` does, while a nonexistent selector returns
+ * empty revert data.
+ */
+export async function buildRefinance(owner: Address): Promise<ActionPlan> {
+  const summary = ["Re-prices your Trove's borrowing limit at today's BTC price."];
+
+  if (NEEDED.some((k) => !registry.hasContract(k))) {
+    return borrowGated("♻️ Refinance Trove", "refinance", summary);
+  }
+
+  const { p, priceWad, inRecovery } = await marketOrRefuse();
+  const trove = await readTroveRaw(owner);
+  if (trove) assertHasTrove(trove.status, trove.debt, "refinance");
+
+  const feePct = await refinancingFeePct();
+  if (feePct === undefined) {
+    throw new ActionUnavailableError(
+      "I can't read Mezo's refinancing fee right now, and I won't show you a cost I guessed. Try again shortly.",
+    );
+  }
+
+  const warnings: string[] = [];
+  if (trove) {
+    const capNow = await maxBorrowingCapacity(owner);
+    // The cap a refinance would stamp: the same formula the protocol uses at
+    // open time, evaluated at today's price.
+    const capAfter = (trove.coll * priceWad) / p.mcr;
+    if (capNow !== undefined) {
+      summary.push(
+        `Borrowing limit now: ~${fmtMusd(capNow)} MUSD (set when the Trove opened)`,
+        `After refinancing: ~${fmtMusd(capAfter)} MUSD (at BTC ~$${fmtUsd(priceWad)})`,
+      );
+      if (capAfter <= capNow) {
+        throw new ActionUnavailableError(
+          `Refinancing wouldn't help right now. Your limit is already ~${fmtMusd(capNow)} MUSD and re-pricing at ` +
+            `today's BTC price would set it to ~${fmtMusd(capAfter)} MUSD - the same or lower, because the price ` +
+            `hasn't risen since you opened. You'd pay the fee for nothing.`,
+        );
+      }
+      const headroomAfter = capAfter > trove.debt ? capAfter - trove.debt : 0n;
+      summary.push(`New room to borrow: ~${fmtMusd(headroomAfter)} MUSD on top of your current debt`);
+    }
+
+    // The fee is a percentage OF the borrowing rate, charged on the debt, and it
+    // is ADDED to the debt — so it lowers the collateral ratio slightly.
+    const effectiveRate = (p.borrowingRate * feePct) / 100n;
+    const fee = inRecovery ? 0n : (trove.debt * effectiveRate) / 10n ** 18n;
+    summary.push(
+      inRecovery
+        ? "Refinancing fee: waived (the system is in Recovery Mode)"
+        : `Refinancing fee: ~${fmtMusd(fee)} MUSD (${feePct}% of the ${fmtRate(p.borrowingRate)} borrowing rate), added to your debt`,
+    );
+    const newDebt = trove.debt + fee;
+    const newIcr = icrOf(trove.coll, priceWad, newDebt);
+    const required = requiredCR(p, inRecovery);
+    summary.push(`Collateral ratio after: ~${pct(newIcr)} (min ${pct(required)})`);
+    if (newIcr < required) {
+      throw new ActionUnavailableError(
+        `Refinancing adds ~${fmtMusd(fee)} MUSD of fee to your debt, which would put your collateral ratio at ` +
+          `~${pct(newIcr)} - below the ${pct(required)} minimum. Add collateral or repay first.`,
+      );
+    }
+    warnings.push(
+      "Refinancing raises the LIMIT, not your debt - you still have to mint separately afterwards, and the " +
+        "fee is charged whether or not you do.",
+    );
+  }
+
+  const bo = registry.contract("BorrowerOperations");
+  return {
+    action: "refinance", title: "♻️ Refinance Trove", summary, warnings,
+    steps: [{
+      kind: "refinance", to: bo, value: 0n,
+      data: encodeFunctionData({ abi: borrowerOperationsAbi, functionName: "refinance", args: [ZERO, ZERO] }),
+      describe: "Refinance: re-price the Trove's borrowing limit",
     }],
     allowedTargets: [bo], executable: true, nativeValue: 0n,
   };
