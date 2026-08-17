@@ -367,6 +367,20 @@ report privately first and allow time to fix before disclosing. See
 ## Verifying any of this
 
 ```
+npm run checkall      # every required suite in one command
+```
+
+One command, because the alternative failed in practice: two assertions in
+`auditfixes` sat red across two entire review rounds without being caught, for
+the dull reason that each suite had to be remembered individually. Adding the
+runner immediately exposed a third — a shell loop that had been grepping for
+`PASSED` and therefore scoring `7/9 PASSED` as a pass. A verification story
+resting on check scripts needs one door, and it needs the door to be honest
+about failure.
+
+Individually:
+
+```
 npm run conformance   # the agent agrees with the deployed protocol
 npm run storecheck    # a torn write cannot destroy custody
 npm run policycheck   # spending caps bind, including BTC via the precompile

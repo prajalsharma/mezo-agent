@@ -42,7 +42,8 @@
     "storecheck": "tsx scripts/storecheck.ts",
     "reviewcheck": "tsx scripts/reviewcheck.ts",
     "followupcheck": "tsx scripts/followupcheck.ts",
-    "capcheck": "tsx scripts/capcheck.ts"
+    "capcheck": "tsx scripts/capcheck.ts",
+    "checkall": "tsx scripts/checkall.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",

@@ -23,11 +23,34 @@ check('swap atomic (target=FeeRouter, no fee step)', p1.steps.every(s=>s.kind!==
 const p2 = await buildSwap({owner, tokenIn:registry.token('MUSD'), tokenOut:registry.token('BTC'), humanAmountIn:'100', slippagePct:0.5, referral:{recipient:'0x9F1b0940387423290e069FE02d15d5B287d940B7', sharePct:30, referrerTelegramId:1}});
 check('referred swap fee = 0.45 MUSD (45bps)', p2.fee?.amount === parseUnits('0.45',18), '| bps='+p2.fee?.bps);
 
-// 3. ZAP — 50 bps of gross, atomic via override
+// 3. ZAP — 50 bps of the GROSS input. Which PATH collects it depends on the
+// DEPLOYED router: with `zapLegWithFee` the fee is taken inside the swap leg
+// (atomic); without it the zap falls back to a separate fee step, because the
+// only other way to charge the full fee atomically was an explicit 2x override
+// derived from an off-chain env var — and a 1 bps drift between that and the
+// on-chain rate reverted the swap leg AFTER both approvals were mined.
+//
+// So the invariant to assert is the AMOUNT (identical on both paths) and that
+// the path taken MATCHES the router's actual capability. Asserting "atomic"
+// unconditionally encoded a behaviour that is unsafe on an older router.
+const { feeRouterCaps } = await import('../src/chain/feeRouterCaps.js');
+const zapCaps = await feeRouterCaps();
 const p3 = await buildZap({action:'zap', inputToken:'BTC', inputAmount:'0.001', pool:'BTC/MUSD', stake:false}, owner);
 const zapFeeLine = p3.summary.find(l=>l.includes('fee'));
-check('zap fee line = 0.000005 BTC (50bps of 0.001) atomic', /0\.000005 BTC \(0\.5%\).*atomically/.test(zapFeeLine??''), '| '+zapFeeLine);
-check('zap has NO separate fee step', p3.steps.every(s=>s.kind!=='fee'));
+const zapFeeSteps = p3.steps.filter(s=>s.kind==='fee');
+check('zap fee = 0.000005 BTC (50bps of 0.001), whichever path', /0\.000005 BTC \(0\.5%\)/.test(zapFeeLine??''), '| '+zapFeeLine);
+check(
+  zapCaps.zapLeg
+    ? 'zap is ATOMIC on a router with zapLegWithFee (no separate fee step)'
+    : 'zap uses the LEGACY fee step on a router without zapLegWithFee',
+  zapCaps.zapLeg ? zapFeeSteps.length === 0 : zapFeeSteps.length === 1,
+  `| zapLeg=${zapCaps.zapLeg} feeSteps=${zapFeeSteps.length}`,
+);
+// On the legacy path the fee must be charged LAST, so a reverted zap costs nothing.
+if (!zapCaps.zapLeg) {
+  check('legacy zap charges the fee LAST (a failed zap costs no fee)',
+    p3.steps[p3.steps.length-1]?.kind==='fee');
+}
 
 // 4. BORROW — 10 bps on minted MUSD, charged after trove opens
 const p4 = await buildBorrow({action:'borrow', collateralBTC:'0.1', mintMUSD:'2000'});
