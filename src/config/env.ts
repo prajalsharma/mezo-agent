@@ -42,9 +42,23 @@ function optional(name: string, fallback = ""): string {
 
 export type NetworkName = "testnet" | "mainnet";
 
+/**
+ * Whether MEZO_NETWORK was actually SET, as opposed to falling back.
+ *
+ * The fallback is testnet, and it used to be completely silent — so a service
+ * where the variable never landed (wrong environment, typo, added after the
+ * last deploy) runs testnet while the operator believes it is on mainnet, and
+ * the only symptom is UI copy they then assume is a bug. Startup says which it
+ * is, and says whether that was a choice or a default.
+ */
+export const networkWasExplicit = (process.env.MEZO_NETWORK ?? "").trim() !== "";
+
 const network = optional("MEZO_NETWORK", "testnet") as NetworkName;
 if (network !== "testnet" && network !== "mainnet") {
-  throw new Error(`MEZO_NETWORK must be "testnet" or "mainnet", got "${network}"`);
+  throw new Error(
+    `MEZO_NETWORK must be "testnet" or "mainnet", got "${network}". ` +
+      `Check for stray quotes or whitespace - a value like '"mainnet"' does not match.`,
+  );
 }
 
 export const env = {

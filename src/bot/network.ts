@@ -110,3 +110,20 @@ export function networkCard(address?: string): string {
   );
   return lines.join("\n");
 }
+
+/**
+ * Operator-facing network line for the startup banner (server logs, not chat).
+ *
+ * It lives here rather than in bot.ts for the same reason everything else in
+ * this file does — one place decides how a network is described — and because
+ * scripts/productcopy.ts scans src/bot for copy that assumes testnet. A startup
+ * log is not user-facing, but keeping the string here means the linter does not
+ * need an exception carved for it, and the two descriptions cannot drift.
+ */
+export function startupNetworkLine(explicit: boolean): string {
+  const what = isMainnet ? "🔴 MAINNET — REAL FUNDS" : "🧪 test network — no real funds";
+  const source = explicit
+    ? "(MEZO_NETWORK set explicitly)"
+    : "(⚠️  MEZO_NETWORK is NOT SET — this is the DEFAULT. Set it if you meant mainnet.)";
+  return `${what} ${source}`;
+}

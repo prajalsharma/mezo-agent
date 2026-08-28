@@ -1,6 +1,6 @@
 import { Bot, InlineKeyboard, type Context } from "grammy";
 import { formatUnits } from "viem";
-import { env, llmEnabled, feesEnabled, accessRestricted, isOperator } from "../config/env.js";
+import { env, llmEnabled, feesEnabled, accessRestricted, isOperator, networkWasExplicit } from "../config/env.js";
 import { log, redact } from "../core/log.js";
 import { registry } from "../registry/registry.js";
 import { parseIntent, resolveDollarPhrases } from "../llm/adapter.js";
@@ -35,7 +35,7 @@ import { installBotProfile, homeCard, screenCard, feesText } from "./menu.js";
 import { explainerFor } from "./explainers.js";
 import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
 import { faucetReply } from "./faucet.js";
-import { networkCard } from "./network.js";
+import { networkCard, startupNetworkLine } from "./network.js";
 
 /**
  * Per-user conversational scratch. BOUNDED: these are caches, not state, and an
@@ -546,9 +546,14 @@ export function buildBot(): Bot {
 }
 
 export function startupBanner(): string {
+  // The network line is the first thing an operator should be able to confirm
+  // from the logs, because everything else is downstream of it and getting it
+  // wrong is expensive in both directions. Say whether it was CHOSEN or merely
+  // defaulted — a service where the variable never landed used to look
+  // identical to one deliberately set to testnet.
   return (
     `Mezo Agent starting\n` +
-    `  network : ${env.network}\n` +
+    `  network : ${startupNetworkLine(networkWasExplicit)}\n` +
     `  LLM     : ${llmEnabled ? `${env.llm.provider} (${env.llm.provider === "gemini" ? env.llm.geminiModel : env.llm.anthropicModel})` : "deterministic fallback"}\n` +
     `  swaps   : ${registry.hasContract("Router") ? "router configured" : "router pending registry confirmation"}\n` +
     `  access  : ${
