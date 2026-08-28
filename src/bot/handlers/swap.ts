@@ -12,6 +12,7 @@ import { limitsOf, fmtBtc } from "../../custody/policy.js";
 import { validateIntent, IntentRejected, type SwapIntent } from "../../llm/intent.js";
 import { prettyAmount } from "../../portfolio/portfolioService.js";
 import { b, i, esc } from "../format.js";
+import { networkBadge, realFundsNotice } from "../network.js";
 import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
 import { referralFor } from "../../core/referral.js";
 
@@ -74,7 +75,7 @@ export async function handleSwapIntent(ctx: Context, raw: SwapIntent): Promise<v
     return;
   }
 
-  const netTag = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
+  const netTag = networkBadge();
   const quoteBody =
     `Sell: ${b(`${plan.amountInFormatted} ${plan.tokenIn.symbol}`)}\n` +
     (plan.fee
@@ -136,6 +137,7 @@ export async function handleSwapIntent(ctx: Context, raw: SwapIntent): Promise<v
 
   const sent = await ctx.reply(
     `${b(`Confirm swap - ${netTag}`)}\n\n` +
+      (realFundsNotice() ? `${realFundsNotice()}\n\n` : "") +
       `${quoteBody}\n` +
       (needsApproval ? `Steps: approve → swap\n` : `Steps: swap\n`) +
       `\n${esc(simLine)}\n\n` +

@@ -35,6 +35,7 @@ import { installBotProfile, homeCard, screenCard, feesText } from "./menu.js";
 import { explainerFor } from "./explainers.js";
 import { handleMenuCallback, handleReferral, setBotUsername, helpText } from "./handlers/menu.js";
 import { faucetReply } from "./faucet.js";
+import { networkCard } from "./network.js";
 
 /**
  * Per-user conversational scratch. BOUNDED: these are caches, not state, and an
@@ -203,6 +204,15 @@ export function buildBot(): Bot {
 
   // Transparent fee disclosure — the bounty requires fees be disclosed in-bot.
   // Shared, always-current disclosure (includes the referred discount + split).
+  // Which chain am I on, and how do I reach funds on the other one? The answer
+  // is non-obvious (one network per deployment, per-network account storage) and
+  // getting it wrong looks like "my money vanished" — so it is a first-class
+  // command rather than something buried in help.
+  bot.command("network", async (ctx) => {
+    const user = ctx.from?.id ? getUser(ctx.from.id) : undefined;
+    await ctx.reply(networkCard(user?.address), { parse_mode: "HTML" });
+  });
+
   bot.command("fees", async (ctx) => {
     await ctx.reply(feesText(), { parse_mode: "HTML" });
   });

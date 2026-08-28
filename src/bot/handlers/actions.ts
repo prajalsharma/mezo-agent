@@ -9,6 +9,7 @@ import { setPending, takePending, clearPending, attachCard, refusalText } from "
 import { callbackId } from "./swap.js";
 import { validateIntent, IntentRejected, type Intent } from "../../llm/intent.js";
 import { b, i, esc } from "../format.js";
+import { networkBadge, realFundsNotice } from "../network.js";
 import { preflightBalances, friendlyReason, renderSuccess, actionHashOf, actionLanded } from "./txResult.js";
 import { referralFor } from "../../core/referral.js";
 import { store } from "../../db/store.js";
@@ -78,7 +79,7 @@ export async function handleActionIntent(ctx: Context, raw: Intent): Promise<boo
     store.setLastPool(telegramId, intent.pool.toUpperCase());
   }
 
-  const netTag = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
+  const netTag = networkBadge();
 
   // Gated (preview-only) plan: show the summary, no signing.
   if (!plan.executable) {
@@ -118,6 +119,7 @@ export async function handleActionIntent(ctx: Context, raw: Intent): Promise<boo
   const kb = new InlineKeyboard().text("✅ Confirm", `action:confirm:${planId}`).text("✖️ Cancel", `action:cancel:${planId}`);
   const sent = await ctx.reply(
     `${renderPlan(plan)}\n\n${b(netTag)}\n` +
+    (realFundsNotice() ? `${realFundsNotice()}\n` : "") +
       (requiresStepUp
         ? `⚠️ ${b("High-value")}: moves ${esc(fmtBtc(plan.nativeValue))} (over your ${esc(fmtBtc(threshold))} step-up threshold). You'll confirm once more.\n`
         : "") +

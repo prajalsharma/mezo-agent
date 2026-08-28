@@ -7,8 +7,9 @@ import { setPending, getPending, clearPending } from "../session.js";
 import { store } from "../../db/store.js";
 import { mainMenu, homeCard } from "../menu.js";
 import { b, i, code, link, esc } from "../format.js";
+import { networkBadge, stakeSentence } from "../network.js";
 
-const netLabel = env.network === "mainnet" ? "🟢 MAINNET" : "🧪 TESTNET";
+const netLabel = networkBadge();
 
 export async function handleStart(ctx: Context): Promise<void> {
   const telegramId = ctx.from?.id;
@@ -110,6 +111,7 @@ export async function handleCreate(ctx: Context): Promise<void> {
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}\n\n` +
       `⚠️ ${b("Back up your key now")} - tap below or run /export and save it somewhere safe. ` +
       `Your key lives only on this bot's server; backing it up is the ONLY way to recover this wallet if anything happens to the host.\n\n` +
+      `${stakeSentence()}\n\n` +
       `🔒 It's encrypted at rest and never logged or sent to any AI model.\n\n` +
       `Then fund it with /deposit.`,
     { parse_mode: "HTML", reply_markup: kb, link_preview_options: { is_disabled: true } },

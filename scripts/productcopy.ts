@@ -31,7 +31,14 @@ const ROOTS = ["src/bot", "src/surfaces", "src/keeper"];
  * returns undefined on mainnet, so the strings cannot render in the live
  * product - that is the whole point of concentrating them.
  */
-const ALLOWED = "src/bot/faucet.ts";
+const ALLOWED = [
+  "src/bot/faucet.ts",
+  // The single source of truth for how a network is described. Like faucet.ts it
+  // exists precisely to CONCENTRATE the branching, so every other file asks it
+  // rather than hardcoding an assumption. Its testnet strings are unreachable on
+  // mainnet by construction.
+  "src/bot/network.ts",
+];
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -49,7 +56,8 @@ function walk(dir: string, out: string[] = []): string[] {
  * that is preferable to failing on correct code.
  */
 function offending(file: string): Array<{ line: number; text: string }> {
-  if (file.replace(/\\/g, "/").endsWith(ALLOWED)) return [];
+  const norm = file.replace(/\\/g, "/");
+  if (ALLOWED.some((a) => norm.endsWith(a))) return [];
   const src = readFileSync(file, "utf8").split("\n");
   const hits: Array<{ line: number; text: string }> = [];
   src.forEach((raw, idx) => {

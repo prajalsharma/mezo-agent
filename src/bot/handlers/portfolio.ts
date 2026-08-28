@@ -7,8 +7,9 @@ import { explorerAddressUrl } from "../../chain/networks.js";
 import { b, i, code, link } from "../format.js";
 import { positionsBlock } from "../positionsView.js";
 import { faucetButton, faucetHint } from "../faucet.js";
+import { networkBadge, depositChainWarning } from "../network.js";
 
-const netLabel = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
+const netLabel = networkBadge();
 
 async function requireUser(ctx: Context) {
   const telegramId = ctx.from?.id;
@@ -52,6 +53,7 @@ export async function handleDeposit(ctx: Context): Promise<void> {
   await ctx.replyWithPhoto(new InputFile(png, "deposit.png"), {
     caption:
       `${b(`Deposit address - ${netLabel}`)}\n${code(user.address)}\n\n` +
+    `${depositChainWarning()}\n\n` +
       `Send BTC (native gas asset) or any Mezo token to this address.\n` +
       (faucetHint() ? `${i(faucetHint()!)}\n` : "") +
       `${link("View on explorer", explorerAddressUrl(env.network, user.address))}`,

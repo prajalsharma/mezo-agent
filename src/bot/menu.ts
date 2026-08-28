@@ -7,6 +7,7 @@ import { getPortfolio, prettyAmount } from "../portfolio/portfolioService.js";
 import { registry } from "../registry/registry.js";
 import { publicClient } from "../chain/client.js";
 import { b, i, code } from "./format.js";
+import { networkBadge } from "./network.js";
 import { positionsBlock } from "./positionsView.js";
 import { explainerList } from "./explainers.js";
 
@@ -20,7 +21,7 @@ import { explainerList } from "./explainers.js";
  * close, auto-compound, DCA list, new account) are real action buttons.
  */
 
-const netLabel = env.network === "mainnet" ? "🟢 Mainnet" : "🧪 Testnet";
+const netLabel = networkBadge();
 
 export type Card = { text: string; keyboard: InlineKeyboard };
 
@@ -638,6 +639,7 @@ export async function installBotProfile(bot: Bot): Promise<void> {
     { command: "accounts", description: "👥 Manage wallets" },
     { command: "settings", description: "⚙️ Limits, fees, referral, upgrade" },
     { command: "fees", description: "💸 Fee disclosure" },
+    { command: "network", description: "🌐 Which chain, and reaching the other one" },
     { command: "help", description: "❓ How to use the bot" },
     { command: "pause", description: "🛑 Emergency stop automation" },
     { command: "revoke", description: "🔒 Revoke this account's session key" },
