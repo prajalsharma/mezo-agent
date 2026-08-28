@@ -5,13 +5,36 @@ import "dotenv/config";
  * process.env directly — so misconfiguration fails fast and in one place.
  */
 
+/**
+ * Required vars are COLLECTED, then reported together once the whole config has
+ * been read — not thrown on the first miss.
+ *
+ * Throwing immediately meant a fresh deployment learned about exactly one
+ * missing variable per crash-and-redeploy cycle, which is a miserable way to
+ * discover a two-item list (and the second item, MASTER_ENCRYPTION_KEY, is the
+ * one with a consequence you cannot undo — see the note below).
+ */
+const missingRequired: string[] = [];
+
 function required(name: string): string {
   const v = process.env[name];
   if (!v || v.trim() === "") {
-    throw new Error(`Missing required env var: ${name}. See .env.example.`);
+    missingRequired.push(name);
+    return "";
   }
   return v.trim();
 }
+
+/** Operator-facing guidance for each required var, shown when it is missing. */
+const REQUIRED_HELP: Record<string, string> = {
+  TELEGRAM_BOT_TOKEN:
+    "from @BotFather. One token = one bot: if another deployment is still polling " +
+    "with this token, both will fight over getUpdates and neither will work reliably.",
+  MASTER_ENCRYPTION_KEY:
+    "32-byte hex (`npm run genkey`). ON A MIGRATION, REUSE THE EXACT KEY FROM THE OLD " +
+    "DEPLOYMENT — every stored wallet is sealed with it, and a new key silently makes " +
+    "all of them undecryptable while the bot happily starts up and creates new ones.",
+};
 
 function optional(name: string, fallback = ""): string {
   return (process.env[name] ?? fallback).trim();
@@ -181,6 +204,22 @@ export const env = {
     referralSharePct: Math.min(Math.max(Math.round(Number(optional("AGENT_REFERRAL_SHARE_PCT", "30")) || 0), 0), 30),
   },
 } as const;
+
+// Report EVERY missing required var at once, with what each one is for.
+if (missingRequired.length > 0) {
+  const lines = missingRequired.map((n) => `  • ${n} — ${REQUIRED_HELP[n] ?? "see .env.example"}`);
+  throw new Error(
+    `Missing required env var${missingRequired.length > 1 ? "s" : ""}:\n${lines.join("\n")}\n\n` +
+      `Set them in your host's variables (Railway: service → Variables) and redeploy. ` +
+      `See .env.example for the full list, including the optional ones.\n\n` +
+      `Also check, because neither is a variable and both are silent when wrong:\n` +
+      `  • A PERSISTENT VOLUME mounted at DATA_DIR (default /data). Without one, every ` +
+      `redeploy destroys every user's wallet — there is no plaintext export path.\n` +
+      `  • On a migration, the old deployment's data file copied into that volume, and ` +
+      `the old MASTER_ENCRYPTION_KEY. A fresh volume plus a fresh key starts empty and ` +
+      `reports success.`,
+  );
+}
 
 /** A valid fee recipient is configured. */
 const validRecipient = /^0x[0-9a-fA-F]{40}$/.test(env.fees.recipient);
