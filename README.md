@@ -329,6 +329,26 @@ an unattended agent custodying strangers' real BTC on the Tier-3 stopgap
 described under "Trust model"; prefer testnet, or an allowlist, until the custody
 tier is upgraded and independently audited.
 
+### Render
+
+`render.yaml` is a Blueprint for this setup: **New > Blueprint**, pick the repo,
+then fill in the secret env vars it asks for.
+
+- It deploys as a **web service on a paid plan** with a 1 GB disk at `/data`
+  and exactly one instance.
+- **Self-healing.** When `PORT` is set (Render sets it), the bot serves
+  `/healthz`. It returns 200 only if Telegram answered a `getUpdates` in the
+  last 3 minutes, and 503 otherwise. Render restarts the service when the check
+  fails, so a bot that is alive but stuck comes back on its own, not just one
+  that crashed. Point an uptime monitor (UptimeRobot, cron-job.org) at
+  `https://<service>.onrender.com/healthz` to get alerted as well.
+- **Moving from another host.** Stop the old service first (two pollers on
+  one token both break), copy the store file (`mezo-agent.<network>.json`) into
+  `/data` on the Render disk over SSH, and set the same `MASTER_ENCRYPTION_KEY`.
+  If the old host may have been compromised, rotate the bot token (BotFather
+  `/revoke`) and every API key, and tell users with in-bot wallets to move
+  their funds: the old key and store may both have leaked.
+
 ## Verifying it works
 
 All checks below run with **no Telegram token and no network dependency on

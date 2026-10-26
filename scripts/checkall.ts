@@ -42,6 +42,7 @@ const SUITES: Suite[] = [
   { name: "productcopy", why: "no user-facing string assumes testnet" },
   { name: "routercompat", why: "the calldata the bot emits exists on the deployed router" },
   { name: "phasecheck", why: "phase 2-5 surfaces build" },
+  { name: "healthcheck", why: "/healthz fails when polling stalls, so Render restarts it" },
   // Advisory: reports what is NOT covered, so a non-zero exit is information.
   { name: "deadendcheck", why: "actions with no button or tip pointing at them", advisory: true },
   // Needs a wallet address, so it cannot run unattended.

@@ -43,6 +43,7 @@
     "reviewcheck": "tsx scripts/reviewcheck.ts",
     "followupcheck": "tsx scripts/followupcheck.ts",
     "capcheck": "tsx scripts/capcheck.ts",
+    "healthcheck": "tsx scripts/healthcheck.ts",
     "checkall": "tsx scripts/checkall.ts"
   },
   "dependencies": {

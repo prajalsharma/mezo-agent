@@ -7,6 +7,7 @@ import { startAlerts, stopAlerts } from "./keeper/alerts.js";
 import { sweepPending } from "./bot/session.js";
 import { installBotProfile } from "./bot/menu.js";
 import { setBotUsername } from "./bot/handlers/menu.js";
+import { markPolled, startHealthServer } from "./core/health.js";
 
 /**
  * Entry point. Phase 1 runs the bot in long-polling mode for local development.
@@ -40,6 +41,15 @@ async function main() {
   }
 
   const bot = buildBot();
+
+  // Liveness for Render's health check: every successful getUpdates proves the
+  // poller is alive. Only when the host gives us a PORT (see core/health.ts).
+  bot.api.config.use(async (prev, method, payload, signal) => {
+    const res = await prev(method, payload, signal);
+    if (method === "getUpdates" && res.ok) markPolled();
+    return res;
+  });
+  const healthServer = process.env.PORT ? startHealthServer(Number(process.env.PORT)) : undefined;
 
   // Keeper for pre-authorized automation (DCA / auto-compound). Off by default;
   // a global kill-switch (KEEPER_ENABLED) gates all scheduled execution.
@@ -87,6 +97,7 @@ async function main() {
     try { await stopKeeper(); } catch { /* best effort */ }
     try { stopAlerts(); } catch { /* best effort */ }
     try { clearInterval(pendingSweep); } catch { /* best effort */ }
+    try { healthServer?.close(); } catch { /* best effort */ }
     try {
       await bot.stop();
     } catch (err) {
