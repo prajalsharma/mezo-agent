@@ -3,7 +3,7 @@ export {};
  * The /healthz endpoint reports polling liveness, not just "process is up".
  *
  * Wires a real grammY Bot to a fake Telegram (via the client `fetch` option),
- * installs the same transformer as src/index.ts, and checks the HTTP answer
+ * installs the same transformer as src/main.ts, and checks the HTTP answer
  * before polling, after a successful getUpdates, and once polling goes stale.
  */
 import { Bot } from "grammy";

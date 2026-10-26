@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { log } from "./log.js";
+import { remoteMirror } from "../db/remote.js";
 
 /**
  * Liveness for hosts that restart on a failing health check (Render).
@@ -36,7 +37,9 @@ export function startHealthServer(port: number): Server {
     if (req.url === "/healthz" || req.url === "/") {
       const state = healthState();
       res.writeHead(state.ok ? 200 : 503, { "content-type": "application/json" });
-      res.end(JSON.stringify(state));
+      // Store sync is reported but never fails the check: restarting would not
+      // fix an unreachable database, and could drop writes still queued.
+      res.end(JSON.stringify({ ...state, store: remoteMirror() ? { synced: remoteMirror()!.status().synced } : "local" }));
       return;
     }
     res.writeHead(404).end();

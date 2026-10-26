@@ -9,6 +9,7 @@ import { registry } from "../registry/registry.js";
 import { llmSelfTest } from "../llm/adapter.js";
 import { llmEnabled } from "../config/env.js";
 import { errMsg } from "./log.js";
+import { remoteMirror } from "../db/remote.js";
 
 /**
  * Preflight self-checks — the diagnostic backbone.
@@ -74,6 +75,7 @@ export async function runPreflight(): Promise<CheckResult[]> {
       // ephemeral in a container — every redeploy wipes user wallets. On
       // Railway/Fly this MUST be an absolute path backed by a mounted volume.
       const ephemeral = !env.dataDir.startsWith("/");
+      if (remoteMirror()) return `writable at DATA_DIR=${env.dataDir} (cache - the durable copy is in Postgres)`;
       const note = ephemeral
         ? ` ⚠️ EPHEMERAL PATH — attach a persistent volume and set DATA_DIR to it (e.g. /data), or user wallets are LOST on every redeploy.`
         : "";

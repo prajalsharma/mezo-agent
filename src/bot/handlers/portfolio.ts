@@ -1,3 +1,4 @@
+import { store } from "../../db/store.js";
 import { type Context, InputFile, InlineKeyboard } from "grammy";
 import QRCode from "qrcode";
 import { env } from "../../config/env.js";
@@ -42,6 +43,12 @@ export async function handlePortfolio(ctx: Context): Promise<void> {
 export async function handleDeposit(ctx: Context): Promise<void> {
   const user = await requireUser(ctx);
   if (!user) return;
+
+  // Same rule as wallet creation: no deposit address until the store is saved.
+  if (!(await store.durable(5_000))) {
+    await ctx.reply("⚠️ Saving your wallet is delayed. Don't send funds yet - try /deposit again in a minute.");
+    return;
+  }
 
   const png = await QRCode.toBuffer(user.address, { width: 512, margin: 2 });
   // On testnet, offer the faucet as an in-Telegram web app (opens in the built-in

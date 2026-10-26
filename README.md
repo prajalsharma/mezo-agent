@@ -329,25 +329,41 @@ an unattended agent custodying strangers' real BTC on the Tier-3 stopgap
 described under "Trust model"; prefer testnet, or an allowlist, until the custody
 tier is upgraded and independently audited.
 
-### Render
+### Render (free plan)
 
 `render.yaml` is a Blueprint for this setup: **New > Blueprint**, pick the repo,
 then fill in the secret env vars it asks for.
 
-- It deploys as a **web service on a paid plan** with a 1 GB disk at `/data`
-  and exactly one instance.
-- **Self-healing.** When `PORT` is set (Render sets it), the bot serves
-  `/healthz`. It returns 200 only if Telegram answered a `getUpdates` in the
-  last 3 minutes, and 503 otherwise. Render restarts the service when the check
-  fails, so a bot that is alive but stuck comes back on its own, not just one
-  that crashed. Point an uptime monitor (UptimeRobot, cron-job.org) at
-  `https://<service>.onrender.com/healthz` to get alerted as well.
-- **Moving from another host.** Stop the old service first (two pollers on
-  one token both break), copy the store file (`mezo-agent.<network>.json`) into
-  `/data` on the Render disk over SSH, and set the same `MASTER_ENCRYPTION_KEY`.
-  If the old host may have been compromised, rotate the bot token (BotFather
-  `/revoke`) and every API key, and tell users with in-bot wallets to move
-  their funds: the old key and store may both have leaked.
+- **Storage: Postgres, not the disk.** Free services have no persistent disk
+  and restart often, so `DATABASE_URL` is required (a free
+  [Neon](https://neon.tech) database works). On boot the store is loaded from
+  Postgres before anything else runs. If the database can't be reached, the bot
+  refuses to start rather than start empty. Every write is mirrored back, and a
+  new wallet's deposit address is shown only once it is saved there. Only
+  ciphertext goes to the database: decrypting needs `MASTER_ENCRYPTION_KEY` too,
+  and that stays in Render's env.
+- **Staying awake.** Free services sleep after 15 minutes with no inbound
+  HTTP, and Telegram polling doesn't count. Have a free pinger (cron-job.org,
+  UptimeRobot) hit `https://<service>.onrender.com/healthz` every 5-10 minutes.
+  Render's free plan gives about 750 hours a month per workspace, which covers
+  one always-on service. Two kept-awake services on one workspace run out
+  mid-month.
+- **No silent wallet loss.** On Render without `DATABASE_URL` the bot refuses to start. Set `STORE_ON_DISK=true` only on a paid plan with a persistent disk at `DATA_DIR`.
+- **Self-healing.** `/healthz` returns 200 only if Telegram answered a
+  `getUpdates` in the last 3 minutes, and 503 otherwise, so Render restarts a
+  bot that is alive but stuck, not just one that crashed.
+- **Deploy overlap.** Render briefly runs the old and new instance together.
+  The store row carries a lease: the new instance claims it on boot, and the
+  old one's writes are refused, after which it shuts itself down. It can never
+  overwrite newer data.
+- **Moving from another host.** Stop the old service first. Copy its store
+  file (`mezo-agent.<network>.json`) to your machine, then run
+  `DATABASE_URL=... MEZO_NETWORK=mainnet npm run pgimport -- ./mezo-agent.mainnet.json`.
+  It refuses to overwrite an existing store and verifies the upload by
+  reading it back. Use the same `MASTER_ENCRYPTION_KEY`. If the old host may
+  have been compromised, rotate the bot token (BotFather `/revoke`) and every
+  API key, and tell users with in-bot wallets to move their funds: the old key
+  and store may both have leaked.
 
 ## Verifying it works
 

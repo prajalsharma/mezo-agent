@@ -175,7 +175,7 @@ check("M13", "fee-on-transfer inputs are sized from what arrived",
   feeRouter.includes("_pullMeasured") && feeRouter.includes("_tryApprove")
     && read("contracts/test/FeeRouter.t.sol").includes("FeeOnTransferERC20"));
 check("M14", "cadence anchors on the schedule; timers stop on shutdown",
-  sched.includes("export function nextSlot") && read("src/index.ts").includes("stopKeeper()") && alerts.includes("export function stopAlerts"));
+  sched.includes("export function nextSlot") && read("src/main.ts").includes("stopKeeper()") && alerts.includes("export function stopAlerts"));
 check("M15", "an unreadable balance is not reported as 'no balance'",
   portfolio.includes("unreadable") && menu.includes("Couldn't read your balances"));
 check("M16", "auto-compound no longer claims to run", /Not yet automatic/.test(autom));

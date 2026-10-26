@@ -27,7 +27,7 @@ COPY src ./src
 COPY scripts ./scripts
 
 # The datastore holds ENCRYPTED user key material. This MUST be backed by a
-# persistent volume — see the warning in README. On an ephemeral filesystem every
+# persistent volume, OR by Postgres via DATABASE_URL (then /data is a cache) — see the warning in README. On an ephemeral filesystem every
 # redeploy destroys every user's wallet, and because there is no plaintext export
 # path, those funds are unrecoverable.
 #

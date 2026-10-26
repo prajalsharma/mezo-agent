@@ -1,32 +1,33 @@
 # Render Blueprint - New > Blueprint > pick this repo.
 #
-# A web service, not a background worker, only so Render can health-check it:
-# /healthz returns 503 when the bot stops polling Telegram (src/core/health.ts),
-# and Render restarts it. Workers get no health checks, so a hung-but-alive
-# poller would stay down until someone noticed.
+# Runs on the FREE plan. Two things make that safe:
 #
-# Paid plan on purpose: free web services sleep after 15 min idle and cannot
-# have a disk - the bot would go silent, and every restart would wipe every
-# user's encrypted wallet.
+#   - Storage: free services have no persistent disk and are restarted often,
+#     so the wallet store lives in Postgres (DATABASE_URL, e.g. a free Neon
+#     database). The local file is only a cache; see src/db/remote.ts.
+#   - Staying awake: free services sleep after 15 min without inbound HTTP.
+#     Point a free cron pinger (cron-job.org / UptimeRobot) at /healthz every
+#     5-10 min. Telegram polling is outbound, so it does not count as traffic.
+#
+# A web service, not a worker, so Render can health-check it: /healthz returns
+# 503 when the bot stops polling Telegram, and Render restarts it.
 services:
   - type: web
     name: mezo-agent
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: free
     numInstances: 1 # never more: two pollers on one token both break (409)
     healthCheckPath: /healthz
     autoDeploy: true
-    disk:
-      name: mezo-agent-data
-      mountPath: /data # encrypted key store - must persist
-      sizeGB: 1
     envVars:
       - key: DATA_DIR
-        value: /data
+        value: /data # cache only; the durable copy is in Postgres
       - key: MEZO_NETWORK
         value: mainnet
       # Secrets and per-deployment values: set in the dashboard, never here.
+      - key: DATABASE_URL # REQUIRED on the free plan, or wallets are lost on restart
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: MASTER_ENCRYPTION_KEY

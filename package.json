@@ -2,7 +2,7 @@
   "name": "mezo-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Mezo conversational agent \u2014 Telegram bot for the Mezo Bitcoin-DeFi stack (Phase 1: wallet, deposit QR, portfolio, swap)",
+  "description": "Mezo conversational agent — Telegram bot for the Mezo Bitcoin-DeFi stack (Phase 1: wallet, deposit QR, portfolio, swap)",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -44,18 +44,23 @@
     "followupcheck": "tsx scripts/followupcheck.ts",
     "capcheck": "tsx scripts/capcheck.ts",
     "healthcheck": "tsx scripts/healthcheck.ts",
+    "remotecheck": "tsx scripts/remotecheck.ts",
+    "pgimport": "tsx scripts/pgimport.ts",
     "checkall": "tsx scripts/checkall.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
     "dotenv": "^16.4.5",
     "grammy": "^1.30.0",
+    "postgres": "^3.4.9",
     "qrcode": "^1.5.4",
     "tsx": "^4.19.0",
     "viem": "^2.54.6",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-socket": "^0.2.14",
     "@types/node": "^22.7.0",
     "@types/qrcode": "^1.5.5",
     "typescript": "^5.6.0"

@@ -97,6 +97,18 @@ export async function handleCreate(ctx: Context): Promise<void> {
   // Attribute a pending deep-link referral now that the account exists.
   attributeReferral(telegramId);
 
+  // Never show an address before the wallet is durably saved: a restart in
+  // that gap (free hosts restart often) would lose a key the user may already
+  // be sending funds to. The save keeps retrying in the background.
+  if (!(await store.durable())) {
+    await ctx.reply(
+      `⚠️ ${b("Your wallet was created, but saving it is taking longer than usual.")}\n\n` +
+        `Don't send any funds yet. Run /deposit in a minute to get your address once it's saved.`,
+      { parse_mode: "HTML" },
+    );
+    return;
+  }
+
   // Points at /export rather than arming a reveal button directly. A live
   // "reveal my key" button sitting in the wallet-creation card stays tappable
   // forever, so anyone with a moment of access to an unlocked session could

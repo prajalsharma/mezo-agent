@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, copyFileSync, openSync, fsyncSync, closeSync } from "node:fs";
+import { remoteMirror } from "./remote.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { Address } from "viem";
@@ -316,6 +317,8 @@ export class Store {
     try {
       const body = JSON.stringify(this.db, null, 2);
       this.writeAtomic(this.path, body);
+      // With DATABASE_URL the file is a cache and Postgres the durable copy.
+      remoteMirror()?.enqueue(body);
 
       // THE BACKUP IS WRITTEN FROM MEMORY, AFTER THE MAIN FILE LANDS.
       //
@@ -350,6 +353,16 @@ export class Store {
           `filesystem may be read-only - set DATA_DIR to a writable path, or move to Postgres.`,
       );
     }
+  }
+
+  /**
+   * True once every write so far is durable. With no remote store the local
+   * file already is (it was fsynced). With Postgres, wait for the mirror - a
+   * caller about to show a deposit address must not do so for a wallet that a
+   * restart could still lose.
+   */
+  durable(timeoutMs?: number): Promise<boolean> {
+    return remoteMirror()?.durable(timeoutMs) ?? Promise.resolve(true);
   }
 
   /** The user's ACTIVE account (multi-account aware). */

@@ -25,6 +25,7 @@ const SUITES: Suite[] = [
   { name: "capcheck", why: "every per-token cap is a bound that can actually bind" },
   { name: "exportcheck", why: "/export needs a fresh single-use token" },
   { name: "storecheck", why: "a torn write cannot destroy custody" },
+  { name: "remotecheck", why: "the Postgres store survives restarts and stale instances" },
   { name: "accesscheck", why: "unlisted users reach nothing" },
   // Correctness against the protocol and the user's intent.
   { name: "conformance", why: "the agent agrees with the deployed musd contracts" },
